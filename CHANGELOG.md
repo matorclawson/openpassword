@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Breaking wire changes. Clients and integrations written against the predecessor service's names must update.
+
+- Protocol, capability and on-behalf-of headers use only the `openpassword-` prefix. The legacy headers are no longer sent or accepted.
+- Relay headers are `openpassword-upload-link`, `openpassword-relay-seal`, `openpassword-connection`, `openpassword-content-type` and `openpassword-content-range`. The earlier relay headers, which used a different prefix, are no longer accepted.
+- Batch manifest and approval-view schema identifiers, and the human-delegation token type, use the `openpassword-` prefix.
+- The delegation key document is served at `/.well-known/openpassword-delegation-keys.json`.
+- Notebook conversion receipts use the schema `openpassword.notebook-semantics.v1`. Nothing reads the earlier identifier, so earlier receipts are not re-verified.
+- Adds `make package` and `make checksum`, which write an archive named for its operating system and architecture, a `.sha256` sidecar and `RELEASE.json`.
+- The systemd units run from `/opt/openpassword/current`, a symlink to a versioned release directory.
+- The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
+
 ## 0.2.0 · 2026-11-22
 
 Adds scoped action delegation and refresh-family revocation, retired-key status checks, monetary model leases, tool-call chat, GitHub admission, per-provider dispatch stops, Loops pacing and batch approval views, digest-verified YouTube relay transfer, Notion OAuth, Google batch builders, newsletter and template approval previews, and guarded HubSpot template publication. Adds encrypted Loops and Twilio webhook inboxes, Revolut projections, signed-off publishing journals, TikTok operations, X thread planning and notebook semantic receipts. Adds separate Linux web and broker service identities and a differential fixture runner. Adds scoped operation pauses, legacy Bluesky and Threads publishing, HubSpot issue-bundle uploads, Loops message and audience updates, upload lifecycle and scoped Supabase row mutations. See PARITY.md for remaining replacement gaps.
