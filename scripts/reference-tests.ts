@@ -8,7 +8,13 @@ import { join } from 'node:path'
 import { validBatchView } from '../server/batch-view.ts'
 import { admitGithub } from '../server/keymaster.ts'
 const dir = join(process.argv[2] ?? '', 'contract', 'fixtures')
-const read = (...parts: string[]) => JSON.parse(readFileSync(join(dir, ...parts), 'utf8'))
+// The reference fixtures use the predecessor's identifier prefix. Set REFERENCE_ID_PREFIX to it
+// (for example 'old-name-') and quoted identifiers starting with it are read as 'openpassword-'.
+const prefix = process.env.REFERENCE_ID_PREFIX ?? ''
+const read = (...parts: string[]) => {
+  const text = readFileSync(join(dir, ...parts), 'utf8')
+  return JSON.parse(prefix ? text.replaceAll('"' + prefix, '"openpassword-') : text)
+}
 let batch = 0,
   requests = 0
 for (const file of readdirSync(join(dir, 'batch-view-1')).filter((f) => f.startsWith('fixture-'))) {

@@ -1,4 +1,4 @@
-Portions adapted from zeointegrations. Copyright 2026 Rod Rivera and Zero Employee Organizations.
+Portions adapted from an earlier integrations library. Copyright 2026 Rod Rivera and Zero Employee Organizations.
 
 MIT License
 

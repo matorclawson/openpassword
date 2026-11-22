@@ -1573,8 +1573,8 @@ export function service(
       c = conn(g.tenant, g.connection_id)
     checkDispatch(g.tenant, c.provider)
     attribute(g, c, 'youtube.upload.relay')
-    const location = String(r.headers['x-zeo-upload-link'] || ''),
-      proof = String(r.headers['x-zeo-relay-seal'] || '')
+    const location = String(r.headers['x-openpassword-upload-link'] || ''),
+      proof = String(r.headers['x-openpassword-relay-seal'] || '')
     const u =
       get(
         'SELECT * FROM uploads WHERE proof=? AND link=? AND actor=? AND conn=? AND revision=? AND expires>?',
@@ -1585,11 +1585,11 @@ export function service(
         c.revision,
         now(),
       ) ?? fail(403, 'Upload not authorized')
-    if (!c.active || r.headers['x-zeo-connection'] !== c.id) fail(403, 'Upload connection changed')
-    const range = String(r.headers['x-zeo-content-range'] || ''),
+    if (!c.active || r.headers['x-openpassword-connection'] !== c.id) fail(403, 'Upload connection changed')
+    const range = String(r.headers['x-openpassword-content-range'] || ''),
       match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range)
     const data = r.body ?? Buffer.alloc(0),
-      mime = r.headers['x-zeo-content-type'] || u.mime
+      mime = r.headers['x-openpassword-content-type'] || u.mime
     const probe = range === 'bytes */' + u.size
     if (
       !Buffer.isBuffer(data) ||

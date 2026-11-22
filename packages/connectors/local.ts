@@ -133,7 +133,7 @@ type CellFact = {
   metadata_sha256: string
   attachments_sha256: string
 }
-const semanticSchema = 'zeocore.notebook-semantics.v1'
+const semanticSchema = 'openpassword.notebook-semantics.v1'
 function stable(v: unknown) {
   return JSON.stringify(v, (_, x) =>
     x && typeof x === 'object' && !Array.isArray(x)

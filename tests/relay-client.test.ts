@@ -17,7 +17,7 @@ test('relay client probes after a lost acknowledgement and resumes after the acc
     assert.equal(url, 'http://localhost/v1/youtube/uploads:relay')
     const h = new Headers(o.headers)
     assert.equal(h.get('Authorization'), 'Bearer local')
-    ranges.push(h.get('x-zeo-content-range')!)
+    ranges.push(h.get('x-openpassword-content-range')!)
     if (ranges.length === 2) throw Error('lost')
     const body =
       ranges.length === 1
