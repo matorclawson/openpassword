@@ -13,7 +13,8 @@ NODE_PIN=v24.19.0
 expected=${1:-}
 [ -n "$expected" ] || { echo "package: usage: scripts/package.sh <expected-commit>" >&2; exit 2; }
 [ "$(uname -s)" = Linux ] || { echo "package: releases are built on Linux only" >&2; exit 1; }
-tar --version | head -1 | grep -q 'GNU tar' || { echo "package: GNU tar is required" >&2; exit 1; }
+tar_version=$(tar --version)
+grep -q 'GNU tar' <<<"$tar_version" || { echo "package: GNU tar is required" >&2; exit 1; }
 node_version=$(node -p process.version)
 [ "$node_version" = "$NODE_PIN" ] || { echo "package: Node $node_version is not the pinned $NODE_PIN" >&2; exit 1; }
 
@@ -24,7 +25,8 @@ want=$(git rev-parse --verify "$expected^{commit}")
 [ "$commit" = "$want" ] || { echo "package: HEAD $commit is not the expected commit $want" >&2; exit 1; }
 tree=$(git rev-parse "HEAD^{tree}")
 epoch=$(git log -1 --format=%ct)
-if git ls-files | grep -Eq '(^|/)\.env'; then echo "package: a tracked .env file exists" >&2; exit 1; fi
+tracked=$(git ls-files)
+if grep -Eq '(^|/)\.env' <<<"$tracked"; then echo "package: a tracked .env file exists" >&2; exit 1; fi
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 version=$(node -p "require('./package.json').version")
@@ -46,8 +48,9 @@ export SOURCE_DATE_EPOCH=$epoch
   npm prune --omit=dev
 )
 [ ! -e "$out/build/node_modules/playwright-core" ] || { echo "package: a development dependency survived the prune" >&2; exit 1; }
+source_listing=$(tar -tzf "$out/build/public/openpassword-source.tar.gz")
 for f in $(grep -o 'scripts/[a-z-]*\.sh' Makefile | sort -u); do
-  tar -tzf "$out/build/public/openpassword-source.tar.gz" | grep -qx "$f" \
+  grep -qx "$f" <<<"$source_listing" \
     || { echo "package: $f is missing from the corresponding-source archive" >&2; exit 1; }
 done
 
@@ -56,7 +59,7 @@ payload=(package.json package-lock.json tsconfig.json next.config.ts next-env.d.
 for p in "${payload[@]}"; do [ -e "$out/build/$p" ] || { echo "package: missing $p in the build" >&2; exit 1; }; done
 tar -C "$out/build" --exclude=.next/cache --exclude='.env*' --exclude='packages/*/node_modules' -cf - "${payload[@]}" | tar -xf - -C "$out/stage"
 rm -rf "$out/stage/.next/cache"
-if find "$out/stage" -name '.env*' | grep -q .; then echo "package: .env file in payload" >&2; exit 1; fi
+if [ -n "$(find "$out/stage" -name '.env*')" ]; then echo "package: .env file in payload" >&2; exit 1; fi
 
 # 3. Provenance.
 lock=$(sha package-lock.json)
