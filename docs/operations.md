@@ -83,4 +83,15 @@ Model usage is captured from JSON and streaming usage frames even without a tari
 
 ## Release package
 
-On a Linux host with Node 24, run `make verify`, then `make package` and `make checksum` from a clean checkout. This writes `dist-release/openpassword-<version>-<os>-<arch>.tar.gz`, its `.sha256` sidecar and `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256). Extract the archive into `/opt/openpassword/releases/<version>/`. The archive includes built output and installed dependencies, so it must be built on the target architecture. ffmpeg and Chromium are not included.
+On a Linux host with Node 24.19.0 (the release refuses any other version), check out the exact commit to release and run `make package COMMIT=<sha>`, then `make checksum`. `make package` refuses a dirty tree or a different HEAD, builds that commit in a scratch directory from `git archive`, keeps only production dependencies and the runtime files, and writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256, source epoch) and a completion marker. `make checksum` writes the `.sha256` sidecar only for an archive that matches its marker and `RELEASE.json`. The archive is deterministic given the same commit and toolchain. It includes built output and installed dependencies, so build it on the target architecture. ffmpeg and Chromium are not included.
+
+To install, with `VERSION` set to the version and the archive and its `.sha256` in the current directory:
+
+```sh
+sha256sum -c openpassword-$VERSION-linux-<arch>.tar.gz.sha256
+sudo mkdir -p /opt/openpassword/releases/$VERSION
+sudo tar -xzf openpassword-$VERSION-linux-<arch>.tar.gz -C /opt/openpassword/releases/$VERSION --no-same-owner
+sudo ln -sfn releases/$VERSION /opt/openpassword/current
+```
+
+The archive root is the release directory, so `server/main.ts` and `node_modules/next` sit directly under `/opt/openpassword/current`, the units' working directory. To roll back, point `current` at the previous release and restart the services.

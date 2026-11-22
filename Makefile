@@ -5,7 +5,7 @@ help:
 	@echo "make verify    Compile packages, check types, run tests and build Next.js"
 	@echo "make build     Build the production console and packages"
 	@echo "make start     Run the production console and broker"
-	@echo "make package   Archive a built, clean Linux tree into dist-release/"
+	@echo "make package COMMIT=<sha>  Build that exact commit and archive it into dist-release/"
 	@echo "make checksum  Write the .sha256 sidecar for the archive"
 setup:
 	npm ci
@@ -20,6 +20,7 @@ build:
 start:
 	npm start
 package:
-	sh scripts/package.sh
+	@test -n "$(COMMIT)" || { echo "usage: make package COMMIT=<sha>" >&2; exit 2; }
+	bash scripts/package.sh "$(COMMIT)"
 checksum:
-	sh scripts/checksum.sh
+	bash scripts/checksum.sh
