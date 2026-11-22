@@ -67,7 +67,7 @@ test('OAuth state is session bound and consumed once; approved upload session is
   const op = 'youtube.video.upload_session.create',
     grant = { label: 'Video device', connection_id: c, operations: [op], hours: 1 }
   const bearer = (await post('/admin/grants', grant, h)).json().access_token,
-    auth = { 'zeoconnect-protocol-version': '1', authorization: 'Bearer ' + bearer }
+    auth = { 'openpassword-protocol-version': '1', authorization: 'Bearer ' + bearer }
   const body = {
     connection_id: c,
     operation_id: op,

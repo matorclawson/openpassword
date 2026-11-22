@@ -76,7 +76,7 @@ test('organization, personal ownership, named shares and downstream revocation',
   const capabilities = (access: string) =>
     api.inject({
       url: '/v1/capabilities',
-      headers: { authorization: 'Bearer ' + access, 'zeoconnect-protocol-version': '1' },
+      headers: { authorization: 'Bearer ' + access, 'openpassword-protocol-version': '1' },
     })
   const shared = await capabilities(device.access_token)
   assert.equal(shared.statusCode, 200)
@@ -111,7 +111,7 @@ test('recipient, organization and credential expiry independently cap existing a
       method: 'POST',
       url,
       payload,
-      headers: { cookie, 'zeoconnect-protocol-version': '1' },
+      headers: { cookie, 'openpassword-protocol-version': '1' },
     })
   const adminToken = readFileSync(join(dir, 'operator.token'), 'utf8')
   const login = async (token: string) =>

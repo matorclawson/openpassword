@@ -26,7 +26,7 @@ test('relay client probes after a lost acknowledgement and resumes after the acc
           ? { status: 308, range: 'bytes=0-4' }
           : { status: 201, resource: { id: 'example' } }
     if (ranges.length === 4) assert.equal(await (o.body as Blob).text(), ' world')
-    return Response.json(body, { headers: { 'zeoconnect-protocol-version': '1' } })
+    return Response.json(body, { headers: { 'openpassword-protocol-version': '1' } })
   })
   const client = new OpenPassword('http://localhost', 'local')
   await assert.rejects(

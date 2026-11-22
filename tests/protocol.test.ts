@@ -13,8 +13,8 @@ test('wire protocol version precedes request body parsing', async (t) => {
   })
   for (const [headers, reason] of [
     [{}, 'header_missing'],
-    [{ 'zeoconnect-protocol-version': '2' }, 'version_unsupported'],
-    [{ 'zeoconnect-protocol-version': '1, 1' }, 'header_duplicated'],
+    [{ 'openpassword-protocol-version': '2' }, 'version_unsupported'],
+    [{ 'openpassword-protocol-version': '1, 1' }, 'header_duplicated'],
   ] as const) {
     const res = await api.inject({
       method: 'POST',
@@ -24,6 +24,6 @@ test('wire protocol version precedes request body parsing', async (t) => {
     })
     assert.equal(res.statusCode, 426)
     assert.equal(res.json().reason, reason)
-    assert.equal(res.headers['zeoconnect-protocol-version'], '1')
+    assert.equal(res.headers['openpassword-protocol-version'], '1')
   }
 })

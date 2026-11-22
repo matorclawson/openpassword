@@ -48,7 +48,7 @@ test('HubSpot issue stages bound images, approves once, substitutes the returned
       url,
       payload,
       headers: {
-        'zeoconnect-protocol-version': '1',
+        'openpassword-protocol-version': '1',
         cookie,
         authorization: 'Bearer ' + bearer,
         ...headers,

@@ -21,7 +21,7 @@ for (const file of ['1.4.0-annex-a.json', '1.4.1-annex-b.json']) {
     const answer = admitGithub(
       c.instance.operation_id,
       JSON.stringify(c.instance),
-      c.schema === 'zeoconnect:1.4.1:request',
+      /:1\.4\.1:request$/.test(c.schema),
     )
     assert.equal(answer.status === 503, c.valid, c.name)
     requests++

@@ -361,12 +361,12 @@ export function service(
   )
   const attempts = new Map<string, { count: number; until: number }>()
   api.addHook('onRequest', async (r, reply) => {
-    reply.header('OpenPassword-Protocol-Version', '1').header('ZEOconnect-Protocol-Version', '1')
+    reply.header('OpenPassword-Protocol-Version', '1')
     if (
       r.url.startsWith('/v1/') &&
       !['/v1/chat/completions', '/v1/models', '/v1/delegation/check'].includes(r.url.split('?')[0])
     ) {
-      const names = ['openpassword-protocol-version', 'zeoconnect-protocol-version']
+      const names = ['openpassword-protocol-version']
       const values = names.flatMap(
         (key) =>
           r.raw.headersDistinct?.[key] ??
@@ -1342,7 +1342,7 @@ export function service(
     })
   })
   const fenced = (r: FastifyRequest) =>
-    String(r.headers['openpassword-capabilities'] ?? r.headers['zeoconnect-capabilities'] ?? '')
+    String(r.headers['openpassword-capabilities'] ?? '')
       .split(',')
       .map((x) => x.trim())
       .includes('expected-binding')

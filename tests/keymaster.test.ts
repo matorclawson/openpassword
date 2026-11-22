@@ -32,7 +32,7 @@ test('GitHub admission recognizes literal operation paths, capability, stops and
     api.inject({
       method: 'POST',
       url: '/v1/operations/github.ref.read:invoke',
-      headers: { 'content-type': 'application/json', 'zeoconnect-capabilities': cap },
+      headers: { 'content-type': 'application/json', 'openpassword-capabilities': cap },
       payload: p,
     })
   assert.equal((await post('')).statusCode, 422)
