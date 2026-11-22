@@ -1,0 +1,26 @@
+{
+  "name": "@openpassword/connectors",
+  "version": "0.2.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./dist/index.js",
+    "./x-thread": "./dist/x-thread.js",
+    "./local": "./dist/local.js",
+    "./webhooks": "./dist/webhooks.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --declaration --skipLibCheck --strict --outDir dist index.ts x-thread.ts local.ts webhooks.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  }
+}

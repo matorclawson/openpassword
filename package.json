@@ -1,0 +1,52 @@
+{
+  "name": "openpassword",
+  "version": "0.2.0",
+  "description": "",
+  "scripts": {
+    "dev": "concurrently -k \"node --import tsx server/main.ts\" \"next dev -H localhost\"",
+    "build": "next build --webpack",
+    "start": "concurrently -k \"node --import tsx server/main.ts\" \"next start -H localhost\"",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run packages && npm run typecheck && npm test && npm run build",
+    "packages": "npm run build -w @openpassword/client -w @openpassword/connectors -w @openpassword/schemas -w @openpassword/cli",
+    "prebuild": "node --experimental-strip-types scripts/source.ts",
+    "test:browser": "node --import tsx scripts/browser.ts",
+    "predev": "node --experimental-strip-types scripts/source.ts",
+    "test:reference": "node --import tsx scripts/reference-tests.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.3.5",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "ajv": "^8.20.0",
+    "concurrently": "^10.0.7",
+    "fastify": "^5.12.8",
+    "jose": "^6.2.18",
+    "jsonc-parser": "^3.3.1",
+    "lucide-react": "^1.77.0",
+    "next": "^16.4.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sharp": "0.35.5",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "zod": "^4.6.7"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "playwright-core": "^1.65.1"
+  }
+}

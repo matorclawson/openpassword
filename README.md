@@ -1,1 +1,140 @@
-# openpassword
+# OpenPassword
+
+**An open-source credential manager for model routing and agentic tools.**
+
+Give Claude Code permission to read a GitHub account for a week. Let an application call a specific model through your OpenAI account with a spending limit. In both cases, the provider key stays on your server. Each client gets its own access token, permissions, and usage history.
+
+OpenPassword runs on your laptop or a Linux server. It exposes two interfaces: an **OpenAI-compatible Chat Completions API** for model calls and a **Model Context Protocol (MCP) server** for agents that use tools.
+
+| I want to… | Start here |
+| --- | --- |
+| Try OpenPassword on my machine | [Start locally](#start-locally) |
+| Give Codex or Claude Code a tool | [Connect an agent](#connect-an-agent) |
+| Make a model request from my app | [Route a model request](#route-a-model-request) |
+| Run the server in the cloud and the agent on my laptop | [Deploy on a server](#deploy-on-a-server) |
+
+## Start locally
+
+From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, and **Make** installed:
+
+```sh
+make setup
+make dev
+```
+
+1. Open **http://localhost:3000**. The first visit shows **Create your administrator account**.
+2. Read the setup code on the computer running OpenPassword. The startup log prints the path. For the default installation, run `cat ~/.openpassword/operator.token` in a second terminal.
+3. Enter the code, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
+
+You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Choose either walkthrough below.
+
+## Connect an agent
+
+This walkthrough lets a coding agent read your GitHub profile. You need a GitHub token that can read the authenticated user, plus Codex or Claude Code installed on the machine where you run the agent.
+
+**1. Connect GitHub.** In **Integrations → GitHub → Connect account**, give the connection a recognizable name, enter your GitHub username as the account identity, and enter the provider token. Choose **Me** to keep the connection private. Save it.
+
+**2. Pair the agent.** In a second terminal, from the OpenPassword project root on the agent’s machine, run:
+
+```sh
+export OPENPASSWORD_BROKER=http://localhost:3000
+export OPENPASSWORD_AGENT=my-codex
+node packages/cli/dist/index.js pair
+```
+
+For Claude Code, use `my-claude` as the agent name. For a hosted installation, use your server’s HTTPS origin as the broker address. Leave the pairing command running. Open the URL it prints, choose **Issue grant**, select your GitHub connection and the single operation `github.user.get`, enter the pairing code, and choose an expiry. The terminal confirms pairing.
+
+**3. Register the tool server.** Run the command for your client in the same terminal, after pairing finishes.
+
+**Codex**
+
+```sh
+codex mcp add openpassword \
+  --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
+  --env OPENPASSWORD_AGENT="$OPENPASSWORD_AGENT" \
+  -- node "$PWD/packages/cli/dist/index.js" mcp
+```
+
+**Claude Code**
+
+```sh
+claude mcp add --scope user --transport stdio openpassword \
+  --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
+  --env OPENPASSWORD_AGENT="$OPENPASSWORD_AGENT" \
+  -- node "$PWD/packages/cli/dist/index.js" mcp
+```
+
+**4. Make the first call.** Open your coding agent and ask:
+
+> Use OpenPassword to list my connections and permitted operations. Then use my GitHub connection to tell me my GitHub username.
+
+The agent can discover and invoke the read operation you selected. Open **Consumption** to see the upstream request. To check pairing directly from the terminal, run `node packages/cli/dist/index.js connections`. To end access, revoke the grant in **Access grants**.
+
+The MCP connection gives the agent tools. The coding client continues to use its own configured model for inference.
+
+## Route a model request
+
+OpenPassword routes each model grant to **one provider connection and one exact model ID**. Supported upstreams are OpenAI, OpenRouter, and Moonshot. Clients can discover their authorized model through `GET /v1/models` and use `POST /v1/chat/completions` for text, streaming responses, and tool calls.
+
+1. Add your provider under **Connections**. For this example, choose OpenAI and enter your provider API key.
+2. In **Access grants → Issue grant**, name the client, select the connection, and enable `openai.chat`. Under **Standing model access**, enter a model ID available to your provider account, permit at least one request, and allow at least 32 output tokens. You can also set a monetary budget using the provider’s rates.
+3. Leave the pairing code blank, issue the grant, and copy its **access token**. The following Python 3 example prompts for that token without echoing it, discovers the authorized model, and makes one request.
+
+```python
+import getpass
+import json
+import os
+import urllib.request
+
+base = os.environ.get("OPENPASSWORD_BROKER", "http://localhost:3000").rstrip("/")
+token = getpass.getpass("OpenPassword access token: ")
+
+def api(path, body=None):
+    request = urllib.request.Request(
+        base + "/v1/" + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return json.load(response)
+
+model = api("models")["data"][0]["id"]
+reply = api("chat/completions", {
+    "model": model,
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+    "max_tokens": 32,
+})
+print(reply["choices"][0]["message"]["content"])
+```
+
+A successful call prints the model’s reply. Open **Consumption** to see the model, request, and reported token counts. With pricing configured, you also see estimated spend. Requests without pricing are marked **Unpriced**. For a long-running client, use the grant’s refresh token to renew access; the paired CLI handles renewal automatically.
+
+## Deploy on a server
+
+The web console and broker run on the server. Codex, Claude Code, or your application can run on another machine. One HTTPS domain serves the console, pairing flow, and API.
+
+1. On the server, run `make setup` and `make build`. Set `OPENPASSWORD_WEB_ORIGIN` to your public origin, such as `https://vault.example.com`, and run `make start` with that setting. For persistent Linux services, use the [systemd units](deploy/systemd/).
+2. Point your HTTPS reverse proxy at the web service on port **3000**. It forwards API calls to the broker on loopback port **4141**. Read the initial setup code on the server. With the supplied systemd units, use `sudo cat /var/lib/openpassword/operator.token`.
+3. On your laptop, run `make setup` in a local copy of the project to build the agent CLI. Follow [Connect an agent](#connect-an-agent), using `https://vault.example.com` as `OPENPASSWORD_BROKER` for **both pairing and MCP registration**.
+
+For a private trial over SSH, forward the console with `ssh -N -L 3000:127.0.0.1:3000 user@server` and use the local quickstart URLs while the tunnel is open.
+
+## Share access and track usage
+
+| Control | How it works |
+| --- | --- |
+| Ownership | Administrators manage organization credentials. Personal credentials start private. Their owners can rotate them and share access with named people or the whole workspace. |
+| Expiry | Set a deadline for the credential itself, an individual recipient, or organization-wide sharing. A grant ends at the earliest applicable deadline. |
+| Approvals | For a tool call requiring approval, review the operation and arguments in **Approvals**. The client retries with the same request key to obtain the result. |
+| Consumption | Inspect upstream requests by credential or agent grant. Revocation stops future access and preserves the request history. |
+| Human sign-in | Link Google, GitHub, Apple, or a password under **Workspace → My profile**. Configure installation-wide sign-in providers under **Workspace → Authentication**. |
+
+## Operate and contribute
+
+OpenPassword stores encrypted provider credentials, grants, and usage history in SQLite. The encryption key lives in a separate file on the server. For a restorable offline backup, stop the service and copy the **entire data directory**, including `master.key`, preserving permissions. The default location is `~/.openpassword`; use `OPENPASSWORD_HOME` to choose another.
+
+- [Provider and deployment reference](docs/operations.md) — OAuth callbacks, connector setup, backups, service configuration, and integration workflows.
+- [Contributing](CONTRIBUTING.md) — contribution terms and how to verify a change. Run `make verify` to build the packages, check types, run tests, and build the console.
+- [Changelog](CHANGELOG.md) — project release history.
+
+The server and console use [AGPL-3.0-only](LICENSE). The [client](packages/client/LICENSE), [CLI](packages/cli/LICENSE), [connectors](packages/connectors/LICENSE), and [schemas](packages/schemas/LICENSE) use the MIT license.

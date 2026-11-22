@@ -155,3 +155,17 @@ vite.config.ts.timestamp-*
 .nx/cache
 .nx/workspace-data
 .nx/migrate-runs
+
+
+# OpenPassword project rules
+node_modules/
+.next/
+**/dist/
+*.tsbuildinfo
+*.sqlite*
+.env*
+.openpassword/
+*.key
+*.token
+*.tgz
+public/openpassword-source.tar.gz*
