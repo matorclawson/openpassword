@@ -52,3 +52,28 @@ test('percent script notebook round trip preserves cell kind and source', () => 
   const source = '# %% [markdown]\n# Introduction\n# %%\nprint("example")\n'
   assert.equal(notebookToScript(scriptToNotebook(source)), source)
 })
+test('notebook semantic receipts retain cell IDs, attachments and unknown metadata', async () => {
+  const { notebookSemantics, compareNotebookSemantics } =
+    await import('../packages/connectors/local.ts')
+  const source = {
+    metadata: { jupytext: { text_representation: { jupytext_version: 'one' } } },
+    cells: [
+      {
+        id: 'x',
+        cell_type: 'code',
+        metadata: { tags: ['lecture'] },
+        source: ['x=1\r\n'],
+        outputs: [],
+        attachments: {},
+      },
+    ],
+  }
+  const rhs = structuredClone(source)
+  rhs.metadata.jupytext.text_representation.jupytext_version = 'two'
+  rhs.cells[0].source = ['x=1\n']
+  const left = notebookSemantics(JSON.stringify(source), 'ipynb'),
+    compare = () => compareNotebookSemantics(left, notebookSemantics(JSON.stringify(rhs), 'ipynb'))
+  assert.equal(compare().equivalent, true)
+  rhs.cells[0].id = 'y'
+  assert.equal(compare().mismatch, 'CELL_0:cell_id')
+})

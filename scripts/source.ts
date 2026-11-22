@@ -5,6 +5,7 @@ import { join } from 'node:path'
 const inputs = [
   'README.md',
   'CHANGELOG.md',
+  'THIRD-PARTY-NOTICES.txt',
   'CONTRIBUTING.md',
   'PARITY.md',
   'Makefile',
@@ -25,12 +26,21 @@ function collect(dir: string) {
       if (!['dist', 'node_modules'].includes(entry.name)) collect(path)
     } else if (
       entry.isFile() &&
-      (/\.(ts|tsx|css|json|woff2|txt|md)$/.test(entry.name) || entry.name === 'LICENSE')
+      (/\.(ts|tsx|css|json|woff2|txt|md|service)$/.test(entry.name) || entry.name === 'LICENSE')
     )
       inputs.push(path)
   }
 }
-for (const dir of ['app', 'server', 'packages', 'scripts', 'tests', 'examples', 'public/fonts'])
+for (const dir of [
+  'app',
+  'server',
+  'packages',
+  'scripts',
+  'tests',
+  'examples',
+  'deploy',
+  'public/fonts',
+])
   collect(dir)
 const tmp = 'public/openpassword-source.tar.gz.tmp'
 execFileSync('tar', ['-czf', tmp, '--', ...inputs.sort()])

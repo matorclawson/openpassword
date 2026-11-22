@@ -1,3 +1,12 @@
+import { issueFiles, issueFolder, bundleOperation } from './issue-files.ts'
+import { templatePlan, writeTemplate } from './template.ts'
+import { templateOps } from './template-preview.ts'
+import { approvalSnapshot, snapshotDigest } from './snapshot.ts'
+import { inbound } from './inbound.ts'
+import { batchView } from './batch-view.ts'
+import { loopsPacer } from './loops-pacing.ts'
+import { billing, StreamUsage } from './billing.ts'
+import { keymaster } from './keymaster.ts'
 import { delegation } from './delegation.ts'
 import { scopedToken } from './provider-auth.ts'
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -9,7 +18,7 @@ import { uploadRequest } from './youtube.ts'
 import { gmailPage, GmailError } from './gmail.ts'
 import { Readable } from 'node:stream'
 import { modelLease, chat } from './models.ts'
-import { authorize, exchange, oauthConfig } from './oauth.ts'
+import { authorize, exchange, oauthConfig, notionAuthorize, notionToken } from './oauth.ts'
 import Fastify, { type FastifyRequest } from 'fastify'
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
@@ -41,7 +50,19 @@ export function service(
 ) {
   const api = Fastify({ bodyLimit: 65536, routerOptions: { maxParamLength: 200 } })
   const { db, admin, seal, open } = store(dir)
-  const batch = batches(db, origin, send, seal)
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS loops_created(conn TEXT,revision INTEGER,kind TEXT,remote TEXT,child TEXT,until INTEGER,PRIMARY KEY(conn,revision,kind,remote));',
+  )
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS threads_publications(creation TEXT PRIMARY KEY,execution TEXT NOT NULL)',
+  )
+  const issues = issueFiles(db, seal, open)
+  const meter = billing(db)
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS model_adjustments(execution TEXT PRIMARY KEY,evidence TEXT,at INTEGER); UPDATE model_charges SET state='held' WHERE state='reserved'",
+  )
+  const pacedLoops = loopsPacer(send)
+  const batch = batches(db, origin, pacedLoops, seal)
   const get = (sql: string, ...p: (string | number)[]) =>
     db.prepare(sql).get(...p) as Row | undefined
   const all = (sql: string, ...p: (string | number)[]) => db.prepare(sql).all(...p) as Row[]
@@ -76,6 +97,8 @@ export function service(
   }
   db.exec(`CREATE TABLE IF NOT EXISTS members(id TEXT PRIMARY KEY,tenant TEXT,label TEXT,role TEXT,token TEXT UNIQUE,active INTEGER);
     CREATE TABLE IF NOT EXISTS session_members(session TEXT PRIMARY KEY,member TEXT);
+    CREATE TABLE IF NOT EXISTS operation_stops(tenant TEXT,op TEXT,PRIMARY KEY(tenant,op));
+    CREATE TABLE IF NOT EXISTS provider_stops(tenant TEXT,provider TEXT,PRIMARY KEY(tenant,provider));
     CREATE TABLE IF NOT EXISTS stops(tenant TEXT PRIMARY KEY,paused INTEGER)`)
   function session(r: FastifyRequest) {
     const cookie = (r.headers.cookie || '')
@@ -135,7 +158,7 @@ export function service(
     reply.header('ZEOconnect-Protocol-Version', '1')
     if (
       r.url.startsWith('/v1/') &&
-      !['/v1/chat/completions', '/v1/models'].includes(r.url.split('?')[0])
+      !['/v1/chat/completions', '/v1/models', '/v1/delegation/check'].includes(r.url.split('?')[0])
     ) {
       const values =
         r.raw.headersDistinct?.['zeoconnect-protocol-version'] ??
@@ -159,12 +182,21 @@ export function service(
     if (r.headers.origin && r.headers.origin !== origin) fail(403, 'Origin refused')
     if (
       !['/v1/youtube/uploads:relay', '/delegate/confirm'].includes(r.url) &&
+      !r.url.startsWith('/hooks/') &&
+      r.url.split('?')[0] !== '/v1/hubspot/issue-assets' &&
       ['POST', 'PATCH', 'PUT'].includes(r.method) &&
       r.headers['content-type'] &&
       !r.headers['content-type'].startsWith('application/json')
     )
       fail(415, 'Use JSON')
-    if (['/admin/login', '/v1/device/authorizations', '/v1/device/token'].includes(r.url)) {
+    if (
+      [
+        '/admin/login',
+        '/v1/device/authorizations',
+        '/v1/device/token',
+        '/v1/delegation/check',
+      ].includes(r.url)
+    ) {
       const k = r.ip + r.url,
         row = attempts.get(k)
       if (!row || row.until <= now()) attempts.set(k, { count: 1, until: now() + 60000 })
@@ -183,6 +215,11 @@ export function service(
     })
   })
   api.addHook('onClose', async () => db.close())
+  keymaster(
+    api,
+    (r) => ({ tenant: grant(r).tenant }),
+    (t) => !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
+  )
   delegation(api, db, origin, session, seal, open, event)
   api.get('/health', async () => ({ status: 'ok' }))
   api.post('/admin/login', async (r, reply) => {
@@ -271,6 +308,17 @@ export function service(
     return {
       tenant: t,
       role: s.role,
+      operation_stops: all('SELECT op FROM operation_stops WHERE tenant=? ORDER BY op', t).map(
+        (x) => x.op,
+      ),
+      provider_stops: all(
+        'SELECT provider FROM provider_stops WHERE tenant=? ORDER BY provider',
+        t,
+      ).map((r) => r.provider),
+      billing: all(
+        "SELECT g.label,b.available,b.tariff,COALESCE(SUM(c.charged),0) AS spent,COALESCE(SUM(CASE WHEN c.state IN ('reserved','held') THEN c.reserved ELSE 0 END),0) AS held FROM model_budgets b JOIN grants g ON b.grant_id=g.id LEFT JOIN model_charges c ON c.grant_id=g.id WHERE g.tenant=? GROUP BY b.grant_id",
+        t,
+      ),
       paused: !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
       items: all('SELECT id,title,username,updated FROM items WHERE tenant=? ORDER BY title', t),
       apps:
@@ -301,7 +349,13 @@ export function service(
           : all(
               "SELECT id,actor,conn,op,preview,created FROM runs WHERE tenant=? AND state='pending' ORDER BY created",
               t,
-            ).map((x) => ({ ...x, preview: open(x.preview, x.id + '/preview') })),
+            ).map((x) => ({
+              ...x,
+              preview:
+                x.op === 'loops.contacts.import_chunk'
+                  ? batchView(db, get('SELECT * FROM batches WHERE approval=?', x.id)!)
+                  : open(x.preview, x.id + '/preview'),
+            })),
       events: all(
         'SELECT action,subject,at,actor FROM events WHERE tenant=? ORDER BY id DESC LIMIT 100',
         t,
@@ -344,7 +398,89 @@ export function service(
     })
     return { paused }
   })
-  function checkDispatch(tenant: string) {
+  api.get('/admin/billing/holds', async (r) => {
+    const s = session(r)
+    if (s.role !== 'owner') fail(403, 'Owner required')
+    return all(
+      "SELECT c.execution,g.label,c.reserved,c.created FROM model_charges c JOIN grants g ON c.grant_id=g.id WHERE g.tenant=? AND c.state='held' ORDER BY c.created",
+      s.tenant,
+    )
+  })
+  api.post('/admin/billing/holds/:id', async (r) => {
+    const s = session(r)
+    if (s.role !== 'owner') fail(403, 'Owner required')
+    const b = z
+      .object({
+        actual_micro_usd: z.number().int().min(0).max(1000000000000),
+        evidence_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict()
+      .parse(r.body)
+    return tx(() => {
+      const c =
+        get(
+          "SELECT c.* FROM model_charges c JOIN grants g ON c.grant_id=g.id WHERE g.tenant=? AND c.execution=? AND c.state='held'",
+          s.tenant,
+          id(r),
+        ) ?? fail(409, 'Charge unavailable')
+      run(
+        "UPDATE model_charges SET state='reconciled',charged=? WHERE execution=?",
+        b.actual_micro_usd,
+        c.execution,
+      )
+      run(
+        'UPDATE model_budgets SET available=available+?-? WHERE grant_id=?',
+        c.reserved,
+        b.actual_micro_usd,
+        c.grant_id,
+      )
+      run('INSERT INTO model_adjustments VALUES(?,?,?)', c.execution, b.evidence_sha256, now())
+      event(s.tenant, 'Model charge reconciled', c.execution)
+      return { state: 'reconciled', charged: b.actual_micro_usd }
+    })
+  })
+  api.post('/admin/dispatch/:provider', async (r) => {
+    const s = session(r)
+    if (s.role !== 'owner') fail(403, 'Owner required')
+    const p = (r.params as { provider: string }).provider
+    if (!Object.hasOwn(providers, p)) fail(404, 'Unknown provider')
+    const { paused } = z.object({ paused: z.boolean() }).strict().parse(r.body)
+    return tx(() => {
+      if (paused) run('INSERT OR IGNORE INTO provider_stops VALUES(?,?)', s.tenant, p)
+      else run('DELETE FROM provider_stops WHERE tenant=? AND provider=?', s.tenant, p)
+      event(s.tenant, paused ? 'Provider dispatch paused' : 'Provider dispatch resumed', p)
+      return { provider: p, paused }
+    })
+  })
+  api.post('/admin/dispatch/:provider/:operation', async (r) => {
+    const s = session(r)
+    if (s.role !== 'owner') fail(403, 'Owner required')
+    const { provider, operation } = r.params as { provider: string; operation: string }
+    if (
+      !Object.hasOwn(providers, provider) ||
+      !providers[provider].actions.some((a) => a.id === operation)
+    )
+      fail(404, 'Unknown operation')
+    const { paused } = z.object({ paused: z.boolean() }).strict().parse(r.body)
+    return tx(() => {
+      if (paused) run('INSERT OR IGNORE INTO operation_stops VALUES(?,?)', s.tenant, operation)
+      else run('DELETE FROM operation_stops WHERE tenant=? AND op=?', s.tenant, operation)
+      event(
+        s.tenant,
+        paused ? 'Operation dispatch paused' : 'Operation dispatch resumed',
+        operation,
+      )
+      return { operation, paused }
+    })
+  })
+  function checkDispatch(tenant: string, provider: string, operation?: string) {
+    if (
+      operation &&
+      get('SELECT op FROM operation_stops WHERE tenant=? AND op=?', tenant, operation)
+    )
+      fail(423, 'Operation dispatch paused')
+    if (get('SELECT provider FROM provider_stops WHERE tenant=? AND provider=?', tenant, provider))
+      fail(423, 'Provider dispatch paused')
     if (get('SELECT paused FROM stops WHERE tenant=?', tenant)?.paused)
       fail(423, 'Workspace dispatch paused')
   }
@@ -415,6 +551,76 @@ export function service(
   db.exec(
     'CREATE TABLE IF NOT EXISTS oauth_states(id TEXT PRIMARY KEY,session TEXT,tenant TEXT,expires INTEGER,envelope TEXT)',
   )
+  const notionCallback = origin + '/api/oauth/notion/callback'
+  api.post('/admin/oauth/notion', async (r) => {
+    const s = session(r),
+      b = oauthConfig
+        .pick({ label: true, client_id: true, client_secret: true })
+        .strict()
+        .parse(intakeBody(r, 'client_secret')),
+      state = opaque(),
+      id = digest(state)
+    run('DELETE FROM oauth_states WHERE expires<=?', now())
+    run(
+      'INSERT INTO oauth_states VALUES(?,?,?,?,?)',
+      id,
+      s.token,
+      s.tenant,
+      now() + 600000,
+      seal({ ...b, provider: 'notion' }, id),
+    )
+    return { url: notionAuthorize(b.client_id, state, notionCallback) }
+  })
+  api.get('/oauth/notion/callback', async (r, reply) => {
+    const s = session(r)
+    if (s.role === 'viewer') fail(403, 'Editor required')
+    const { code, state } = z
+      .object({ code: z.string().min(1).max(4000), state: name })
+      .parse(r.query)
+    const key = digest(state),
+      row =
+        get(
+          'SELECT * FROM oauth_states WHERE id=? AND session=? AND tenant=? AND expires>?',
+          key,
+          s.token,
+          s.tenant,
+          now(),
+        ) ?? fail(400, 'Authorization expired')
+    const b = open(row.envelope, key)
+    if (b.provider !== 'notion') fail(400, 'Wrong authorization provider')
+    if (!run('DELETE FROM oauth_states WHERE id=?', key).changes) fail(400, 'Authorization expired')
+    const token = await notionToken(
+      b.client_id,
+      b.client_secret,
+      { grant_type: 'authorization_code', code, redirect_uri: notionCallback },
+      send,
+    )
+    if (!token.workspace_id) fail(400, 'Notion workspace unavailable')
+    const live = session(r)
+    if (live.tenant !== s.tenant || live.role === 'viewer') fail(403, 'Workspace changed')
+    const c = 'con_' + randomUUID()
+    tx(() => {
+      run(
+        'INSERT INTO connections VALUES(?,?,?,?,?,1,?,1)',
+        c,
+        s.tenant,
+        'notion',
+        b.label,
+        token.workspace_id!,
+        seal(
+          {
+            ...b,
+            ...token,
+            expires: token.expires_in ? now() + token.expires_in * 1000 : Number.MAX_SAFE_INTEGER,
+          },
+          c,
+        ),
+      )
+      run('INSERT INTO resources VALUES(?,?)', c, '[]')
+      event(s.tenant, 'Notion workspace connected', c)
+    })
+    return reply.redirect(origin + '/')
+  })
   const callback = origin + '/api/oauth/google/callback'
   api.post('/admin/oauth/google', async (r) => {
     const s = session(r),
@@ -447,6 +653,7 @@ export function service(
           s.tenant,
           now(),
         ) ?? fail(400, 'Authorization expired')
+      if (open(a.envelope, a.id).provider === 'notion') fail(400, 'Wrong authorization provider')
       run('DELETE FROM oauth_states WHERE id=?', a.id)
       return a
     })
@@ -494,28 +701,44 @@ export function service(
     return reply.redirect(origin + '/')
   })
   const refreshes = new Map<string, Promise<string>>()
-  async function credential(c: Row): Promise<string> {
+  async function credential(c: Row, force = false): Promise<string> {
     const value = open(c.secret, c.id)
-    if (typeof value === 'string') return scopedToken(c.provider, value, send)
-    if (value.expires > now() + 60000) return value.access_token
-    if (!value.refresh_token) return fail(409, 'Reconnect this Google account')
+    if (typeof value === 'string')
+      return scopedToken(
+        c.provider,
+        value,
+        send,
+        c.provider === 'bluesky' && c.identity.startsWith('did:') ? c.identity : undefined,
+      )
+    if (!force && value.expires > now() + 60000) return value.access_token
+    if (!value.refresh_token) return fail(409, 'Reconnect this account')
     const existing = refreshes.get(c.id)
     if (existing) return existing
     const pending = (async () => {
-      const next = await exchange(
-        {
-          client_id: value.client_id,
-          client_secret: value.client_secret,
-          refresh_token: value.refresh_token,
-          grant_type: 'refresh_token',
-        },
-        send,
-      )
+      const next =
+        c.provider === 'notion'
+          ? await notionToken(
+              value.client_id,
+              value.client_secret,
+              { grant_type: 'refresh_token', refresh_token: value.refresh_token },
+              send,
+            )
+          : await exchange(
+              {
+                client_id: value.client_id,
+                client_secret: value.client_secret,
+                refresh_token: value.refresh_token,
+                grant_type: 'refresh_token',
+              },
+              send,
+            )
+      if ('workspace_id' in next && next.workspace_id && next.workspace_id !== c.identity)
+        fail(409, 'Workspace identity changed')
       const bundle = {
         ...value,
         ...next,
         refresh_token: next.refresh_token || value.refresh_token,
-        expires: now() + next.expires_in * 1000,
+        expires: next.expires_in ? now() + next.expires_in * 1000 : Number.MAX_SAFE_INTEGER,
       }
       if (
         !run(
@@ -535,6 +758,15 @@ export function service(
       refreshes.delete(c.id)
     }
   }
+  api.post('/admin/connections/:id/oauth-refresh', async (r) => {
+    const s = session(r),
+      c = conn(s.tenant, id(r))
+    if (!c.active || typeof open(c.secret, c.id) === 'string')
+      fail(409, 'Select an active OAuth connection')
+    await credential(c, true)
+    event(s.tenant, 'OAuth credential refreshed', c.id)
+    return { ok: true }
+  })
   db.exec(
     'CREATE TABLE IF NOT EXISTS resources(conn TEXT PRIMARY KEY,labels TEXT); CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,conn TEXT,actor TEXT,expires INTEGER,value TEXT)',
   )
@@ -549,10 +781,16 @@ export function service(
           now(),
         ) ?? fail(404, 'Artifact unavailable')
     if (!conn(g.tenant, a.conn).active) fail(404, 'Artifact unavailable')
+    const value = open(a.value, a.id)
+    if (value?.binary === true)
+      return reply
+        .type('application/octet-stream')
+        .header('Content-Disposition', 'attachment; filename="receipt"')
+        .send(Buffer.from(value.base64, 'base64'))
     return reply
       .type('application/json')
       .header('Content-Disposition', 'attachment; filename="gmail-page.json"')
-      .send(Buffer.from(open(a.value, a.id)))
+      .send(Buffer.from(value))
   })
   api.post('/admin/connections', async (r) => {
     const t = session(r).tenant,
@@ -675,12 +913,19 @@ export function service(
       if (b.draft_limit) {
         if (
           session(r).role !== 'owner' ||
-          !b.operations.includes('loops.newsletter.create_campaign')
+          !b.operations.some((x) =>
+            [
+              'loops.newsletter.create_campaign',
+              'hubspot.newsletter.update_draft',
+              'loops.newsletter.update_email_message',
+            ].includes(x),
+          )
         )
           fail(403, 'Owner and unsent draft operation required')
         run('INSERT INTO draft_limits VALUES(?,?,?)', g, b.draft_limit, expires)
       }
       if (b.model_lease) {
+        if (b.model_lease.tariff) meter.configure(g, b.model_lease.tariff)
         if (
           !['openai', 'openrouter', 'moonshot'].includes(c.provider) ||
           !b.operations.includes(c.provider + '.chat')
@@ -754,8 +999,33 @@ export function service(
   })
   api.post('/admin/approvals/:id', async (r) => {
     const t = session(r).tenant,
-      { approve } = z.object({ approve: z.boolean() }).parse(r.body)
+      { approve, shown_manifest_sha256 } = z
+        .object({
+          approve: z.boolean(),
+          shown_manifest_sha256: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .optional(),
+        })
+        .strict()
+        .parse(r.body)
     return tx(() => {
+      const batch = get('SELECT * FROM batches WHERE tenant=? AND approval=?', t, id(r))
+      if (batch) {
+        const view = batchView(db, batch)
+        if (view.manifest_sha256 !== shown_manifest_sha256) fail(409, 'Batch manifest changed')
+        if (view.state !== 'pending') fail(409, 'Batch approval unavailable')
+        if (approve) {
+          const live = conn(t, batch.conn),
+            m = JSON.parse(batch.manifest)
+          const resources = JSON.parse(
+            get('SELECT labels FROM resources WHERE conn=?', batch.conn)?.labels ?? '[]',
+          )
+          if (!live.active || live.revision !== batch.revision || !resources.includes(m.list_id))
+            fail(409, 'Batch connection changed')
+          checkDispatch(t, live.provider, 'loops.contacts.import_chunk')
+        }
+      }
       if (
         !run(
           "UPDATE runs SET state=? WHERE tenant=? AND id=? AND state='pending'",
@@ -765,11 +1035,12 @@ export function service(
         ).changes
       )
         fail(409, 'Approval unavailable')
-      run(
+      const decided = run(
         "UPDATE batches SET state=? WHERE approval=? AND state='pending'",
         approve ? 'approved' : 'denied',
         id(r),
       )
+      if (decided.changes) run('INSERT OR IGNORE INTO batch_decisions VALUES(?,?)', id(r), now())
       event(t, approve ? 'Request approved' : 'Request denied', id(r))
       return { ok: true }
     })
@@ -861,16 +1132,18 @@ export function service(
       b = chat.parse(r.body)
     if (!c.active || !JSON.parse(g.ops).includes(c.provider + '.chat'))
       fail(403, 'Model grant required')
-    checkDispatch(g.tenant)
+    checkDispatch(g.tenant, c.provider, c.provider + '.chat')
     const key =
       r.headers['idempotency-key'] === undefined
         ? randomUUID()
         : name.parse(r.headers['idempotency-key'])
     const ex = 'exec_' + randomUUID(),
       op = c.provider + '.chat'
+    let metered = false
     tx(() => {
       if (get('SELECT id FROM runs WHERE actor=? AND conn=? AND idem=?', g.id, c.id, key))
         fail(409, 'Model request already claimed')
+      metered = meter.claim(g.id, ex, b, Buffer.byteLength(canonical(b)))
       if (
         !run(
           'UPDATE model_leases SET remaining=remaining-1 WHERE grant_id=? AND model=? AND max_tokens>=? AND remaining>0',
@@ -898,9 +1171,10 @@ export function service(
     const abort = new AbortController()
     const onClose = () => abort.abort()
     reply.raw.once('close', onClose)
-    function finish(state: string) {
+    function finish(state: string, usage?: unknown) {
       reply.raw.removeListener('close', onClose)
       tx(() => {
+        meter.finish(ex, usage, state === 'confirmed')
         run('UPDATE runs SET state=? WHERE id=?', state, ex)
         event(g.tenant, op + ' · ' + state, ex)
       })
@@ -908,13 +1182,15 @@ export function service(
     try {
       const secret = await credential(c)
       grant(r)
-      checkDispatch(g.tenant)
+      checkDispatch(g.tenant, c.provider, c.provider + '.chat')
       if (conn(g.tenant, c.id).revision !== c.revision) fail(409, 'Connection changed')
       const response = await send(providers[c.provider].origin + '/chat/completions', {
         method: 'POST',
         redirect: 'error',
         headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' },
-        body: JSON.stringify(b),
+        body: JSON.stringify(
+          metered && b.stream ? { ...b, stream_options: { include_usage: true } } : b,
+        ),
         signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120000)]),
       })
       if (!response.ok || !response.body) {
@@ -928,6 +1204,7 @@ export function service(
       }
       if (b.stream) {
         async function* stream() {
+          const usage = new StreamUsage()
           let size = 0,
             done = false,
             tail = ''
@@ -941,16 +1218,17 @@ export function service(
                 break
               }
               grant(r)
-              checkDispatch(g.tenant)
+              checkDispatch(g.tenant, c.provider, c.provider + '.chat')
               tail = (tail + Buffer.from(v.value).toString()).slice(-256)
               size += v.value.length
               if (size > 8388608) throw Error('Stream limit')
+              if (metered) usage.feed(v.value)
               yield Buffer.from(v.value)
             }
           } finally {
             abort.abort()
             await reader.cancel().catch(() => {})
-            finish(done ? 'confirmed' : 'ambiguous')
+            finish(done ? 'confirmed' : 'ambiguous', usage.usage)
           }
         }
         return reply
@@ -971,7 +1249,7 @@ export function service(
         chunks.push(Buffer.from(v.value))
       }
       const result = JSON.parse(Buffer.concat(chunks).toString())
-      finish('confirmed')
+      finish('confirmed', result.usage)
       return result
     } catch {
       abort.abort()
@@ -982,6 +1260,11 @@ export function service(
   db.exec(
     'CREATE TABLE IF NOT EXISTS uploads(proof TEXT PRIMARY KEY,link TEXT,actor TEXT,conn TEXT,revision INTEGER,size INTEGER,mime TEXT,expires INTEGER)',
   )
+  if (!all('PRAGMA table_info(uploads)').some((col) => col.name === 'op')) {
+    db.exec('ALTER TABLE uploads ADD COLUMN op TEXT')
+    // Pre-upgrade relay proofs lack an operation binding and expire at upgrade.
+    run('DELETE FROM uploads WHERE op IS NULL')
+  }
   api.addContentTypeParser(
     'application/octet-stream',
     { parseAs: 'buffer', bodyLimit: 4194304 },
@@ -991,7 +1274,7 @@ export function service(
     if (!relay) fail(404, 'Relay unavailable')
     const g = grant(r),
       c = conn(g.tenant, g.connection_id)
-    checkDispatch(g.tenant)
+    checkDispatch(g.tenant, c.provider)
     const location = String(r.headers['x-zeo-upload-link'] || ''),
       proof = String(r.headers['x-zeo-relay-seal'] || '')
     const u =
@@ -1024,7 +1307,7 @@ export function service(
       fail(422, 'Invalid upload chunk')
     const token = await credential(c)
     grant(r)
-    checkDispatch(g.tenant)
+    checkDispatch(g.tenant, c.provider, u.op)
     if (conn(g.tenant, c.id).revision !== c.revision) fail(409, 'Connection changed')
     const response = await send(location, {
       method: 'PUT',
@@ -1052,6 +1335,51 @@ export function service(
       reason: null,
     }
   })
+  function issueScope(r: FastifyRequest, connection: string) {
+    const g = grant(r),
+      c = conn(g.tenant, g.connection_id)
+    const resources = JSON.parse(
+      get('SELECT labels FROM resources WHERE conn=?', c.id)?.labels ?? '[]',
+    )
+    if (
+      connection !== c.id ||
+      c.provider !== 'hubspot' ||
+      !c.active ||
+      !JSON.parse(g.ops).includes(bundleOperation) ||
+      !resources.includes(issueFolder)
+    )
+      fail(403, 'Issue publication unavailable')
+    checkDispatch(g.tenant, c.provider, bundleOperation)
+    return { tenant: g.tenant, actor: g.id, conn: c.id, revision: c.revision }
+  }
+  api.addContentTypeParser(
+    ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+    { parseAs: 'buffer', bodyLimit: 4194304 },
+    (_r, body, done) => done(null, body),
+  )
+  api.post('/v1/hubspot/issue-assets', { bodyLimit: 4194304 }, async (r, reply) => {
+    const q = z
+      .object({ connection_id: name, file_name: z.string(), sha256: z.string() })
+      .strict()
+      .parse(r.query)
+    const scope = issueScope(r, q.connection_id)
+    const file = await issues.stage(
+      scope,
+      r.body as Buffer,
+      q.file_name,
+      String(r.headers['content-type']),
+      q.sha256,
+      () => {
+        if (issueScope(r, q.connection_id).revision !== scope.revision)
+          fail(409, 'Connection changed')
+      },
+    )
+    return reply.code(201).send(file)
+  })
+  api.get('/v1/hubspot/issues/:id', async (r) => {
+    const q = z.object({ connection_id: name }).strict().parse(r.query)
+    return issues.inspect(issueScope(r, q.connection_id), id(r))
+  })
   api.post('/v1/operations/:operation', async (r) => {
     const g = grant(r),
       b = invocation.parse(r.body),
@@ -1068,7 +1396,7 @@ export function service(
       a.id.startsWith('loops.contacts.') &&
       ['loops.contacts.import_chunk', 'loops.contacts.inspect_batch'].includes(a.id)
     ) {
-      checkDispatch(g.tenant)
+      checkDispatch(g.tenant, c.provider, a.id)
       if (
         b.expect &&
         (!fenced(r) ||
@@ -1091,11 +1419,16 @@ export function service(
         token: await credential(c),
         reauthorize: () => {
           grant(r)
-          checkDispatch(g.tenant)
+          checkDispatch(g.tenant, c.provider, a.id)
           if (conn(g.tenant, c.id).revision !== c.revision) fail(409, 'Connection changed')
         },
       })
     }
+    if (
+      a.id === c.provider + '.chat' &&
+      get('SELECT grant_id FROM model_leases WHERE grant_id=?', g.id)
+    )
+      fail(409, 'Use the lease-aware chat endpoint for this grant')
     const old = get(
       'SELECT * FROM runs WHERE actor=? AND conn=? AND idem=?',
       g.id,
@@ -1114,7 +1447,7 @@ export function service(
       }
     }
     if (old?.state === 'running') return { status: 'ambiguous', execution_id: old.id }
-    checkDispatch(g.tenant)
+    checkDispatch(g.tenant, c.provider, a.id)
     if (
       !c.active ||
       (old && old.revision !== c.revision) ||
@@ -1137,7 +1470,7 @@ export function service(
     if (b.connector_revision && b.connector_revision !== revision)
       fail(400, 'Unknown connector revision')
     const ex = old?.id ?? 'exec_' + randomUUID(),
-      effect = a.method !== 'GET'
+      effect = a.method !== 'GET' && !['tiktok.status', 'tiktok.creator_info'].includes(a.id)
     if (old?.state === 'denied') return { status: 'refused', execution_id: ex }
     const stored = open(c.secret, c.id)
     let secret = typeof stored === 'string' ? stored : stored.access_token
@@ -1154,7 +1487,7 @@ export function service(
     }
     if (
       ['google_sheets', 'supabase_data'].includes(c.provider) ||
-      a.id === 'revolut.business.transactions.read_page'
+      ['revolut.business.transactions.read_page', 'revolut.transactions.list'].includes(a.id)
     ) {
       const allowed: string[] = JSON.parse(
         get('SELECT labels FROM resources WHERE conn=?', c.id)?.labels || '[]',
@@ -1175,12 +1508,89 @@ export function service(
         fail(403, 'Resource outside connection')
     }
     const upload = a.id.endsWith('.upload_session.create') ? uploadRequest(a.id, b.arguments) : null
+    const scope = a.id === bundleOperation ? issueScope(r, c.id) : null
+    const bundle = scope ? issues.manifest(scope, b.arguments) : null
+    const template = templateOps.includes(a.id)
+      ? templatePlan(
+          a.id,
+          b.arguments,
+          JSON.parse(get('SELECT labels FROM resources WHERE conn=?', c.id)?.labels ?? '[]'),
+        )
+      : null
+    let draftId: string | null = null
+    if (a.id === 'hubspot.newsletter.update_draft') {
+      const creator = get(
+        "SELECT id,outcome FROM runs WHERE id=? AND tenant=? AND conn=? AND revision=? AND op='hubspot.newsletter.create_draft' AND state='confirmed'",
+        name.parse(b.arguments.creation_execution_id),
+        g.tenant,
+        c.id,
+        c.revision,
+      )
+      draftId = creator && open(creator.outcome, creator.id + '/outcome').result?.remote_id
+      if (!draftId || !/^\d{1,20}$/.test(draftId)) fail(403, 'Original draft creation unavailable')
+    }
+    const inspect = a.id.endsWith('.newsletter.inspect_draft'),
+      structure = a.id === 'hubspot.newsletter.read_email_structure',
+      threadRef = ['threads.container.publish', 'threads.container.status'].includes(a.id)
+    let boundId: string | null = null
+    if (inspect || threadRef || (structure && b.arguments.creation_execution_id)) {
+      if (structure && b.arguments.email_id) fail(422, 'Choose a single reference')
+      const op = threadRef ? 'threads.container.create' : c.provider + '.newsletter.create_draft'
+      const made = get(
+        "SELECT id,hash,outcome FROM runs WHERE tenant=? AND conn=? AND revision=? AND op=? AND id=? AND state='confirmed'",
+        g.tenant,
+        c.id,
+        c.revision,
+        op,
+        name.parse(b.arguments.creation_execution_id),
+      )
+      if (!made || (inspect && b.arguments.creation_request_digest !== 'sha256:' + made.hash))
+        return fail(403, 'Original creation unavailable')
+      const result = open(made.outcome, made.id + '/outcome').result
+      boundId = threadRef ? result.container_id : result.remote_id
+      if (!boundId || !/^\d{1,40}$/.test(boundId)) fail(403, 'Invalid creation identity')
+    } else if (structure) {
+      boundId = z
+        .string()
+        .regex(/^\d{1,20}$/)
+        .parse(b.arguments.email_id)
+      if (
+        !JSON.parse(
+          get('SELECT labels FROM resources WHERE conn=?', c.id)?.labels ?? '[]',
+        ).includes(boundId)
+      )
+        fail(403, 'Reference email not selected')
+    }
+    if (['threads.container.create', 'bluesky.post.create'].includes(a.id)) {
+      const text = z.string().min(1).parse(b.arguments.text)
+      if (
+        /[\p{Cf}\p{Cs}\p{Co}]/u.test(text) ||
+        text.replace(/[\r\n\t]/g, '').match(/\p{Cc}/u) ||
+        (a.id.startsWith('threads')
+          ? Array.from(text).length > 500
+          : Buffer.byteLength(text) > 3000)
+      )
+        fail(422, 'Invalid post text')
+      if (
+        a.id === 'bluesky.post.create' &&
+        (!/^did:[a-z]+:[A-Za-z0-9._:%-]+$/.test(c.identity) ||
+          typeof stored !== 'string' ||
+          !stored.trimStart().startsWith('{'))
+      )
+        fail(403, 'Verified Bluesky session required')
+    }
     const standing =
       !old &&
       tx(() => {
         const day = iso(now()).slice(0, 10),
           limit =
-            a.id === 'loops.newsletter.create_campaign'
+            ['loops.newsletter.create_campaign', 'loops.newsletter.update_email_message'].includes(
+              a.id,
+            ) ||
+            (a.id === 'hubspot.newsletter.update_draft' &&
+              !JSON.stringify(b.arguments).match(
+                /"(audience|audience_segment_id|audience_filter|mailing_list_id|mailing_list_ids|subscriber_filter|segment|segment_id|recipients|to)":/,
+              ))
               ? get('SELECT daily FROM draft_limits WHERE actor=? AND until>?', g.id, now())
               : null
         const blocked =
@@ -1193,6 +1603,7 @@ export function service(
         const used = limit
           ? get('SELECT used FROM draft_usage WHERE actor=? AND day=?', g.id, day)?.used || 0
           : 0
+        if (scope && bundle) issues.reserve(scope, bundle, ex)
         const reserve = !!limit && !blocked && used < limit.daily
         if (reserve) {
           run(
@@ -1213,7 +1624,25 @@ export function service(
           hash,
           c.revision,
           effect && !reserve ? 'pending' : 'running',
-          seal(b.arguments, ex + '/preview'),
+          seal(
+            (() => {
+              if (bundle)
+                return {
+                  schema: 'hubspot-issue/1',
+                  ...bundle,
+                  folder: issueFolder + bundle.issue_id,
+                }
+              const snapshot = approvalSnapshot(a.id, b.arguments, {
+                device_id: g.id,
+                device_name: g.label,
+                application_id: null,
+              })
+              return snapshot
+                ? { snapshot, snapshot_digest: snapshotDigest(snapshot) }
+                : b.arguments
+            })(),
+            ex + '/preview',
+          ),
           now(),
         )
         return reserve
@@ -1235,7 +1664,7 @@ export function service(
       ) {
         secret = await credential(c)
         grant(r)
-        checkDispatch(g.tenant)
+        checkDispatch(g.tenant, c.provider, a.id)
         if (conn(g.tenant, c.id).revision !== c.revision) throw Error('Connection changed')
         request = buildRequest(
           c.provider,
@@ -1244,7 +1673,134 @@ export function service(
           secret,
         )
       }
-      if (sourceOperation(a.id)) {
+      if (inspect || structure) request.url.pathname += '/' + boundId
+      if (a.id === 'threads.container.create')
+        request.init.body = JSON.stringify({ media_type: 'TEXT', text: b.arguments.text })
+      if (a.id === 'threads.container.status') {
+        request.url.pathname = '/v1.0/' + boundId
+        request.url.search = 'fields=id,status,error_message'
+      }
+      if (a.id === 'threads.container.publish') {
+        if (
+          !run(
+            'INSERT OR IGNORE INTO threads_publications VALUES(?,?)',
+            String(b.arguments.creation_execution_id),
+            ex,
+          ).changes
+        )
+          throw Error('Container already claimed')
+        request.init.body = JSON.stringify({ creation_id: boundId })
+      }
+      if (a.id === 'bluesky.post.create')
+        request.init.body = JSON.stringify({
+          repo: c.identity,
+          collection: 'app.bsky.feed.post',
+          record: { $type: 'app.bsky.feed.post', text: b.arguments.text, createdAt: iso(now()) },
+        })
+      const loopUpdate = [
+        'loops.newsletter.update_email_message',
+        'loops.newsletter.update_campaign_audience',
+      ].includes(a.id)
+      const loopsCheck = () => {
+        grant(r)
+        checkDispatch(g.tenant, c.provider, a.id)
+        const current = conn(g.tenant, c.id)
+        if (!current.active || current.revision !== c.revision) fail(409, 'Connection changed')
+      }
+      const currentCampaign = async () => {
+        const u = buildRequest(
+            'loops',
+            'loops.newsletter.get_campaign',
+            { campaign_id: b.arguments.campaign_id },
+            secret,
+          ),
+          res = await pacedLoops(c.id, u.url, u.init, now() + 30000, loopsCheck)
+        if (!res.ok) {
+          await res.body?.cancel()
+          throw Error('Campaign unavailable')
+        }
+        const d = await res.json()
+        if (d.id !== b.arguments.campaign_id || d.status !== 'Draft')
+          throw Error('Campaign is no longer a draft')
+      }
+      if (loopUpdate) {
+        const created = get(
+          "SELECT child FROM loops_created WHERE conn=? AND revision=? AND kind='campaign' AND remote=?",
+          c.id,
+          c.revision,
+          String(b.arguments.campaign_id),
+        )
+        if (
+          !created ||
+          (a.id.endsWith('update_email_message') && created.child !== b.arguments.email_message_id)
+        )
+          throw Error('Campaign was not created here')
+        await currentCampaign()
+      }
+      if (
+        a.id === 'loops.newsletter.complete_upload' &&
+        !get(
+          "SELECT remote FROM loops_created WHERE conn=? AND revision=? AND kind='upload' AND remote=? AND until>?",
+          c.id,
+          c.revision,
+          String(b.arguments.email_asset_id),
+          now(),
+        )
+      )
+        throw Error('Upload unavailable')
+      if (draftId) {
+        request.url.pathname += '/' + draftId
+        const before = await send(request.url, {
+          headers: request.init.headers,
+          redirect: 'error',
+          signal: AbortSignal.timeout(15000),
+        })
+        if (!before.ok) {
+          await before.body?.cancel()
+          throw Error('Draft unavailable')
+        }
+        const prior = await before.json()
+        if (
+          String(prior.id) !== draftId ||
+          !['DRAFT', 'AUTOMATED_DRAFT'].includes(prior.state) ||
+          prior.isPublished === true ||
+          prior.isTransactional === true ||
+          !['BATCH_EMAIL', 'AUTOMATED_EMAIL'].includes(prior.type)
+        )
+          throw Error('Draft not editable')
+        grant(r)
+        checkDispatch(g.tenant, c.provider, a.id)
+        const current = conn(g.tenant, c.id)
+        if (!current.active || current.revision !== c.revision) throw Error('Connection changed')
+      }
+      if (scope && bundle) {
+        const result = await issues.sendFiles(scope, bundle, ex, secret, send, () => {
+          if (issueScope(r, c.id).revision !== scope.revision) fail(409, 'Connection changed')
+        })
+        outcome = {
+          execution_id: ex,
+          status: result.state === 'complete' ? 'confirmed' : 'ambiguous',
+          result: result.state === 'complete' ? result : null,
+          receipt: { issue_bundle: result, request_digest: 'sha256:' + hash },
+        }
+      } else if (template) {
+        const result = await writeTemplate(template, secret, send, () => {
+          grant(r)
+          checkDispatch(g.tenant, c.provider, a.id)
+          const live = conn(g.tenant, c.id)
+          if (!live.active || live.revision !== c.revision) fail(409, 'Connection changed')
+        })
+        outcome = {
+          status: 'confirmed',
+          execution_id: ex,
+          result,
+          receipt: {
+            connector_revision: revision,
+            request_digest: 'sha256:' + hash,
+            result_digest: 'sha256:' + digest(canonical(result)),
+          },
+        }
+      } else if (sourceOperation(a.id)) {
         const result = await readSource(
           a.id,
           request.url,
@@ -1254,7 +1810,7 @@ export function service(
           () =>
             tx(() => {
               grant(r)
-              checkDispatch(g.tenant)
+              checkDispatch(g.tenant, c.provider, a.id)
               const day = iso(now()).slice(0, 10),
                 row = get('SELECT * FROM read_budgets WHERE conn=?', c.id)
               if (row && (row.until > now() || (row.day === day && row.used >= 2000)))
@@ -1274,6 +1830,54 @@ export function service(
           execution_id: ex,
           result,
           receipt: { connector_revision: revision, result_digest: 'sha256:' + result.body_sha256 },
+        }
+      } else if (a.id === 'revolut.receipts.get') {
+        const res = await send(request.url, request.init)
+        if (!res.ok || !res.body) {
+          await res.body?.cancel()
+          throw Error('Receipt unavailable')
+        }
+        const reader = res.body.getReader(),
+          chunks: Buffer[] = []
+        let size = 0
+        for (;;) {
+          const v = await reader.read()
+          if (v.done) break
+          size += v.value.length
+          if (size > 10485760) {
+            await reader.cancel()
+            throw Error('Receipt too large')
+          }
+          chunks.push(Buffer.from(v.value))
+        }
+        const bytes = Buffer.concat(chunks),
+          artifact = 'art_' + randomUUID(),
+          sha = 'sha256:' + digest(bytes),
+          mime =
+            res.headers.get('content-type')?.split(';')[0]?.slice(0, 255) ??
+            'application/octet-stream'
+        grant(r)
+        checkDispatch(g.tenant, c.provider, a.id)
+        run(
+          'INSERT INTO artifacts VALUES(?,?,?,?,?)',
+          artifact,
+          c.id,
+          g.id,
+          now() + 900000,
+          seal({ binary: true, base64: bytes.toString('base64') }, artifact),
+        )
+        outcome = {
+          status: 'confirmed',
+          execution_id: ex,
+          result: null,
+          artifact: {
+            artifact_id: artifact,
+            content_sha256: sha,
+            size_bytes: size,
+            media_type: mime,
+            filename: 'receipt',
+          },
+          receipt: { connector_revision: revision, result_digest: sha },
         }
       } else if (upload) {
         const response = await send(upload.url, {
@@ -1304,7 +1908,7 @@ export function service(
         const proof = relay ? opaque() : null
         if (proof)
           run(
-            'INSERT INTO uploads VALUES(?,?,?,?,?,?,?,?)',
+            'INSERT INTO uploads VALUES(?,?,?,?,?,?,?,?,?)',
             digest(proof),
             digest(location),
             g.id,
@@ -1313,6 +1917,7 @@ export function service(
             upload.size,
             upload.mime,
             now() + 86400000,
+            a.id,
           )
         outcome = {
           status: 'confirmed',
@@ -1352,7 +1957,15 @@ export function service(
           receipt: { result_digest: sha, connector_revision: revision },
         }
       } else {
-        const res = await send(request.url, request.init)
+        const res =
+          c.provider === 'loops'
+            ? await pacedLoops(c.id, request.url, request.init, now() + 120000, () => {
+                grant(r)
+                checkDispatch(g.tenant, c.provider, a.id)
+                const live = conn(g.tenant, c.id)
+                if (!live.active || live.revision !== c.revision) fail(409, 'Connection changed')
+              })
+            : await send(request.url, request.init)
         if (!res.ok) {
           await res.body?.cancel()
           throw Error('Provider refused')
@@ -1377,7 +1990,7 @@ export function service(
           ? JSON.parse(raw, (k: string, v: unknown, ctx?: { source?: string }) =>
               c.provider === 'revolut' &&
               typeof v === 'number' &&
-              ['balance', 'amount', 'fee', 'bill_amount'].includes(k)
+              ['balance', 'amount', 'fee', 'bill_amount', 'percentage'].includes(k)
                 ? (ctx?.source ?? String(v))
                 : /^(access_token|refresh_token|client_secret|api_key|password|authorization)$/i.test(
                       k,
@@ -1386,13 +1999,213 @@ export function service(
                   : v,
             )
           : null
-        if (a.id === 'revolut.business.accounts.list') {
+        if (['revolut.business.accounts.list', 'revolut.accounts.read'].includes(a.id)) {
           const ids: string[] = JSON.parse(
             get('SELECT labels FROM resources WHERE conn=?', c.id)?.labels || '[]',
           )
           result = result.filter((x: Row) => ids.includes(x.id))
         }
-        result = project(a.id, result, b.arguments)
+        if (inspect || structure) {
+          const d = c.provider === 'kit' ? (result.broadcast ?? result) : result
+          if (String(d.id) !== boundId) throw Error('Provider object identity changed')
+          if (structure) {
+            const word = (v: unknown, n = 80) =>
+              ['string', 'number'].includes(typeof v)
+                ? String(v)
+                    .replace(/[^A-Za-z0-9_.:/@-]/g, '_')
+                    .slice(0, n)
+                : null
+            const fields = (v: any) =>
+              Object.keys(v ?? {})
+                .sort()
+                .slice(0, 50)
+                .map((k) => word(k))
+            result = {
+              template_path: word(d.content?.templatePath, 200),
+              widgets: Object.fromEntries(
+                Object.entries(d.content?.widgets ?? {})
+                  .slice(0, 100)
+                  .map(([k, v]) => [word(k)!, word((v as Row)?.type ?? (v as Row)?.module_id)]),
+              ),
+              flex_areas: Object.fromEntries(
+                Object.entries(d.content?.flexAreas ?? {})
+                  .slice(0, 50)
+                  .map(([k, v]) => [word(k)!, fields(v)]),
+              ),
+              subscription_id: word(d.subscriptionDetails?.subscriptionId),
+              office_location_id: word(d.subscriptionDetails?.officeLocationId),
+              state: word(d.state),
+            }
+          } else {
+            const common = {
+              observation_ref: c.provider + '-observation-' + randomUUID().replaceAll('-', ''),
+              remote_id: boundId,
+              observed_at: iso(now()),
+              publication_authorization: 'not_authorized',
+            }
+            if (c.provider === 'kit')
+              result = {
+                ...common,
+                provider_content_digest:
+                  typeof d.content === 'string'
+                    ? digest(
+                        canonical({
+                          subject: d.subject,
+                          content: d.content,
+                          preview_text: d.preview_text,
+                        }),
+                      )
+                    : null,
+                provider_version: d.updated_at ?? null,
+                provider_result_digest: digest(canonical(d)),
+                resource_url: request.url.href,
+                resource_link_kind: 'authenticated_provider_api',
+                verified_link: null,
+                matches_creation_content: null,
+                delivery_state:
+                  d.public === false && d.send_at == null ? 'draft' : 'requires_review',
+              }
+            else {
+              const content = {
+                subject: d.subject ?? null,
+                from_name: d.from?.fromName ?? null,
+                plain_text: d.content?.plainTextVersion ?? null,
+                body_html: d.content?.html ?? null,
+              }
+              result = {
+                ...common,
+                ...content,
+                readable_digest: digest(
+                  canonical(
+                    Object.fromEntries(
+                      Object.entries(content).filter(([, v]) => typeof v === 'string'),
+                    ),
+                  ),
+                ),
+                provider_version: d.updatedAt ?? null,
+                provider_state: d.state ?? null,
+                delivery_state: d.state === 'DRAFT' ? 'draft' : 'requires_review',
+              }
+            }
+          }
+        }
+        if (a.id === 'threads.container.create') {
+          result = {
+            container_id: z.string().regex(/^\d+$/).parse(result.id),
+            stage: 'created',
+            creation_execution_id: ex,
+          }
+        }
+        if (a.id === 'threads.container.publish') {
+          result = { post_id: z.string().regex(/^\d+$/).parse(result.id), stage: 'published' }
+        }
+        if (a.id === 'threads.container.status') {
+          if (String(result.id) !== boundId) throw Error('Container mismatch')
+          result = { container_id: boundId, provider_status: z.string().parse(result.status) }
+        }
+        if (a.id === 'bluesky.post.create') {
+          if (
+            typeof result.cid !== 'string' ||
+            !result.cid ||
+            typeof result.uri !== 'string' ||
+            !result.uri.startsWith('at://' + c.identity + '/app.bsky.feed.post/')
+          )
+            throw Error('Record identity changed')
+          result = { uri: result.uri, cid: result.cid, stage: 'published' }
+        }
+        if (a.id === 'loops.newsletter.update_email_message') {
+          if (result?.id !== b.arguments.email_message_id || !result.contentRevisionId)
+            throw Error('Revision unconfirmed')
+          await currentCampaign()
+          result = {
+            provider: 'loops',
+            operation: 'update_email_message',
+            delivery_state: 'draft',
+            publication_authorization: 'not_authorized',
+            remote_id: result.id,
+            content_revision_id: result.contentRevisionId,
+            lmx_sha256: digest(String(b.arguments.lmx)),
+            warning_count: Array.isArray(result.warnings) ? result.warnings.length : 0,
+          }
+        }
+        if (a.id === 'loops.newsletter.update_campaign_audience') {
+          if (result?.id !== b.arguments.campaign_id || result.status !== 'Draft')
+            throw Error('Draft unconfirmed')
+          result = {
+            provider: 'loops',
+            operation: 'update_campaign_audience',
+            delivery_state: 'draft',
+            publication_authorization: 'not_authorized',
+            remote_id: result.id,
+            mailing_list_id: result.mailingListId ?? null,
+            audience_segment_id: result.audienceSegmentId ?? null,
+          }
+        }
+        if (
+          a.id === 'loops.newsletter.create_upload' ||
+          a.id === 'loops.newsletter.complete_upload'
+        ) {
+          const create = a.id.endsWith('create_upload'),
+            id = z
+              .string()
+              .regex(/^[A-Za-z0-9_-]{1,80}$/)
+              .parse(result?.emailAssetId),
+            u = new URL(create ? result.presignedUrl : result.finalUrl)
+          if (
+            u.protocol !== 'https:' ||
+            u.username ||
+            u.password ||
+            u.port ||
+            u.hash ||
+            (create
+              ? u.hostname !== 'loops-assets.s3.amazonaws.com' || u.pathname !== '/uploads/' + id
+              : !(u.hostname.endsWith('.loops.so') || u.hostname.endsWith('.vialoops.com')) ||
+                id !== b.arguments.email_asset_id)
+          )
+            throw Error('Upload address refused')
+          result = {
+            provider: 'loops',
+            operation: create ? 'create_upload' : 'complete_upload',
+            publication_authorization: 'not_authorized',
+            remote_id: id,
+            ...(create
+              ? { created_at: iso(now()), ...b.arguments, upload_url: u.href }
+              : { final_url: u.href }),
+          }
+        }
+        result =
+          a.id === 'revolut.transactions.list'
+            ? project('revolut.business.transactions.read_page', result, b.arguments).transactions
+            : a.id === 'revolut.accounts.read'
+              ? project('revolut.business.accounts.list', result, b.arguments).accounts
+              : project(a.id, result, b.arguments)
+        if (
+          [
+            'kit.newsletter.create_draft',
+            'hubspot.newsletter.create_draft',
+            'hubspot.newsletter.update_draft',
+          ].includes(a.id)
+        ) {
+          const d = c.provider === 'kit' ? (result?.broadcast ?? result) : result
+          if (
+            !d ||
+            (draftId && String(d.id) !== draftId) ||
+            !['number', 'string'].includes(typeof d.id) ||
+            !String(d.id) ||
+            d.send_at ||
+            d.public === true ||
+            (d.state && d.state !== 'DRAFT')
+          )
+            throw Error('Unverified draft')
+          result = {
+            provider: c.provider,
+            remote_id: String(d.id),
+            delivery_state: 'draft',
+            publication_authorization: 'not_authorized',
+            verified_link: null,
+            provider_result_digest: digest(canonical(d)),
+          }
+        }
         if (c.provider === 'google_sheets') result = sheetsResult(a.id, result)
         if (a.id === 'google.gmail.labels.list')
           result = z
@@ -1404,6 +2217,7 @@ export function service(
           result,
           receipt: {
             connector_revision: revision,
+            request_digest: 'sha256:' + hash,
             result_digest: 'sha256:' + digest(canonical(result)),
           },
         }
@@ -1429,7 +2243,37 @@ export function service(
             ),
           }
         : outcome
+    if (a.id === 'loops.newsletter.create_upload' && storedOutcome.result?.upload_url) {
+      const { upload_url, ...rest } = storedOutcome.result
+      outcome = { ...outcome, result: { ...outcome.result } }
+      storedOutcome.result = { ...rest, upload_url: null }
+    }
     tx(() => {
+      if (outcome.status === 'confirmed') {
+        if (a.id === 'loops.newsletter.create_campaign')
+          run(
+            "INSERT OR REPLACE INTO loops_created VALUES(?,?,'campaign',?,?,NULL)",
+            c.id,
+            c.revision,
+            outcome.result.remote_id,
+            outcome.result.email_message_id ?? null,
+          )
+        if (a.id === 'loops.newsletter.create_upload')
+          run(
+            "INSERT OR REPLACE INTO loops_created VALUES(?,?,'upload',?,NULL,?)",
+            c.id,
+            c.revision,
+            outcome.result.remote_id,
+            now() + 3600000,
+          )
+        if (a.id === 'loops.newsletter.complete_upload')
+          run(
+            "DELETE FROM loops_created WHERE conn=? AND revision=? AND kind='upload' AND remote=?",
+            c.id,
+            c.revision,
+            outcome.result.remote_id,
+          )
+      }
       run(
         'UPDATE runs SET state=?,outcome=? WHERE id=?',
         outcome.status,
@@ -1440,5 +2284,18 @@ export function service(
     })
     return outcome
   })
+  inbound(
+    api,
+    db,
+    origin,
+    (r) => {
+      const s = session(r)
+      if (s.role !== 'owner') fail(403, 'Owner required')
+      return s.tenant
+    },
+    intakeBody,
+    seal,
+    open,
+  )
   return api
 }

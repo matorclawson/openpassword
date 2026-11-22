@@ -15,7 +15,7 @@ Open **http://localhost:3000**. Read the bootstrap token from the file named by 
 
 1. Open **Integrations**, choose a provider and inspect its operations. Choose **Connect account** to add a credential. A workspace can hold several named accounts for the same provider.
 2. In **Access grants**, select a connection, expiry and the allowed operations. Supply a pairing code for an interactive device, or copy the one-time access and refresh credentials. Access tokens last at most 15 minutes. Refresh rotates both tokens.
-3. A device reads its connections and capabilities. Writes enter **Approvals**. Review the account, actor and arguments, approve, then repeat the exact request and idempotency key to receive its outcome. A standing allowance can authorize a bounded number of unsent Loops campaign drafts per UTC day.
+3. A device reads its connections and capabilities. Writes enter **Approvals**. Review the account, actor and arguments, approve, then repeat the exact request and idempotency key to receive its outcome. A standing allowance can authorize a bounded number of unsent Loops campaign drafts or updates to broker-created HubSpot drafts that leave audiences unchanged.
 4. Use **Workspace** to issue viewer or editor access, revoke a member, or pause dispatch. **Vault items** allows editors and the owner to reveal shared item values. Provider credentials are never displayed by the vault item routes.
 
 ## Agent CLI
@@ -33,7 +33,7 @@ Use a new task-stable key for a new request. Reuse the original key to obtain an
 
 ## Model clients
 
-An owner or editor can grant an OpenAI, OpenRouter or Moonshot account's chat operation with an exact upstream model ID, maximum calls and maximum output tokens per call. Configure an OpenAI-compatible client with the broker's `/v1` base URL and its device bearer. `GET /v1/models` exposes the permitted model. `POST /v1/chat/completions` accepts text messages, explicit `max_tokens`, optional temperature and optional SSE streaming. A repeated supplied `Idempotency-Key` is refused to avoid a second billable submission. A reservation is consumed on an uncertain provider outcome. Live spend and currency settlement are outside this release.
+An owner or editor can grant an OpenAI, OpenRouter or Moonshot account's chat operation with an exact upstream model ID, maximum calls and maximum output tokens per call. Configure an OpenAI-compatible client with the broker's `/v1` base URL and its device bearer. `GET /v1/models` exposes the permitted model. `POST /v1/chat/completions` accepts text messages, explicit `max_tokens`, optional temperature and optional SSE streaming. A repeated supplied `Idempotency-Key` is refused to avoid a second billable submission. An optional grant tariff reserves integer micro-USD before dispatch. The broker settles from reported usage and retains the reservation when usage is incomplete or the call has an uncertain outcome. The workspace shows the spent, held and available amounts. The owner can list unresolved charges with GET /admin/billing/holds and reconcile one with POST /admin/billing/holds/{execution}, supplying actual_micro_usd and evidence_sha256. Tool-call messages, tool results and function schemas pass through the chat interface.
 
 ## Provider setup
 
@@ -59,8 +59,29 @@ Copyright 2026 Dreamhuggers. The service is AGPL-3.0-only. Each reusable package
 
 ## Sign in to another application
 
-Under **Workspace → Register app**, enter the application's exact HTTPS callback and audience. Activate its registration. A signed-in workspace member can confirm an identity-only handoff at `/delegate` with a one-use S256 challenge. The application backend exchanges the returned code at `/delegate/exchange` and verifies the Ed25519 signature against its pinned key. The public key document is available at `/.well-known/zeoconnect-delegation-keys.json`. Identity-only grants expire within ten minutes.
+Under **Workspace → Register app**, enter the application's exact HTTPS callback and audience. Activate its registration. A signed-in workspace member can confirm an identity-only handoff at `/delegate` with a one-use S256 challenge. The application backend exchanges the returned code at `/delegate/exchange` and verifies the Ed25519 signature against its pinned key. The public key document is available at `/.well-known/zeoconnect-delegation-keys.json`. Identity-only grants expire within ten minutes. Applications can also register action classes. The owner receives a one-time checker credential. The application exchanges a code, rotates the refresh credential and checks each action against POST /v1/delegation/check. A repeated refresh revokes its grant. POST /delegate/status checks identity-only delegations, including those issued by a recently retired key. Owners rotate the signing key with POST /admin/delegation/signing-key/rotate.
 
 ## Browser acceptance
 
 After a production build, run `npm run test:browser` with Chromium installed. Set `CHROMIUM_PATH` if the binary is outside /usr/bin/chromium. The check starts an isolated temporary vault and requires the configured broker port to be free. It exercises login, a sealed provider credential, issuance of a scoped grant, mobile search and source download.
+
+## Integration workflows
+
+- Choose **Authorize with Notion** when adding a Notion connection. Register the exact console callback ending in `/api/oauth/notion/callback`. An editor can refresh a stored OAuth grant with `POST /admin/connections/{id}/oauth-refresh`.
+- Set the allowed template directories on each HubSpot connection. Each directory must end with a slash. Draft upload checks the exact UTF-8 file digests. Publish rereads the draft files, checks their canonical bundle digest and asks for a separate approval.
+- On a relay-enabled broker, call `OpenPassword.uploadYouTube(session, blob)` with the authorized connection, upload URL, relay seal, media type, size and SHA-256. The client verifies the file before querying the provider's accepted range through the broker. Keep the session receipt in private storage to resume after a restart.
+- `@openpassword/client/publishing` exports `PublishingJournal` and `composePublishingTarget`. Store the SQLite journal in a private application directory. Save a revision, approve its digest, then drive `tick` on a schedule. Its transport takes a scoped broker request. Use an asset resolver that verifies the manifest's digest and returns the selected media reference. After a lost reply or process interruption, recover and resume the original request and idempotency key. The broker remains responsible for provider-side approvals. The publishing test is an executable example.
+- An owner can register a Loops or Twilio signing secret using `POST /admin/webhooks` with `connection_id` and a sealed secret from the intake workflow. Configure the returned HTTPS callback with the provider. Read the encrypted delivery inbox via `GET /admin/webhooks/{id}/events?after=0&limit=50`. The cursor is the sequence of the last delivery. Revoke with `DELETE /admin/webhooks/{id}`.
+- Use `@openpassword/connectors/local` for local media and notebook operations, `@openpassword/connectors/webhooks` for signature verification, and `@openpassword/connectors/x-thread` for digest-bound X thread planning.
+
+## Linux service identities
+
+The two systemd units in deploy/systemd run the broker and console under separate dynamic users. Build the checkout in /opt/openpassword, readable by both services, with Node 24 on the system service PATH. Install the units in /etc/systemd/system. The broker owns its private state directory. Set OPENPASSWORD_WEB_ORIGIN in a broker unit override to the externally visible console origin before enabling the services. For an existing instance, migrate the vault and its installation key during an offline maintenance window. The units were syntax checked in the council environment. Host installation, TLS routing and upgrades require deployment qualification.
+
+Run `npm run test:reference -- /path/to/zeoconnect-source` to compare the upstream fixtures with the public TypeScript validators and preview producer.
+
+### Issue bundles and dispatch controls
+
+Enroll a HubSpot connection with the selected resource `/rasa-newsletter/` and each permitted template directory. Issue the device a grant for `hubspot.files.upload_bundle`. Stage each image at `POST /v1/hubspot/issue-assets` with its original media type and the query fields `connection_id`, `file_name` and `sha256`. Invoke the operation with the returned file manifests, issue ID and bundle digest. The owner can review the upload destination, draft changes and exact manifest before dispatch. Read durable per-step receipts at `GET /v1/hubspot/issues/:id?connection_id=…`. Each issue ID can be reserved once per connection. The public service uses explicit workspace, connection, grant and folder selection in place of the private deployment’s hard-coded organization and portal.
+
+Workspace owners can pause a single operation under **Workspace → Provider dispatch controls**. An upgrade from v0.1 expires outstanding YouTube relay proofs because they lack the operation identity needed for pause enforcement. Request a fresh upload session for an interrupted relay. Revolut transaction reads now require a selected account ID, including the legacy list alias. Supabase table selection permits columns from the selected table and explicitly scoped row writes.

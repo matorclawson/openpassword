@@ -1,4 +1,5 @@
 'use client'
+import { ApprovalPreview } from './approval-preview'
 import { sealInput } from './intake'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
@@ -41,6 +42,9 @@ type Grant = {
 }
 type Approval = { id: string; actor: string; conn: string; op: string; preview: unknown }
 type Workspace = {
+  operation_stops: string[]
+  provider_stops: string[]
+  billing: { label: string; available: number; spent: number; held: number }[]
   items: { id: string; title: string; username: string; updated: number }[]
   tenant: string
   role: string
@@ -160,7 +164,8 @@ export default function Page() {
   }
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    const f = Object.fromEntries(new FormData(e.currentTarget))
+    const form = new FormData(e.currentTarget)
+    const f = Object.fromEntries(form)
     await work(async () => {
       if (!w) {
         await request('admin/login', { token: f.token })
@@ -174,6 +179,15 @@ export default function Page() {
         delete f[field]
       }
       if (modal === 'oauth') {
+        if (selected === 'notion') {
+          const a = await request('admin/oauth/notion', {
+            label: f.label,
+            client_id: f.client_id,
+            sealed,
+          })
+          location.assign(a.url)
+          return
+        }
         const data = await request('admin/oauth/google', {
           ...f,
           sealed,
@@ -185,7 +199,21 @@ export default function Page() {
         location.assign(data.url)
         return
       }
-      if (modal === 'app') await request('admin/apps', { ...f, days: Number(f.days) })
+      if (modal === 'app') {
+        const a = await request('admin/apps', {
+          label: f.label,
+          callback: f.callback,
+          audience: f.audience,
+          days: Number(f.days),
+          classes: form.getAll('classes'),
+          member_write_allowed: f.member_write_allowed === 'on',
+        })
+        if (a.check_credential) {
+          K(a.check_credential)
+          await load()
+          return
+        }
+      }
       if (modal === 'item') await request('admin/items', f)
       if (modal === 'deleteItem') await request('admin/items/' + selected, undefined, 'DELETE')
       if (modal === 'member') {
@@ -219,6 +247,13 @@ export default function Page() {
         await request('admin/switch', a)
       }
       if (modal === 'grant') {
+        if (
+          f.budget &&
+          (!f.model || !f.input_rate || !f.output_rate || !f.price_date || !f.price_source)
+        )
+          throw Error(
+            'Enter the model, both rates, pricing date and pricing source for this budget.',
+          )
         const a = await request('admin/grants', {
           connection_id: grantId,
           operations: checked,
@@ -232,6 +267,17 @@ export default function Page() {
                   model: f.model,
                   calls: Number(f.calls),
                   max_tokens: Number(f.max_tokens),
+                  ...(f.budget
+                    ? {
+                        tariff: {
+                          budget_micro_usd: Number(f.budget),
+                          input: Number(f.input_rate),
+                          output: Number(f.output_rate),
+                          source: f.price_source,
+                          as_of: f.price_date,
+                        },
+                      }
+                    : {}),
                 },
               }
             : {}),
@@ -550,7 +596,7 @@ export default function Page() {
                           {w.grants.find((g) => g.id === a.actor)?.label} →{' '}
                           {w.connections.find((c) => c.id === a.conn)?.label}
                         </small>
-                        <pre>{JSON.stringify(a.preview, null, 2)}</pre>
+                        <ApprovalPreview value={a.preview} />
                         <div className="actions">
                           {[true, false].map((approve) => (
                             <button
@@ -558,7 +604,16 @@ export default function Page() {
                               disabled={busy}
                               onClick={() =>
                                 work(async () => {
-                                  await request('admin/approvals/' + a.id, { approve })
+                                  await request('admin/approvals/' + a.id, {
+                                    approve,
+                                    ...(a.op === 'loops.contacts.import_chunk'
+                                      ? {
+                                          shown_manifest_sha256: (
+                                            a.preview as { manifest_sha256: string }
+                                          ).manifest_sha256,
+                                        }
+                                      : {}),
+                                  })
                                   await load()
                                 })
                               }
@@ -611,6 +666,16 @@ export default function Page() {
               ))}
             {tab === 'Workspace' && (
               <>
+                {w.billing.map((b, i) => (
+                  <article key={i}>
+                    <div className="grow">
+                      <strong>{b.label} · Model budget</strong>
+                      <small>
+                        {b.spent} spent · {b.held} reserved · {b.available} available (micro-USD)
+                      </small>
+                    </div>
+                  </article>
+                ))}
                 <article>
                   <ShieldCheck />
                   <div className="grow">
@@ -629,6 +694,43 @@ export default function Page() {
                 </article>
                 {w.role === 'owner' && (
                   <>
+                    <details>
+                      <summary>Provider dispatch controls</summary>
+                      {Object.entries(w.providers).map(([p, v]) => (
+                        <div key={p}>
+                          <article>
+                            <div className="grow">
+                              <strong>{v.name}</strong>
+                              <small>{w.provider_stops.includes(p) ? 'Paused' : 'Running'}</small>
+                            </div>
+                            {btn(w.provider_stops.includes(p) ? 'Resume' : 'Pause', () =>
+                              work(async () => {
+                                await request('admin/dispatch/' + p, {
+                                  paused: !w.provider_stops.includes(p),
+                                })
+                                await load()
+                              }),
+                            )}
+                          </article>
+                          <details>
+                            <summary>{v.name} operations</summary>
+                            {v.actions.map((a) => (
+                              <article key={a.id}>
+                                <strong className="grow">{a.id}</strong>
+                                {btn(w.operation_stops.includes(a.id) ? 'Resume' : 'Pause', () =>
+                                  work(async () => {
+                                    await request('admin/dispatch/' + p + '/' + a.id, {
+                                      paused: !w.operation_stops.includes(a.id),
+                                    })
+                                    await load()
+                                  }),
+                                )}
+                              </article>
+                            ))}
+                          </details>
+                        </div>
+                      ))}
+                    </details>
                     <article>
                       <Building2 />
                       <div className="grow">
@@ -717,7 +819,10 @@ export default function Page() {
                   revealed: 'Vault item value',
                   app: 'Register identity application',
                   member: tokens ? 'Member access token' : 'Add workspace member',
-                  oauth: 'Connect Google with OAuth',
+                  oauth:
+                    selected === 'notion'
+                      ? 'Connect Notion with OAuth'
+                      : 'Connect Google with OAuth',
                   connection: 'Add connection',
                   provider: w.providers[selected]?.name,
                   rotate: 'Rotate credential',
@@ -756,7 +861,9 @@ export default function Page() {
                 ? 'Close this dialog to hide the value.'
                 : modal === 'member'
                   ? 'Give this token to the member through a private channel.'
-                  : 'Copy these credentials now. The access token expires in 15 minutes or when the grant ends.'}
+                  : modal === 'app'
+                    ? 'Copy the action-check credential now and provide it to the registered application.'
+                    : 'Copy these credentials now. The access token expires in 15 minutes or when the grant ends.'}
             </p>
             <pre>{tokens}</pre>
             <button
@@ -796,9 +903,14 @@ export default function Page() {
               </>
             )}
             {modal === 'connection' &&
-              ['google_workspace', 'google_sheets', 'supabase_data', 'revolut', 'loops'].includes(
-                selected,
-              ) && (
+              [
+                'google_workspace',
+                'google_sheets',
+                'supabase_data',
+                'revolut',
+                'loops',
+                'hubspot',
+              ].includes(selected) && (
                 <label>
                   {selected === 'google_workspace'
                     ? 'Authorized Gmail label IDs'
@@ -806,9 +918,11 @@ export default function Page() {
                       ? 'Authorized spreadsheet IDs'
                       : selected === 'revolut'
                         ? 'Authorized Revolut account IDs'
-                        : selected === 'loops'
-                          ? 'Authorized Loops list IDs'
-                          : 'Authorized database tables'}{' '}
+                        : selected === 'hubspot'
+                          ? 'Authorized template directories (end each with /)'
+                          : selected === 'loops'
+                            ? 'Authorized Loops list IDs'
+                            : 'Authorized database tables'}{' '}
                   (comma-separated)
                   <input name="resources" placeholder="INBOX, Label_123" />
                 </label>
@@ -816,10 +930,15 @@ export default function Page() {
             {modal === 'connection' &&
               selected === 'google_workspace' &&
               btn('Sign in with Google instead', () => M('oauth'))}
+            {modal === 'connection' &&
+              selected === 'notion' &&
+              btn('Authorize with Notion', () => M('oauth'))}
             {modal === 'oauth' && (
               <>
-                <p>Register this redirect URI in your Google OAuth client settings.</p>
-                <code>{location.origin}/api/oauth/google/callback</code>
+                <p>Register this redirect URI in your OAuth client settings.</p>
+                <code>
+                  {location.origin}/api/oauth/{selected === 'notion' ? 'notion' : 'google'}/callback
+                </code>
                 <label>
                   Connection name
                   <input name="label" required />
@@ -832,27 +951,35 @@ export default function Page() {
                   Client secret
                   <input name="client_secret" type="password" required />
                 </label>
-                <label>
-                  Authorized Gmail label IDs (optional)
-                  <input name="resources" />
-                </label>
-                <label>
-                  Access scope
-                  <select name="scope">
-                    {[
-                      'drive.readonly',
-                      'gmail.readonly',
-                      'spreadsheets',
-                      'calendar.readonly',
-                      'youtube.readonly',
-                      'youtube.upload',
-                    ].map((v) => (
-                      <option key={v} value={'https://www.googleapis.com/auth/' + v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {selected !== 'notion' && (
+                  <>
+                    <label>
+                      Authorized Gmail label IDs (optional)
+                      <input name="resources" />
+                    </label>
+                    <label>
+                      Access scope
+                      <select name="scope">
+                        {[
+                          'drive.readonly',
+                          'drive.file',
+                          'documents',
+                          'presentations',
+                          'calendar.events',
+                          'gmail.readonly',
+                          'spreadsheets',
+                          'calendar.readonly',
+                          'youtube.readonly',
+                          'youtube.upload',
+                        ].map((v) => (
+                          <option key={v} value={'https://www.googleapis.com/auth/' + v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
               </>
             )}
             {['connection', 'rotate'].includes(modal) && (
@@ -914,6 +1041,21 @@ export default function Page() {
                   <input name="days" type="number" min="1" max="365" defaultValue="30" required />
                 </label>
               </>
+            )}
+            {modal === 'app' && (
+              <fieldset>
+                <legend>Delegated actions (optional)</legend>
+                {['conversation.read', 'conversation.write', 'attention.write'].map((c) => (
+                  <label key={c}>
+                    <input type="checkbox" name="classes" value={c} />
+                    {c}
+                  </label>
+                ))}
+                <label>
+                  <input type="checkbox" name="member_write_allowed" />
+                  Allow editors to consent to write actions
+                </label>
+              </fieldset>
             )}
             {modal === 'member' && (
               <>
@@ -978,12 +1120,18 @@ export default function Page() {
                       </label>
                     ))}
                 </fieldset>
-                {w.role === 'owner' && checked.includes('loops.newsletter.create_campaign') && (
-                  <label>
-                    Preapproved unsent drafts per UTC day (optional)
-                    <input name="draft_limit" type="number" min="1" max="100" />
-                  </label>
-                )}
+                {w.role === 'owner' &&
+                  checked.some((op) =>
+                    [
+                      'loops.newsletter.create_campaign',
+                      'hubspot.newsletter.update_draft',
+                    ].includes(op),
+                  ) && (
+                    <label>
+                      Preapproved unsent drafts per UTC day (optional)
+                      <input name="draft_limit" type="number" min="1" max="100" />
+                    </label>
+                  )}
                 <label>
                   Grant duration (hours)
                   <input type="number" min="1" max="720" defaultValue="24" name="hours" required />
@@ -1010,6 +1158,29 @@ export default function Page() {
                           defaultValue="1024"
                         />
                       </label>
+                      <details>
+                        <summary>Monetary budget (optional)</summary>
+                        <label>
+                          Budget in micro-USD
+                          <input name="budget" type="number" min="1" />
+                        </label>
+                        <label>
+                          Input micro-USD per million tokens
+                          <input name="input_rate" type="number" min="0" />
+                        </label>
+                        <label>
+                          Output micro-USD per million tokens
+                          <input name="output_rate" type="number" min="0" />
+                        </label>
+                        <label>
+                          Pricing source
+                          <input name="price_source" type="url" />
+                        </label>
+                        <label>
+                          Pricing date
+                          <input name="price_date" type="date" />
+                        </label>
+                      </details>
                     </fieldset>
                   )}
                 <label>
@@ -1027,7 +1198,7 @@ export default function Page() {
                     deleteItem: 'Delete item',
                     app: 'Register application',
                     member: 'Create member token',
-                    oauth: 'Continue to Google',
+                    oauth: selected === 'notion' ? 'Continue to Notion' : 'Continue to Google',
                     connection: 'Save connection',
                     rotate: 'Rotate credential',
                     grant: 'Issue grant',

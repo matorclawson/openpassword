@@ -9,9 +9,12 @@ const config: NextConfig = {
         destination: 'http://127.0.0.1:' + (process.env.OPENPASSWORD_PORT || 4141) + '/:path*',
       },
       ...[
+        '/hooks/:id',
         '/delegate',
         '/delegate/confirm',
         '/delegate/exchange',
+        '/delegate/status',
+        '/.well-known/openpassword-jwks.json',
         '/.well-known/zeoconnect-delegation-keys.json',
       ].map((source) => ({
         source,

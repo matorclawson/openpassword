@@ -1,9 +1,12 @@
 {
   "name": "@openpassword/client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
-  "exports": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./publishing": "./dist/publishing.js"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -13,6 +16,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --declaration --skipLibCheck --strict --outDir dist index.ts"
+    "build": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --declaration --skipLibCheck --strict --outDir dist index.ts publishing.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
   }
 }

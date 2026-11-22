@@ -1,0 +1,424 @@
+{
+  "$defs": {},
+  "$id": "zeoconnect-batch-approval-view/1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "pending",
+              "approved",
+              "running",
+              "done"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "halted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "enum": [
+              "chunk_mismatch",
+              "count_mismatch",
+              "loops_refused",
+              "ambiguous_halt",
+              "rate_exhausted",
+              "not_normalized",
+              "credential_refused",
+              "workflow_live",
+              "property_missing",
+              "list_changed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "refused"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "enum": [
+              "workflow_live",
+              "property_missing",
+              "list_changed",
+              "count_mismatch"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "expired"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "const": "window_expired"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "voided"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "const": "voided"
+          }
+        }
+      }
+    }
+  ],
+  "description": "Built by the Broker from the stored manifest and step records. Contains no address, no row and no free text from the agent beyond the labelled names. The UI renders it and never recomputes a digest. Patterns end with (?![\\s\\S]) so a trailing newline fails in Python and JavaScript alike. Invariant (checked by the producer and the fixture test, not expressible here): tallies.sent = accepted + refused + ambiguous.",
+  "properties": {
+    "action": {
+      "const": "import"
+    },
+    "approval_id": {
+      "maxLength": 80,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]{1,80}(?![\\s\\S])",
+      "type": "string"
+    },
+    "batch_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "chunk_count": {
+      "maximum": 1000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "chunk_size": {
+      "maximum": 100,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "connection": {
+      "additionalProperties": false,
+      "description": "Labelled name from the single label producer: an ASCII allowlist value; anything else, or an over-long value, becomes 'name withheld [<id truncated to 80>]' (at most 96 characters). Word-spelled addresses ('a at b dot com') pass the allowlist: a residual risk, not a guarantee.",
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:/-]{1,200}(?![\\s\\S])",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9 ._:/,()'\"\\[\\]+-]{1,120}(?![\\s\\S])",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "list": {
+      "additionalProperties": false,
+      "description": "Labelled name from the single label producer: an ASCII allowlist value; anything else, or an over-long value, becomes 'name withheld [<id truncated to 80>]' (at most 96 characters). Word-spelled addresses ('a at b dot com') pass the allowlist: a residual risk, not a guarantee.",
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:/-]{1,200}(?![\\s\\S])",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9 ._:/,()'\"\\[\\]+-]{1,120}(?![\\s\\S])",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "manifest_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "operation_id": {
+      "const": "loops.contacts.import_chunk"
+    },
+    "organization": {
+      "additionalProperties": false,
+      "description": "Labelled name from the single label producer: an ASCII allowlist value; anything else, or an over-long value, becomes 'name withheld [<id truncated to 80>]' (at most 96 characters). Word-spelled addresses ('a at b dot com') pass the allowlist: a residual risk, not a guarantee.",
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:/-]{1,200}(?![\\s\\S])",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9 ._:/,()'\"\\[\\]+-]{1,120}(?![\\s\\S])",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "properties_allowed": {
+      "items": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9._:-]{1,64}(?![\\s\\S])",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "reason": {
+      "description": "Closed reason; tied to state by the allOf below. credential_refused = Loops answered 401 or 403 for the key.",
+      "enum": [
+        null,
+        "chunk_mismatch",
+        "count_mismatch",
+        "loops_refused",
+        "ambiguous_halt",
+        "rate_exhausted",
+        "not_normalized",
+        "credential_refused",
+        "workflow_live",
+        "property_missing",
+        "list_changed",
+        "window_expired",
+        "voided"
+      ]
+    },
+    "requested_by": {
+      "additionalProperties": false,
+      "properties": {
+        "application": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:/-]{1,200}(?![\\s\\S])",
+              "type": "string"
+            },
+            "label": {
+              "maxLength": 120,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9 ._:/,()'\"\\[\\]+-]{1,120}(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "type": "object"
+        },
+        "device": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:/-]{1,200}(?![\\s\\S])",
+              "type": "string"
+            },
+            "label": {
+              "maxLength": 120,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9 ._:/,()'\"\\[\\]+-]{1,120}(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "device",
+        "application"
+      ],
+      "type": "object"
+    },
+    "rows": {
+      "description": "Count of ROWS (never contacts or people).",
+      "maximum": 100000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schema": {
+      "const": "zeoconnect-batch-approval-view/1"
+    },
+    "state": {
+      "enum": [
+        "pending",
+        "approved",
+        "running",
+        "done",
+        "halted",
+        "refused",
+        "expired",
+        "voided"
+      ]
+    },
+    "tallies": {
+      "additionalProperties": false,
+      "description": "Integers only. sent = accepted + refused + ambiguous.",
+      "properties": {
+        "accepted": {
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ambiguous": {
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chunks_done": {
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "refused": {
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent": {
+          "maximum": 100000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sent",
+        "accepted",
+        "refused",
+        "ambiguous",
+        "chunks_done"
+      ],
+      "type": "object"
+    },
+    "window": {
+      "additionalProperties": false,
+      "properties": {
+        "decided_at": {
+          "oneOf": [
+            {
+              "maxLength": 20,
+              "minLength": 20,
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z(?![\\s\\S])",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expires_at": {
+          "maxLength": 20,
+          "minLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z(?![\\s\\S])",
+          "type": "string"
+        },
+        "not_before": {
+          "maxLength": 20,
+          "minLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z(?![\\s\\S])",
+          "type": "string"
+        }
+      },
+      "required": [
+        "not_before",
+        "expires_at",
+        "decided_at"
+      ],
+      "type": "object"
+    },
+    "workflows": {
+      "description": "The operator's choice C-W: checked = the Broker refuses on a live matching workflow; may_trigger = the page warns that an import can trigger his workflows.",
+      "enum": [
+        "checked",
+        "may_trigger"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "approval_id",
+    "action",
+    "operation_id",
+    "organization",
+    "connection",
+    "list",
+    "rows",
+    "chunk_count",
+    "chunk_size",
+    "batch_sha256",
+    "manifest_sha256",
+    "properties_allowed",
+    "requested_by",
+    "window",
+    "state",
+    "reason",
+    "workflows",
+    "tallies"
+  ],
+  "title": "Batch approval view, slice 1 (import only), revision 3",
+  "type": "object"
+}

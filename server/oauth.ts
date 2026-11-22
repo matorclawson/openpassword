@@ -7,6 +7,10 @@ export const oauthConfig = z.object({
   scope: z.enum([
     'https://www.googleapis.com/auth/youtube.upload',
     'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/presentations',
+    'https://www.googleapis.com/auth/calendar.events',
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/calendar.readonly',
@@ -48,6 +52,45 @@ export async function exchange(fields: Record<string, string>, send: typeof fetc
       access_token: z.string().min(1),
       refresh_token: z.string().optional(),
       expires_in: z.number().positive(),
+    })
+    .parse(await res.json())
+}
+
+export function notionAuthorize(client: string, state: string, callback: string) {
+  const u = new URL('https://api.notion.com/v1/oauth/authorize')
+  u.search = new URLSearchParams({
+    client_id: client,
+    state,
+    redirect_uri: callback,
+    owner: 'user',
+    response_type: 'code',
+  }).toString()
+  return u.href
+}
+export async function notionToken(
+  client: string,
+  secret: string,
+  fields: Record<string, string>,
+  send: typeof fetch,
+) {
+  const res = await send('https://api.notion.com/v1/oauth/token', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(client + ':' + secret).toString('base64'),
+      'Content-Type': 'application/json',
+      'Notion-Version': '2025-09-03',
+    },
+    body: JSON.stringify(fields),
+    redirect: 'error',
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) throw Error('Notion token exchange refused')
+  return z
+    .object({
+      access_token: z.string().min(1),
+      refresh_token: z.string().min(1).optional(),
+      workspace_id: z.string().min(1).optional(),
+      expires_in: z.number().int().positive().optional(),
     })
     .parse(await res.json())
 }

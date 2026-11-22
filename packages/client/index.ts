@@ -78,4 +78,85 @@ export class OpenPassword {
       ...(expect ? { expect } : {}),
     })
   }
+
+  /** Resume an approved YouTube relay session with the original immutable media. */
+  async uploadYouTube(
+    session: {
+      connection_id: string
+      upload_url: string
+      relay_seal: string
+      mime_type: string
+      size_bytes: number
+      content_sha256: string
+    },
+    media: Blob,
+    signal?: AbortSignal,
+  ) {
+    if (!this.token || !session.relay_seal || !media.size || media.size !== session.size_bytes)
+      throw Error('Missing relay authorization or incorrect media size')
+    const chunkSize = 4 * 1024 * 1024
+    const { createHash } = await import('node:crypto')
+    const hash = createHash('sha256')
+    for (let i = 0; i < media.size; i += chunkSize) {
+      signal?.throwIfAborted()
+      hash.update(new Uint8Array(await media.slice(i, i + chunkSize).arrayBuffer()))
+    }
+    if (hash.digest('hex') !== session.content_sha256.replace(/^sha256:/, ''))
+      throw Error('Media digest differs from the approved digest')
+    const probe = 'bytes */' + media.size
+    const exchange = async (range: string, chunk?: Blob) => {
+      const timeout = AbortSignal.timeout(150000)
+      const r = await fetch(this.origin + '/v1/youtube/uploads:relay', {
+        method: 'POST',
+        redirect: 'error',
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'ZEOconnect-Protocol-Version': '1',
+          Authorization: 'Bearer ' + this.token,
+          'x-zeo-upload-link': session.upload_url,
+          'x-zeo-relay-seal': session.relay_seal,
+          'x-zeo-connection': session.connection_id,
+          'x-zeo-content-type': session.mime_type,
+          'x-zeo-content-range': range,
+        },
+        body: chunk,
+      })
+      if (!r.ok || r.headers.get('zeoconnect-protocol-version') !== '1')
+        throw Error('Broker relay refused transfer (' + r.status + ')')
+      return (await r.json()) as {
+        status: number
+        range: string | null
+        resource: { id: string | null; status: { privacyStatus: string | null } } | null
+      }
+    }
+    let response = await exchange(probe),
+      offset = 0,
+      lastEnd = media.size - 1,
+      stalls = 0
+    for (;;) {
+      if ([200, 201].includes(response.status) && response.resource) return response.resource
+      if (response.status !== 308)
+        throw Error('Upload outcome requires reconciliation (' + response.status + ')')
+      const match = response.range === null ? null : /^bytes=0-(\d+)$/.exec(response.range)
+      if (response.range !== null && !match) throw Error('Invalid provider acknowledgement')
+      const next = match ? Number(match[1]) + 1 : 0
+      if (!Number.isSafeInteger(next) || next < offset || next > lastEnd + 1 || next >= media.size)
+        throw Error('Inconsistent provider acknowledgement')
+      stalls = next === offset ? stalls + 1 : 0
+      if (stalls > 3) throw Error('Provider acknowledged no progress')
+      offset = next
+      lastEnd = Math.min(media.size, offset + chunkSize) - 1
+      try {
+        response = await exchange(
+          'bytes ' + offset + '-' + lastEnd + '/' + media.size,
+          media.slice(offset, lastEnd + 1),
+        )
+        if (response.status >= 500 || response.status === 429) response = await exchange(probe)
+      } catch {
+        signal?.throwIfAborted()
+        response = await exchange(probe)
+      }
+    }
+  }
 }

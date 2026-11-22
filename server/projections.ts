@@ -1,3 +1,8 @@
+import {
+  revolutAccounts,
+  revolutTransactions,
+  expenseResult,
+} from '../packages/connectors/revolut.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 const dec = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -59,23 +64,55 @@ export function project(op: string, data: any, args: Record<string, unknown>) {
         retention: 'transient',
       }
     }
+    case 'revolut.expenses.list':
+    case 'revolut.expenses.get':
+    case 'revolut.labels.list':
+    case 'revolut.label_groups.list':
+      return expenseResult(op, data, args)
     case 'revolut.business.accounts.list':
-      return { accounts: data }
-    case 'revolut.business.transactions.read_page': {
-      if (!Array.isArray(data)) throw Error('Invalid page')
-      const count = Number(args.count ?? 100)
-      const dates = data.map((r) => Date.parse(r.created_at))
-      if (dates.some((d) => !Number.isFinite(d))) throw Error('Invalid timestamp')
-      const next = data.length === count ? new Date(Math.min(...dates)).toISOString() : null
-      if (next && args.to && Date.parse(next) >= Date.parse(String(args.to)))
-        throw Error('Continuation stalled')
-      return {
-        transactions: data,
-        observed_at: timestamp,
-        next_to: next,
-        normalization_version: 'revolut-business-read-1',
-      }
+      return revolutAccounts(data)
+    case 'revolut.business.transactions.read_page':
+      return revolutTransactions(data, args)
+    case 'threads.status':
+    case 'instagram.status': {
+      const status = data?.status_code ?? data?.status
+      if (typeof status !== 'string') throw Error('Container status missing')
+      return { ...data, provider_status: status }
     }
+    case 'tiktok.creator_info':
+    case 'tiktok.inbox':
+    case 'tiktok.publish':
+    case 'tiktok.status': {
+      if (data?.error?.code !== 'ok' || !data.data) throw Error('TikTok operation refused')
+      if (op === 'tiktok.creator_info') return data.data
+      if (op !== 'tiktok.status')
+        return { publish_id: z.string().min(1).parse(data.data.publish_id), stage: 'processing' }
+      const status = z.string().parse(data.data.status)
+      const stage = (
+        {
+          SEND_TO_USER_INBOX: 'inbox_delivered',
+          PUBLISH_COMPLETE: 'published',
+          PROCESSING_UPLOAD: 'processing',
+          PROCESSING_DOWNLOAD: 'processing',
+          FAILED: 'failed',
+        } as Record<string, string>
+      )[status]
+      if (!stage) throw Error('Unknown TikTok state')
+      return { stage, provider_status: status, publish_id: args.publish_id }
+    }
+    case 'x.publish':
+      if (!/^\d{1,20}$/.test(data?.data?.id ?? '')) throw Error('Missing X publication ID')
+      return { ...data, post_id: data.data.id, stage: 'published' }
+    case 'facebook.post':
+    case 'instagram.publish':
+    case 'threads.publish':
+    case 'mastodon.publish':
+      if (typeof data?.id !== 'string' || !data.id) throw Error('Missing publication ID')
+      return { ...data, post_id: data.id, stage: 'published' }
+    case 'threads.draft':
+    case 'instagram.media.create':
+      if (typeof data?.id !== 'string' || !data.id) throw Error('Missing container ID')
+      return { ...data, container_id: data.id }
     default:
       return data
   }

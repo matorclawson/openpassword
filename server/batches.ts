@@ -1,6 +1,8 @@
+import { checkContactEmail } from '../packages/connectors/contact-email.ts'
+import { batchView } from './batch-view.ts'
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
-import { setTimeout as delay } from 'node:timers/promises'
+import type { loopsPacer } from './loops-pacing.ts'
 import { z } from 'zod'
 import { digest } from './store.ts'
 const text = z.string().regex(/^[A-Za-z0-9._:/-]{1,200}$/),
@@ -48,10 +50,7 @@ const manifest = z
 type Manifest = z.infer<typeof manifest>
 const row = z
   .object({
-    email: z
-      .email()
-      .max(254)
-      .refine((v) => v === v.toLowerCase() && /^[!-~]+$/.test(v)),
+    email: z.string().refine((s) => checkContactEmail(s) === 'ok'),
     user_id: z.string().regex(/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/),
     source: z
       .string()
@@ -64,6 +63,10 @@ const chunk = z
     batch_id: text,
     index: z.number().int().min(0).max(999),
     rows: z.array(row).min(1).max(100),
+    resume: z
+      .object({ snapshot_version: text, stops_unchanged: z.literal(true) })
+      .strict()
+      .optional(),
   })
   .strict()
 type Row = Record<string, any>
@@ -92,17 +95,21 @@ const denied = (message: string) => ({
 export function batches(
   db: DatabaseSync,
   origin: string,
-  send: typeof fetch,
+  paced: ReturnType<typeof loopsPacer>,
   seal: (v: unknown, ctx: string) => string,
 ) {
   db.exec(`CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY,approval TEXT,tenant TEXT,conn TEXT,actor TEXT,revision INTEGER,manifest TEXT,hash TEXT,state TEXT,reason TEXT,idx INTEGER,sent INTEGER,accepted INTEGER,refused INTEGER,ambiguous INTEGER,UNIQUE(actor,conn,hash));
+ CREATE TABLE IF NOT EXISTS batch_baselines(batch TEXT,idx INTEGER,sent INTEGER,accepted INTEGER,refused INTEGER,ambiguous INTEGER,resumes INTEGER,snapshot TEXT,PRIMARY KEY(batch,idx));
+ CREATE TABLE IF NOT EXISTS batch_decisions(approval TEXT PRIMARY KEY,decided INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS batch_keys(actor TEXT,conn TEXT,idem TEXT,digest TEXT,batch TEXT,idx INTEGER,outcome TEXT,PRIMARY KEY(actor,conn,idem));`)
+  // The supported deployment owns one broker process and one SQLite database.
+  db.exec("UPDATE batches SET state='halted',reason='ambiguous_halt' WHERE state='claimed'")
   const find = (sql: string, ...p: (number | string)[]) =>
     db.prepare(sql).get(...p) as Row | undefined
   const run = (sql: string, ...p: (number | string | null)[]) => db.prepare(sql).run(...p)
-  const times = new Map<string, number>()
   function summary(b: Row, m: Manifest) {
     return {
+      view: batchView(db, b),
       batch_id: b.id,
       approval_id: b.approval,
       state: b.state,
@@ -118,18 +125,19 @@ export function batches(
     }
   }
   async function http(c: Context, path: string, deadline: number, body?: unknown) {
-    const start = Math.max(Date.now(), times.get(c.conn) || 0)
-    times.set(c.conn, start + 125)
-    if (start >= deadline) throw Error('rate_exhausted')
-    await delay(Math.max(0, start - Date.now()))
-    c.reauthorize()
-    const r = await send('https://app.loops.so/api/v1/' + path, {
-      method: body ? 'PUT' : 'GET',
-      headers: { Authorization: 'Bearer ' + c.token, 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-      redirect: 'error',
-      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
-    })
+    const r = await paced(
+      c.conn,
+      'https://app.loops.so/api/v1/' + path,
+      {
+        method: body ? 'PUT' : 'GET',
+        headers: { Authorization: 'Bearer ' + c.token, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        redirect: 'error',
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      },
+      deadline,
+      c.reauthorize,
+    )
     if (!r.ok) {
       await r.body?.cancel()
       throw Error(
@@ -137,7 +145,7 @@ export function batches(
           ? 'credential_refused'
           : r.status === 429
             ? 'rate_exhausted'
-            : r.status >= 400 && r.status < 500
+            : [400, 404, 405, 409, 410, 413, 415, 422].includes(r.status)
               ? 'loops_refused'
               : 'ambiguous_halt',
       )
@@ -149,17 +157,17 @@ export function batches(
     const deadline = Date.now() + 30000,
       ids = new Set<string>()
     let cursor = ''
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 20; i++) {
       const p = await http(
         c,
-        'workflows?perPage=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''),
+        'workflows?perPage=50' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''),
         deadline,
       )
       if (!Array.isArray(p.data) || !p.pagination) throw Error('loops_refused')
       for (const v of p.data) ids.add(text.parse(v.id))
       cursor = p.pagination.nextCursor ?? ''
       if (!cursor) break
-      if (i === 49) throw Error('loops_refused')
+      if (i === 19) throw Error('loops_refused')
     }
     for (const id of ids) {
       const w = await http(c, 'workflows/' + encodeURIComponent(id), deadline)
@@ -329,7 +337,14 @@ export function batches(
     if (!b) return denied('chunk_refused:unknown_batch')
     if (prev?.outcome) return { ...JSON.parse(prev.outcome), receipt: { replayed: true } }
     if (prev) return { status: 'ambiguous', execution_id: b.approval }
-    if (!['approved', 'running'].includes(b.state)) return denied('chunk_refused:not_approved')
+    const resume = Object.hasOwn(c.args, 'resume')
+    if (
+      resume &&
+      !(b.state === 'halted' && ['ambiguous_halt', 'rate_exhausted'].includes(b.reason))
+    )
+      return denied('chunk_refused:not_resumable')
+    if (!resume && !['approved', 'running'].includes(b.state))
+      return denied('chunk_refused:not_approved')
     const m = manifest.parse(JSON.parse(b.manifest))
     if (b.revision !== c.revision || !c.lists.includes(m.list_id))
       return denied('connection_unavailable')
@@ -348,6 +363,8 @@ export function batches(
     const parsed = chunk.safeParse(c.args)
     if (!parsed.success) return halt('bad_row')
     const { rows, index } = parsed.data
+    if (resume && parsed.data.resume?.snapshot_version !== m.snapshot_version)
+      return denied('chunk_refused:attestation_refused')
     if (rows.length !== m.chunk_counts[index]) return halt('count_mismatch')
     if (rows.some((r) => r.source !== undefined && !m.properties_allowed.includes('source')))
       return halt('bad_row')
@@ -364,15 +381,47 @@ export function batches(
       return halt(fixed(e))
     }
     const claimed = atomic(() => {
-      if (
-        Date.now() >= until ||
-        !run(
-          "UPDATE batches SET state='claimed' WHERE id=? AND idx=? AND state IN ('approved','running')",
+      if (Date.now() >= until) return false
+      if (resume) {
+        const base = find('SELECT * FROM batch_baselines WHERE batch=? AND idx=?', id, index)
+        if (
+          !base ||
+          !run(
+            "UPDATE batches SET state='claimed',reason=NULL,sent=?,accepted=?,refused=?,ambiguous=? WHERE id=? AND idx=? AND state='halted' AND reason IN ('ambiguous_halt','rate_exhausted')",
+            base.sent,
+            base.accepted,
+            base.refused,
+            base.ambiguous,
+            id,
+            index,
+          ).changes
+        )
+          return false
+        run(
+          'UPDATE batch_baselines SET resumes=resumes+1,snapshot=? WHERE batch=? AND idx=?',
+          m.snapshot_version,
           id,
           index,
-        ).changes
-      )
-        return false
+        )
+      } else {
+        if (
+          !run(
+            "UPDATE batches SET state='claimed' WHERE id=? AND idx=? AND state IN ('approved','running')",
+            id,
+            index,
+          ).changes
+        )
+          return false
+        run(
+          'INSERT INTO batch_baselines VALUES(?,?,?,?,?,?,0,NULL)',
+          id,
+          index,
+          b.sent,
+          b.accepted,
+          b.refused,
+          b.ambiguous,
+        )
+      }
       run(
         'INSERT INTO batch_keys VALUES(?,?,?,?,?,?,NULL)',
         c.actor,
@@ -395,7 +444,12 @@ export function batches(
           mailingLists: { [m.list_id]: true },
           ...(row.source !== undefined ? { source: row.source } : {}),
         })
-        if (value?.success !== true) throw Error('ambiguous_halt')
+        if (
+          value?.success !== true ||
+          typeof value.id !== 'string' ||
+          !/^[A-Za-z0-9_-]{1,200}$/.test(value.id)
+        )
+          throw Error('ambiguous_halt')
         run('UPDATE batches SET sent=sent+1,accepted=accepted+1 WHERE id=?', id)
       } catch (e) {
         reason = fixed(e)

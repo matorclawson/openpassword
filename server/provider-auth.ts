@@ -4,6 +4,7 @@ export async function scopedToken(
   provider: string,
   stored: string,
   send: typeof fetch,
+  expectedDid?: string,
 ): Promise<string> {
   // Raw provider tokens remain valid input for accounts enrolled before these adapters.
   if (
@@ -63,6 +64,7 @@ export async function scopedToken(
       { 'Content-Type': 'application/json' },
       JSON.stringify({ identifier: b.identifier, password: b.app_password }),
     )
+    if (expectedDid && result.did !== expectedDid) throw Error('Provider identity changed')
     return z.object({ accessJwt: z.string().min(1) }).parse(result).accessJwt
   }
   const app = z

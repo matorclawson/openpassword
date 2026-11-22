@@ -1,3 +1,9 @@
+import { loopEffects, loopsDraftBody } from './loops-draft.js'
+import { revolutQuery, expenseQuery, labelQuery } from './revolut.js'
+export { checkContactEmail } from './contact-email.js'
+import { buildDraft } from './newsletter.js'
+import { googleBatch } from './google-batch.js'
+export { googleBatch, slideObjectId } from './google-batch.js'
 import { sheetsRequest } from './sheets.js'
 export { sheetsResult } from './sheets.js'
 // Fixed provider routes. Callers supply values only for declared fields.
@@ -174,7 +180,37 @@ export const providers: Record<string, Provider> = {
     'Publishing',
     'https://api.x.com',
     action('x.me', '/2/users/me'),
-    action('x.publish', '/2/tweets', '', 'POST', 'text reply', 'text'),
+    action('x.publish', '/2/tweets', '', 'POST', 'text reply media', 'text'),
+  ),
+  tiktok: provider(
+    'TikTok',
+    'Publishing',
+    'https://open.tiktokapis.com',
+    action('tiktok.creator_info', '/v2/post/publish/creator_info/query/', '', 'POST'),
+    action(
+      'tiktok.inbox',
+      '/v2/post/publish/inbox/video/init/',
+      '',
+      'POST',
+      'video_url',
+      'video_url',
+    ),
+    action(
+      'tiktok.publish',
+      '/v2/post/publish/video/init/',
+      '',
+      'POST',
+      'video_url title privacy_level',
+      'video_url title privacy_level',
+    ),
+    action(
+      'tiktok.status',
+      '/v2/post/publish/status/fetch/',
+      '',
+      'POST',
+      'publish_id',
+      'publish_id',
+    ),
   ),
   linkedin: provider(
     'LinkedIn',
@@ -222,7 +258,14 @@ export const providers: Record<string, Provider> = {
     'Finance',
     'https://b2b.revolut.com',
     action('revolut.accounts.read', '/api/1.0/accounts'),
-    action('revolut.transactions.list', '/api/1.0/transactions', 'from to count'),
+    action(
+      'revolut.transactions.list',
+      '/api/1.0/transactions',
+      'account_id from to count type',
+      'GET',
+      '',
+      'account_id',
+    ),
   ),
   supabase: provider(
     'Supabase',
@@ -314,6 +357,16 @@ providers.supabase_data = provider(
   'Developer tools',
   'https://supabase.com',
   action('supabase.rows.read', '/rest/v1/{table}', 'select limit offset order'),
+  action(
+    'supabase.rows.upsert',
+    '/rest/v1/{table}',
+    '',
+    'POST',
+    'row on_conflict',
+    'row on_conflict',
+  ),
+  action('supabase.rows.update', '/rest/v1/{table}', '', 'PATCH', 'row match', 'row match'),
+  action('supabase.rows.delete', '/rest/v1/{table}', '', 'DELETE', 'match', 'match'),
   action('supabase.rows.insert', '/rest/v1/{table}', '', 'POST', 'row', 'row'),
 )
 // Additional fixed routes share the same scope and approval enforcement.
@@ -341,6 +394,62 @@ providers.google_workspace.actions.push(
     'POST',
     'video_id size_bytes content_sha256 mime_type name language',
     'video_id size_bytes content_sha256 mime_type language',
+  ),
+  action(
+    'google.drive.replies.list',
+    '/drive/v3/files/{id}/comments/{comment}/replies',
+    'pageToken pageSize fields includeDeleted',
+  ),
+  action(
+    'google.drive.permissions.create',
+    '/drive/v3/files/{id}/permissions',
+    'sendNotificationEmail fields',
+    'POST',
+    'type role emailAddress domain allowFileDiscovery',
+    'type role',
+  ),
+  action('google.drive.files.delete', '/drive/v3/files/{id}', '', 'DELETE'),
+  action(
+    'google.docs.create',
+    'https://docs.googleapis.com/v1/documents',
+    '',
+    'POST',
+    'title',
+    'title',
+  ),
+  action(
+    'google.slides.create',
+    'https://slides.googleapis.com/v1/presentations',
+    '',
+    'POST',
+    'title',
+    'title',
+  ),
+  action(
+    'google.slides.pages.get',
+    'https://slides.googleapis.com/v1/presentations/{id}/pages/{page}',
+  ),
+  action(
+    'google.sheets.create',
+    'https://sheets.googleapis.com/v4/spreadsheets',
+    '',
+    'POST',
+    'properties sheets',
+    'properties',
+  ),
+  action('google.calendar.events.get', '/calendar/v3/calendars/{calendar}/events/{id}'),
+  action(
+    'google.calendar.events.update',
+    '/calendar/v3/calendars/{calendar}/events/{id}',
+    '',
+    'PATCH',
+    'summary description start end attendees',
+  ),
+  action(
+    'google.calendar.events.delete',
+    '/calendar/v3/calendars/{calendar}/events/{id}',
+    '',
+    'DELETE',
   ),
   action('google.drive.permissions.list', '/drive/v3/files/{id}/permissions', 'pageToken fields'),
   action(
@@ -470,6 +579,30 @@ providers.notion.actions.push(
 )
 providers.loops.actions.push(
   action(
+    loopEffects[0],
+    '/api/v1/email-messages/{email_message_id}',
+    '',
+    'POST',
+    'expected_revision_id campaign_id subject preview_text from_name from_email lmx',
+    'expected_revision_id campaign_id subject preview_text from_name from_email lmx',
+  ),
+  action(
+    loopEffects[1],
+    '/api/v1/campaigns/{campaign_id}',
+    '',
+    'POST',
+    'mailing_list_id audience_segment_id audience_filter',
+  ),
+  action(
+    loopEffects[2],
+    '/api/v1/uploads',
+    '',
+    'POST',
+    'content_type content_length sha256',
+    'content_type content_length sha256',
+  ),
+  action(loopEffects[3], '/api/v1/uploads/{email_asset_id}/complete', '', 'POST'),
+  action(
     'loops.contacts.import_chunk',
     '/api/v1/contacts/update',
     '',
@@ -509,6 +642,15 @@ providers.revolut.actions = [
   ),
 ]
 providers.kit.actions.push(
+  action(
+    'kit.newsletter.inspect_draft',
+    '/v4/broadcasts',
+    '',
+    'GET',
+    'creation_execution_id creation_request_digest',
+    'creation_execution_id creation_request_digest',
+  ),
+  action('kit.newsletter.create_draft', '/v4/broadcasts', '', 'POST', 'draft', 'draft'),
   action('kit.subscribers.read_page', '/v4/subscribers', 'after per_page'),
   action('kit.account.get', '/v4/account'),
   action('kit.account.metrics', '/v4/account/email_stats'),
@@ -523,6 +665,53 @@ providers.kit.actions.push(
   action('kit.sequence_emails.get', '/v4/sequences/{id}/emails/{email}'),
 )
 providers.hubspot.actions.push(
+  action(
+    'hubspot.newsletter.inspect_draft',
+    '/marketing/emails/2026-03',
+    '',
+    'GET',
+    'creation_execution_id creation_request_digest',
+    'creation_execution_id creation_request_digest',
+  ),
+  action(
+    'hubspot.newsletter.read_email_structure',
+    '/marketing/emails/2026-03',
+    '',
+    'GET',
+    'creation_execution_id email_id',
+  ),
+  action(
+    'hubspot.newsletter.upload_template_source',
+    '/cms/v3/source-code/draft/content',
+    '',
+    'PUT',
+    'files bundle_sha256',
+    'files bundle_sha256',
+  ),
+  action(
+    'hubspot.newsletter.publish_template_source',
+    '/cms/v3/source-code/published/content',
+    '',
+    'PUT',
+    'paths bundle_sha256',
+    'paths bundle_sha256',
+  ),
+  action(
+    'hubspot.newsletter.update_draft',
+    '/marketing/emails/2026-03',
+    '',
+    'PATCH',
+    'creation_execution_id draft',
+    'creation_execution_id draft',
+  ),
+  action(
+    'hubspot.newsletter.create_draft',
+    '/marketing/emails/2026-03',
+    '',
+    'POST',
+    'draft',
+    'draft',
+  ),
   action('hubspot.emails.list', '/marketing/v3/emails', 'limit after'),
   action(
     'hubspot.emails.create',
@@ -536,6 +725,7 @@ providers.hubspot.actions.push(
   action('hubspot.files.get', '/files/v3/files/{id}'),
 )
 providers.bluesky.actions.push(
+  action('bluesky.post.create', '/xrpc/com.atproto.repo.createRecord', '', 'POST', 'text', 'text'),
   action(
     'bluesky.feed',
     '/xrpc/app.bsky.feed.getAuthorFeed',
@@ -554,23 +744,42 @@ providers.bluesky.actions.push(
   ),
 )
 providers.threads.actions.push(
+  action('threads.container.create', '/v1.0/me/threads', '', 'POST', 'text', 'text'),
+  action(
+    'threads.container.publish',
+    '/v1.0/me/threads_publish',
+    '',
+    'POST',
+    'creation_execution_id',
+    'creation_execution_id',
+  ),
+  action(
+    'threads.container.status',
+    '/v1.0/me',
+    '',
+    'GET',
+    'creation_execution_id',
+    'creation_execution_id',
+  ),
+  action('threads.status', '/v1.0/{id}', 'fields'),
   action('threads.posts.list', '/v1.0/{id}/threads', 'fields after limit'),
   action(
     'threads.draft',
     '/v1.0/{id}/threads',
     '',
     'POST',
-    'media_type text image_url video_url',
+    'media_type text image_url video_url children is_carousel_item alt_text',
     'media_type',
   ),
 )
 providers.instagram.actions.push(
+  action('instagram.status', '/v22.0/{id}', 'fields'),
   action(
     'instagram.media.create',
     '/v22.0/{id}/media',
     '',
     'POST',
-    'image_url video_url caption media_type',
+    'image_url video_url caption media_type children is_carousel_item alt_text',
   ),
 )
 providers.linkedin.actions.push(
@@ -581,6 +790,16 @@ providers.linkedin.actions.push(
     'POST',
     'author commentary visibility distribution lifecycleState',
     'author commentary visibility distribution lifecycleState',
+  ),
+)
+providers.hubspot.actions.push(
+  action(
+    'hubspot.files.upload_bundle',
+    '/files/v3/files',
+    '',
+    'POST',
+    'issue_id files bundle_sha256 template_files update_draft',
+    'issue_id files bundle_sha256',
   ),
 )
 providers.mastodon.actions.push(
@@ -621,7 +840,7 @@ export function buildRequest(
   })
   const headers: Record<string, string> = {
     Accept: 'application/json',
-    'User-Agent': 'OpenPassword/0.1',
+    'User-Agent': 'OpenPassword/0.2',
   }
   if (providerId === 'telegram') path = path.replace('~token', encodeURIComponent(secret))
   else if (providerId === 'twilio') {
@@ -652,12 +871,77 @@ export function buildRequest(
       if (!['string', 'number', 'boolean'].includes(typeof args[k]))
         throw Error('Invalid query field')
       url.searchParams.set(
-        operation === 'revolut.business.transactions.read_page' && k === 'account_id'
+        ['revolut.business.transactions.read_page', 'revolut.transactions.list'].includes(
+          operation,
+        ) && k === 'account_id'
           ? 'account'
           : k,
         String(args[k]),
       )
     }
+  if (providerId === 'supabase_data') {
+    const identifier = /^[A-Za-z_][A-Za-z_0-9]{0,62}$/
+    const fields = (v: unknown) =>
+      typeof v === 'string' && v.split(',').every((x) => identifier.test(x))
+    if (args.select !== undefined && args.select !== '*' && !fields(args.select))
+      throw Error('Select columns on the bound table')
+    if (
+      args.order !== undefined &&
+      (typeof args.order !== 'string' ||
+        !args.order
+          .split(',')
+          .every((x) =>
+            /^[A-Za-z_][A-Za-z_0-9]{0,62}(?:\.(?:asc|desc))?(?:\.nulls(?:first|last))?$/.test(x),
+          ))
+    )
+      throw Error('Invalid sort order')
+    for (const [key, max] of [
+      ['limit', 1000],
+      ['offset', 1000000],
+    ] as const) {
+      if (args[key] !== undefined && (!/^\d+$/.test(String(args[key])) || Number(args[key]) > max))
+        throw Error('Invalid page bounds')
+    }
+    if (operation.endsWith('.upsert')) {
+      if (!fields(args.on_conflict)) throw Error('Invalid conflict columns')
+      url.searchParams.set('on_conflict', String(args.on_conflict))
+      headers.Prefer = 'resolution=merge-duplicates,return=representation'
+    }
+    if (operation.endsWith('.update') || operation.endsWith('.delete')) {
+      const match = args.match
+      if (
+        !match ||
+        typeof match !== 'object' ||
+        Array.isArray(match) ||
+        Object.keys(match).length === 0 ||
+        Object.keys(match).length > 12
+      )
+        throw Error('A bounded equality filter is required')
+      for (const [field, value] of Object.entries(match)) {
+        if (
+          !identifier.test(field) ||
+          !['boolean', 'string', 'number'].includes(typeof value) ||
+          String(value).length > 2048
+        )
+          throw Error('Invalid filter')
+        if (['select', 'order', 'limit', 'offset', 'or', 'and', 'on_conflict'].includes(field))
+          throw Error('Reserved filter field')
+        url.searchParams.set(field, 'eq.' + String(value))
+      }
+      headers.Prefer = 'return=representation'
+    }
+    if (operation.endsWith('.upsert') || operation.endsWith('.update')) {
+      const row = args.row
+      if (
+        !row ||
+        typeof row !== 'object' ||
+        Array.isArray(row) ||
+        !Object.keys(row).length ||
+        !Object.keys(row).every((k) => identifier.test(k))
+      )
+        throw Error('Invalid row')
+    }
+  }
   if (operation === 'github.repos.search') {
     if (!url.searchParams.has('sort')) url.searchParams.set('sort', 'updated')
     if (!url.searchParams.has('order')) url.searchParams.set('order', 'desc')
@@ -679,7 +963,15 @@ export function buildRequest(
       throw Error('Invalid page size')
     url.searchParams.set('per_page', String(n))
   }
-  if (operation === 'revolut.business.transactions.read_page') {
+  if (operation === 'revolut.expenses.list')
+    url.searchParams.set('count', String(expenseQuery.parse(args).count))
+  if (['revolut.label_groups.list', 'revolut.labels.list'].includes(operation))
+    url.searchParams.set('limit', String(labelQuery.parse(args).limit))
+  if (
+    ['revolut.business.transactions.read_page', 'revolut.transactions.list'].includes(operation)
+  ) {
+    revolutQuery.parse(args)
+    if (args.count === undefined) url.searchParams.set('count', '100')
     const count = args.count ?? 100
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 1000)
       throw Error('Invalid transaction count')
@@ -693,9 +985,59 @@ export function buildRequest(
       /[\r\n]/.test(args.name))
   )
     throw Error('Invalid campaign name')
-  const data = Object.fromEntries(
-    a.body.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]),
+  let data: Record<string, unknown> = [
+    'kit.newsletter.create_draft',
+    'hubspot.newsletter.create_draft',
+    'hubspot.newsletter.update_draft',
+  ].includes(operation)
+    ? buildDraft(providerId as 'kit' | 'hubspot', args.draft)
+    : Object.fromEntries(a.body.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]))
+  if (
+    operation === 'hubspot.newsletter.update_draft' &&
+    !(args.draft && Object.hasOwn(args.draft as object, 'audience'))
   )
+    delete data.to
+  if (
+    [
+      'google.docs.batch_update',
+      'google.slides.batch_update',
+      'google.sheets.batch_update',
+    ].includes(operation)
+  )
+    data.requests = googleBatch(
+      operation.split('.')[1] as 'docs' | 'slides' | 'sheets',
+      data.requests as Record<string, unknown>[],
+    )
+  if (operation === 'tiktok.inbox' || operation === 'tiktok.publish') {
+    const media = new URL(String(args.video_url))
+    if (media.protocol !== 'https:' || media.username || media.password || media.hash)
+      throw Error('Invalid video URL')
+    const source_info = { source: 'PULL_FROM_URL', video_url: media.href }
+    if (operation === 'tiktok.publish') {
+      if (
+        ![
+          'PUBLIC_TO_EVERYONE',
+          'MUTUAL_FOLLOW_FRIENDS',
+          'FOLLOWER_OF_CREATOR',
+          'SELF_ONLY',
+        ].includes(String(args.privacy_level)) ||
+        typeof args.title !== 'string' ||
+        Array.from(args.title).length > 2200
+      )
+        throw Error('Invalid TikTok publication')
+      data = {
+        source_info,
+        post_info: {
+          title: args.title,
+          privacy_level: args.privacy_level,
+          disable_duet: true,
+          disable_comment: true,
+          disable_stitch: true,
+        },
+      }
+    } else data = { source_info }
+  }
+  if (loopEffects.includes(operation)) data = loopsDraftBody(operation, args)
   let body: string | undefined
   if (a.method !== 'GET') {
     const form = providerId === 'twilio'

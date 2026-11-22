@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const opaque = () => randomBytes(32).toString('base64url')
-export const digest = (v: string) => createHash('sha256').update(v).digest('hex')
+export const digest = (v: string | Uint8Array) => createHash('sha256').update(v).digest('hex')
 function persistent(path: string, create: () => string) {
   try {
     writeFileSync(path, create(), { mode: 0o600, flag: 'wx' })
