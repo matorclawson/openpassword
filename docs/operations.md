@@ -83,19 +83,22 @@ Model usage is captured from JSON and streaming usage frames even without a tari
 
 ## Release package
 
-On a Linux host with Node 24.19.0 (the release refuses any other version), check out the exact commit to release and run `make package COMMIT=<sha>`, then `make checksum`. `make package` refuses a dirty tree or a different HEAD, builds that commit in a scratch directory from `git archive`, keeps only production dependencies and the runtime files, and writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256, source epoch) and a completion marker. `make checksum` writes the `.sha256` sidecar only for an archive that matches its marker and `RELEASE.json`. The archive is deterministic given the same commit and toolchain. It includes built output and installed dependencies, so build it on the target architecture. ffmpeg and Chromium are not included.
+On a Linux host with Node 24.19.0 (the release refuses any other version), check out the exact commit to release and run `make package COMMIT=<sha>`, then `make checksum`. `make package` refuses a dirty tree or a different HEAD, builds that commit in a scratch directory from `git archive`, keeps only production dependencies and the runtime files, and writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256, source epoch) and a completion marker. `make checksum` writes the `.sha256` sidecar only for an archive that matches its marker and `RELEASE.json`. Two builds of the same commit and toolchain are reproducible except for the per-build files listed in `scripts/per-build-files.txt` and in `RELEASE.json` (`per_build_files`): Next.js generates a secret server-reference key on every build, which must differ per build and is never made deterministic. `make package` also writes `<name>.manifest`, the sha256 of every other file, and `scripts/compare-builds.sh <dirA> <dirB>` compares two manifests. Build diagnostics (`.next/trace`, `.next/diagnostics`, `.next/cache`) are not shipped. It includes built output and installed dependencies, so build it on the target architecture. ffmpeg and Chromium are not included.
 
-To install, run this as one script (it stops at the first failure) with `VERSION` set and the archive and its `.sha256` in the current directory:
+To install, save this as a Bash script (it stops at the first failure) with `VERSION` and `ARCH` set (for example `VERSION=0.2.0 ARCH=arm64`) and the archive and its `.sha256` in the current directory:
 
-```sh
+```bash
 set -euo pipefail
-A=openpassword-$VERSION-linux-<arch>.tar.gz
+A="openpassword-${VERSION}-linux-${ARCH}.tar.gz"
 sha256sum -c "$A.sha256"                     # nothing below runs if this fails
 R=/opt/openpassword/releases
-sudo test ! -e "$R/$VERSION"                 # never overlay an existing or active release
+sudo mkdir -p "$R"
+if sudo test -e "$R/$VERSION"; then echo "release $VERSION already exists" >&2; exit 1; fi   # never overlay a release
 NEW=$(sudo mktemp -d "$R/.new-XXXXXX")
 sudo tar -xzf "$A" -C "$NEW" --no-same-owner
-sudo test -f "$NEW/server/main.ts" && sudo test -f "$NEW/node_modules/next/dist/bin/next"
+for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.js .next/BUILD_ID; do
+  if ! sudo test -f "$NEW/$f"; then echo "missing $f in the release; not switching" >&2; exit 1; fi
+done
 sudo chmod 755 "$NEW"
 sudo mv -T "$NEW" "$R/$VERSION"
 sudo ln -sfn "releases/$VERSION" /opt/openpassword/current.new

@@ -9,7 +9,7 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 - Batch manifest and approval-view schema identifiers, and the human-delegation token type, use the `openpassword-` prefix.
 - The delegation key document is served at `/.well-known/openpassword-delegation-keys.json`.
 - Notebook conversion receipts use the schema `openpassword.notebook-semantics.v1`. Nothing reads the earlier identifier, so earlier receipts are not re-verified.
-- Adds `make package COMMIT=<sha>` and `make checksum`. The release is built from that exact commit, requires Node 24.19.0, ships only runtime files and production dependencies, and produces a deterministic archive with `RELEASE.json`, a completion marker and a `.sha256` sidecar. The corresponding-source archive now includes the packaging scripts and has normalized metadata.
+- Adds `make package COMMIT=<sha>` and `make checksum`. The release is built from that exact commit, requires Node 24.19.0, ships only runtime files and production dependencies, and produces an archive that is reproducible except for the listed per-build secret files (`scripts/per-build-files.txt`), with `RELEASE.json`, a manifest, a completion marker and a `.sha256` sidecar. Build diagnostics are not shipped. The corresponding-source archive now includes the packaging scripts and has normalized metadata.
 - The systemd units run from `/opt/openpassword/current`, a symlink to a versioned release directory.
 - The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
 

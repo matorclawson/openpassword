@@ -6,7 +6,9 @@
 # build output, untracked files and any .env* cannot reach the archive. The archive root is the
 # release directory itself: extracted into /opt/openpassword/releases/<version> its entry points
 # sit where the systemd units' WorkingDirectory (/opt/openpassword/current) resolves.
-# Output (dist-release/): <name>.tar.gz, RELEASE.json, <name>.complete (written last).
+# Output (dist-release/): <name>.tar.gz, <name>.manifest, RELEASE.json, <name>.complete (written last).
+# Two builds of one commit must have identical manifests; only the per-build files listed in
+# scripts/per-build-files.txt may differ (see scripts/compare-builds.sh).
 set -euo pipefail
 umask 022
 cd "$(dirname "$0")/.."
@@ -47,7 +49,7 @@ export SOURCE_DATE_EPOCH=$epoch
 export OPENPASSWORD_BUILD_ID=$commit
 [ -n "$OPENPASSWORD_BUILD_ID" ] || { echo "package: empty build id" >&2; exit 1; }
 # Version, lockfile and Makefile are read from the exported files, not the checkout.
-version=$(node -p "require('$out/build/package.json').version")
+version=$(node -p 'require(process.argv[1]).version' "$out/build/package.json")
 machine=$(uname -m)
 case "$machine" in aarch64|arm64) arch=arm64 ;; x86_64) arch=x64 ;; *) arch=$machine ;; esac
 name="openpassword-$version-linux-$arch"
@@ -58,7 +60,7 @@ name="openpassword-$version-linux-$arch"
   npm run build
   npm prune --omit=dev
 )
-dev_only=$(node -e "const p=require('$out/build/package.json');for(const k of Object.keys(p.devDependencies||{}))if(!(p.dependencies||{})[k])console.log(k)")
+dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(!(p.dependencies||{})[k])console.log(k)" "$out/build/package.json")
 for k in $dev_only; do
   [ ! -e "$out/build/node_modules/$k" ] || { echo "package: development dependency $k survived the prune" >&2; exit 1; }
 done
@@ -72,18 +74,30 @@ done
 # 2. Stage an explicit runtime payload.
 payload=(package.json package-lock.json tsconfig.json next.config.ts next-env.d.ts LICENSE README.md CHANGELOG.md PARITY.md app deploy docs public server packages .next node_modules)
 for p in "${payload[@]}"; do [ -e "$out/build/$p" ] || { echo "package: missing $p in the build" >&2; exit 1; }; done
-tar -C "$out/build" --exclude=.next/cache --exclude='.env*' --exclude='packages/*/node_modules' -cf - "${payload[@]}" | tar -xf - -C "$out/stage"
-rm -rf "$out/stage/.next/cache"
+tar -C "$out/build" --exclude=.next/cache --exclude=.next/trace --exclude='.next/trace-*' --exclude=.next/diagnostics --exclude='.env*' --exclude='packages/*/node_modules' -cf - "${payload[@]}" | tar -xf - -C "$out/stage"
+rm -rf "$out/stage/.next/cache" "$out/stage/.next/diagnostics" "$out/stage/.next/trace" "$out/stage"/.next/trace-*
 stray=$(find "$out/stage" -name '.env*')
 if [ -n "$stray" ]; then echo "package: .env file in payload" >&2; exit 1; fi
 
-# 3. Provenance.
+# 3. Provenance. Files that legitimately differ per build are listed, one exact path per line, in
+# scripts/per-build-files.txt (Next generates a secret server-reference key on every build; it must
+# not be made deterministic). The manifest lists the sha256 of every other file.
+per_build=$(grep -v '^#' "$out/build/scripts/per-build-files.txt" | grep -v '^$' || true)
+(cd "$out/stage" && find . -type f -o -type l | LC_ALL=C sort) > "$out/files.list"
+: > "$out/manifest.tmp"
+while IFS= read -r f; do
+  f=${f#./}
+  [ "$f" = RELEASE.json ] && continue
+  if grep -qxF "$f" <<<"$per_build"; then continue; fi
+  if [ -L "$out/stage/$f" ]; then printf 'link  %s -> %s\n' "$f" "$(readlink "$out/stage/$f")" >> "$out/manifest.tmp"; else printf '%s  %s\n' "$(sha "$out/stage/$f")" "$f" >> "$out/manifest.tmp"; fi
+done < "$out/files.list"
+manifest_sha=$(sha "$out/manifest.tmp")
 lock=$(sha "$out/build/package-lock.json")
 node_path=$(command -v node)
 node_sha=$(sha "$node_path")
-node - "$commit" "$tree" "$version" "$arch" "$node_version" "$node_sha" "$lock" "$epoch" > "$out/stage/RELEASE.json" <<'JS'
-const [commit, tree, version, arch, node, node_binary_sha256, lockfile_sha256, source_epoch] = process.argv.slice(2)
-console.log(JSON.stringify({ name: 'openpassword', version, commit, tree, platform: 'linux', arch, node, node_binary_sha256, lockfile_sha256, source_epoch: Number(source_epoch) }, null, 2))
+node - "$commit" "$tree" "$version" "$arch" "$node_version" "$node_sha" "$lock" "$epoch" "$manifest_sha" "$per_build" > "$out/stage/RELEASE.json" <<'JS'
+const [commit, tree, version, arch, node, node_binary_sha256, lockfile_sha256, source_epoch, manifest_sha256, perBuild] = process.argv.slice(2)
+console.log(JSON.stringify({ name: 'openpassword', version, commit, tree, platform: 'linux', arch, node, node_binary_sha256, lockfile_sha256, source_epoch: Number(source_epoch), manifest_sha256, per_build_files: perBuild.split('\n').filter(Boolean) }, null, 2))
 JS
 
 # 4. Deterministic archive, written under a temporary name and renamed only when complete.
@@ -96,6 +110,8 @@ done
 if grep -Eq '(^|/)\.env|^\./\.next/cache|^\./node_modules/(playwright|playwright-core)(/|$)' <<<"$listing"; then rm -f "$tmp"; echo "package: archive contains excluded files" >&2; exit 1; fi
 mv "$tmp" "$out/$name.tar.gz"
 cp "$out/stage/RELEASE.json" "$out/RELEASE.json"
+mv "$out/manifest.tmp" "$out/$name.manifest"
+rm -f "$out/files.list"
 rm -rf "$out/build" "$out/stage"
 archive_sha=$(sha "$out/$name.tar.gz")
 printf '%s  %s\n' "$archive_sha" "$name.tar.gz" > "$out/$name.complete"
