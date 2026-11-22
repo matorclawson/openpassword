@@ -1124,6 +1124,7 @@ export default function Page() {
                   checked.some((op) =>
                     [
                       'loops.newsletter.create_campaign',
+                      'loops.newsletter.update_email_message',
                       'hubspot.newsletter.update_draft',
                     ].includes(op),
                   ) && (
