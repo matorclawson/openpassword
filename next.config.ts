@@ -2,6 +2,8 @@ import type { NextConfig } from 'next'
 const config: NextConfig = {
   poweredByHeader: false,
   devIndicators: false,
+  // A release sets OPENPASSWORD_BUILD_ID to its commit so two builds of that commit match.
+  generateBuildId: () => process.env.OPENPASSWORD_BUILD_ID || null,
   async rewrites() {
     return [
       {
