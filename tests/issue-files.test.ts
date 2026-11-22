@@ -101,6 +101,7 @@ test('HubSpot issue stages bound images, approves once, substitutes the returned
   const body = {
     connection_id: c,
     operation_id: bundleOperation,
+    connector_revision: 'hubspot.newsroom@5',
     arguments: args,
     idempotency_key: 'one',
   }

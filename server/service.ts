@@ -42,6 +42,22 @@ const canonical = (v: unknown): string =>
       : x,
   )
 type Row = Record<string, any>
+function connectorRevision(provider: string, op: string) {
+  if (sourceOperation(op)) return provider + '.sources@1'
+  if (provider === 'google_sheets') return 'google.sheets@1'
+  if (['google.gmail.messages.read_page', 'google.gmail.labels.list'].includes(op))
+    return 'google.gmail.newsroom@1'
+  if (op.startsWith('hubspot.newsletter.') || op === bundleOperation) return 'hubspot.newsroom@5'
+  if (op.startsWith('kit.newsletter.') || op === 'kit.subscribers.read_page')
+    return 'kit.newsroom@3'
+  if (op.startsWith('loops.newsletter.') || op.startsWith('loops.contacts.'))
+    return 'loops.newsroom@2'
+  if (op === 'bluesky.post.create') return 'bluesky.post@1'
+  if (op.startsWith('threads.container.')) return 'threads.post@1'
+  if (op.startsWith('revolut.business.')) return 'revolut-business-read@1'
+  if (op.endsWith('.upload_session.create')) return 'google.youtube@1'
+  return '1'
+}
 export function service(
   dir: string,
   origin = 'http://localhost:3000',
@@ -503,7 +519,11 @@ export function service(
       external_identity: c.identity,
       operations: providers[c.provider].actions
         .filter((a) => ops.includes(a.id))
-        .map((a) => ({ ...a, approval: a.method === 'GET' ? 'none' : 'exact' })),
+        .map((a) => ({
+          ...a,
+          connector_revision: connectorRevision(c.provider, a.id),
+          approval: a.method === 'GET' ? 'none' : 'exact',
+        })),
       resources: JSON.parse(get('SELECT labels FROM resources WHERE conn=?', c.id)?.labels || '[]'),
       model_lease:
         get('SELECT model,remaining,max_tokens FROM model_leases WHERE grant_id=?', g.id) || null,
@@ -1389,6 +1409,14 @@ export function service(
       fail(403, 'Outside grant')
     const c = conn(g.tenant, b.connection_id),
       a = providers[c.provider].actions.find((x) => x.id === b.operation_id)!
+    const revision = connectorRevision(c.provider, a.id)
+    const legacyOne =
+      b.connector_revision === '1' &&
+      !sourceOperation(a.id) &&
+      c.provider !== 'google_sheets' &&
+      !['google.gmail.messages.read_page', 'google.gmail.labels.list'].includes(a.id)
+    if (b.connector_revision && b.connector_revision !== revision && !legacyOne)
+      fail(400, 'Unknown connector revision')
     const hash = digest(
       canonical([b.operation_id, b.arguments, b.expect ?? null, b.connector_revision ?? null]),
     )
@@ -1460,15 +1488,6 @@ export function service(
     const gmail =
       a.id.startsWith('google.gmail.') &&
       ['google.gmail.labels.list', 'google.gmail.messages.read_page'].includes(a.id)
-    const revision = sourceOperation(a.id)
-      ? c.provider + '.sources@1'
-      : c.provider === 'google_sheets'
-        ? 'google.sheets@1'
-        : gmail
-          ? 'google.gmail.newsroom@1'
-          : '1'
-    if (b.connector_revision && b.connector_revision !== revision)
-      fail(400, 'Unknown connector revision')
     const ex = old?.id ?? 'exec_' + randomUUID(),
       effect = a.method !== 'GET' && !['tiktok.status', 'tiktok.creator_info'].includes(a.id)
     if (old?.state === 'denied') return { status: 'refused', execution_id: ex }
