@@ -109,3 +109,11 @@ At first launch you can also expand **Create administrator with social sign-in**
 Under **Workspace → My profile**, owners, editors and viewers can add or change their username and password, link a configured Google, GitHub or Apple account, and remove individual methods. Each identity belongs to one profile. Linking requires a signed-in session. A workspace member can use their issued access token to enroll. The owner's **Authentication** settings configure the provider applications for the installation. Removing a provider is blocked if a profile depends exclusively on it.
 
 For Apple, configure a Services ID, register the HTTPS domain and the displayed return URL in Apple Developer, and enter a signed Apple client-secret JWT. Rotate the JWT before expiry using the same Services ID. Local installations need a registered HTTPS domain for Apple. Password sign-in works on loopback.
+
+### Credential ownership and sharing
+
+Each workspace is an organization boundary. **Connections** lists the provider accounts you can use, with their source: **Organization**, **Owned by you**, or **Shared by** a named owner. The grant picker uses the same connections. Agent access uses scoped, expiring device tokens; the provider secret stays in the broker.
+
+Only the administrator can add an organization credential. It is available to the entire workspace. Any active member can add a personal credential, which starts private. The owner can use **Edit access** to rename it and share with specific active people or everyone in that workspace. Rotation and revocation belong to the credential owner; the administrator manages organization-owned credentials. Sharing a personal credential with everyone preserves its personal ownership.
+
+Removing someone's access invalidates agent grants they issued for that credential. Restoring sharing requires a new grant. Removing a member invalidates grants issued by that member and grants against that member's personal credentials. Existing installations migrate previously workspace-wide connections to organization ownership. Sign-in methods and human vault items use their existing access rules.

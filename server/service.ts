@@ -143,6 +143,9 @@ export function service(
       member?.role === 'viewer' &&
       r.method !== 'GET' &&
       !['/admin/logout', '/delegate/confirm'].includes(r.url) &&
+      !/^\/admin\/(intake|connections(?:\/[^/?]+(?:\/(?:sharing|rotate|oauth-refresh))?)?|grants(?:\/[^/?]+)?|approvals\/[^/?]+|oauth\/(google|notion))$/.test(
+        r.url,
+      ) &&
       !r.url.startsWith('/profile/') &&
       !/^\/auth\/(apple|github|google)\/(start|callback)(\?|$)/.test(r.url)
     )
@@ -156,6 +159,100 @@ export function service(
       member: member?.id || null,
     }
   }
+  db.exec(`CREATE TABLE IF NOT EXISTS credential_ownership(conn TEXT PRIMARY KEY,owner TEXT NOT NULL,visibility TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS credential_shares(conn TEXT,profile TEXT,PRIMARY KEY(conn,profile));
+    CREATE TABLE IF NOT EXISTS grant_issuers(grant_id TEXT PRIMARY KEY,profile TEXT NOT NULL);
+    INSERT OR IGNORE INTO credential_ownership SELECT id,'org','organization' FROM connections;`)
+  type Principal = ReturnType<typeof session>
+  const profileId = (s: Principal): string => s.member || 'owner'
+  function ownership(c: string) {
+    return (
+      get('SELECT * FROM credential_ownership WHERE conn=?', c) ??
+      fail(404, 'Connection unavailable')
+    )
+  }
+  function manages(s: Principal, c: string) {
+    const a = ownership(c)
+    return a.owner === 'org' ? s.role === 'owner' : a.owner === profileId(s)
+  }
+  function available(c: string, profile: string) {
+    const a = ownership(c)
+    if (
+      a.owner !== 'org' &&
+      a.owner !== 'owner' &&
+      !get('SELECT id FROM members WHERE id=? AND active=1', a.owner)
+    )
+      return false
+    return (
+      a.owner === profile ||
+      a.visibility === 'organization' ||
+      !!get('SELECT 1 FROM credential_shares WHERE conn=? AND profile=?', c, profile)
+    )
+  }
+  function own(r: FastifyRequest, c: string) {
+    const s = session(r)
+    conn(s.tenant, c)
+    if (!manages(s, c)) fail(403, 'Credential owner required')
+  }
+  function recordOwner(s: Principal, c: string, scope?: string) {
+    const org = (scope ?? (s.member ? 'personal' : 'organization')) === 'organization'
+    if (org && s.role !== 'owner')
+      fail(403, 'Only the administrator can add organization credentials')
+    run(
+      'INSERT INTO credential_ownership VALUES(?,?,?)',
+      c,
+      org ? 'org' : profileId(s),
+      org ? 'organization' : 'private',
+    )
+  }
+  function deviceIdentity(g: Row, c: Row) {
+    const issuer =
+      get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner'
+    const owner = ownership(c.id).owner
+    return issuer === owner || (owner === 'org' && issuer === 'owner') ? c.identity : c.id
+  }
+  function grantManager(s: Principal, g: Row) {
+    return (
+      manages(s, g.connection_id) ||
+      (get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner') ===
+        profileId(s)
+    )
+  }
+  api.post('/admin/connections/:id/sharing', async (r) => {
+    const s = session(r),
+      c = id(r)
+    own(r, c)
+    const b = z
+      .object({
+        label: name,
+        visibility: z.enum(['private', 'specific', 'organization']),
+        recipients: z.array(name).max(100),
+      })
+      .parse(r.body)
+    if (ownership(c).owner === 'org' && b.visibility !== 'organization')
+      fail(422, 'Organization credentials are available to the whole workspace')
+    return tx(() => {
+      run('DELETE FROM credential_shares WHERE conn=?', c)
+      if (b.visibility === 'specific')
+        for (const p of new Set(b.recipients)) {
+          if (
+            p !== 'owner' &&
+            !get('SELECT id FROM members WHERE tenant=? AND active=1 AND id=?', s.tenant, p)
+          )
+            fail(422, 'Select an active workspace member')
+          run('INSERT INTO credential_shares VALUES(?,?)', c, p)
+        }
+      run('UPDATE credential_ownership SET visibility=? WHERE conn=?', b.visibility, c)
+      run('UPDATE connections SET label=? WHERE id=?', b.label, c)
+      for (const g of all(
+        'SELECT g.id,i.profile FROM grants g JOIN grant_issuers i ON g.id=i.grant_id WHERE connection_id=? AND active=1',
+        c,
+      ))
+        if (!available(c, g.profile)) run('UPDATE grants SET active=0 WHERE id=?', g.id)
+      event(s.tenant, 'Credential sharing updated', c)
+      return { ok: true }
+    })
+  })
   function grant(r: FastifyRequest) {
     if (!/^Bearer [A-Za-z0-9_-]+$/.test(r.headers.authorization || ''))
       fail(401, 'Device bearer required')
@@ -166,6 +263,13 @@ export function service(
         now(),
         now(),
       ) ?? fail(401, 'Device access expired')
+    const issuer =
+      get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner'
+    if (
+      !available(g.connection_id, issuer) ||
+      (issuer !== 'owner' && !get('SELECT id FROM members WHERE id=? AND active=1', issuer))
+    )
+      fail(401, 'Device access revoked')
     actor(g.id)
     return g
   }
@@ -354,9 +458,9 @@ export function service(
         t,
       ).map((r) => r.provider),
       billing: all(
-        "SELECT g.label,b.available,b.tariff,COALESCE(SUM(c.charged),0) AS spent,COALESCE(SUM(CASE WHEN c.state IN ('reserved','held') THEN c.reserved ELSE 0 END),0) AS held FROM model_budgets b JOIN grants g ON b.grant_id=g.id LEFT JOIN model_charges c ON c.grant_id=g.id WHERE g.tenant=? GROUP BY b.grant_id",
+        "SELECT g.id,g.connection_id,g.label,b.available,b.tariff,COALESCE(SUM(c.charged),0) AS spent,COALESCE(SUM(CASE WHEN c.state IN ('reserved','held') THEN c.reserved ELSE 0 END),0) AS held FROM model_budgets b JOIN grants g ON b.grant_id=g.id LEFT JOIN model_charges c ON c.grant_id=g.id WHERE g.tenant=? GROUP BY b.grant_id",
         t,
-      ),
+      ).filter((g) => grantManager(s, g)),
       paused: !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
       items: all('SELECT id,title,username,updated FROM items WHERE tenant=? ORDER BY title', t),
       apps:
@@ -366,6 +470,10 @@ export function service(
               t,
             )
           : [],
+      directory: [
+        { id: 'owner', label: 'Administrator' },
+        ...all('SELECT id,label FROM members WHERE tenant=? AND active=1 ORDER BY label', t),
+      ],
       members:
         s.role === 'owner' ? all('SELECT id,label,role,active FROM members WHERE tenant=?', t) : [],
       workspaces:
@@ -376,27 +484,53 @@ export function service(
       connections: all(
         'SELECT id,provider,label,identity,revision,active FROM connections WHERE tenant=? ORDER BY label',
         t,
-      ),
+      )
+        .filter((c) => available(c.id, profileId(s)))
+        .map((c) => {
+          const a = ownership(c.id),
+            manage = manages(s, c.id)
+          return {
+            ...c,
+            identity: manage ? c.identity : '',
+            manage,
+            visibility: a.visibility,
+            source:
+              a.owner === 'org'
+                ? 'Organization'
+                : manage
+                  ? 'Owned by you'
+                  : 'Shared by ' +
+                    (a.owner === 'owner'
+                      ? 'Administrator'
+                      : (get('SELECT label FROM members WHERE id=?', a.owner)?.label ?? 'member')),
+            recipients: manage
+              ? all('SELECT profile FROM credential_shares WHERE conn=?', c.id).map(
+                  (x) => x.profile,
+                )
+              : [],
+          }
+        }),
       grants: all(
         'SELECT id,label,connection_id,ops,expires,active FROM grants WHERE tenant=? ORDER BY rowid DESC',
         t,
-      ),
-      approvals:
-        s.role === 'viewer'
-          ? []
-          : all(
-              "SELECT id,actor,conn,op,preview,created FROM runs WHERE tenant=? AND state='pending' ORDER BY created",
-              t,
-            ).map((x) => ({
-              ...x,
-              preview:
-                x.op === 'loops.contacts.import_chunk'
-                  ? batchView(db, get('SELECT * FROM batches WHERE approval=?', x.id)!)
-                  : open(x.preview, x.id + '/preview'),
-            })),
-      events: all(
-        'SELECT action,subject,at,actor FROM events WHERE tenant=? ORDER BY id DESC LIMIT 100',
+      ).filter((g) => grantManager(s, g)),
+      approvals: all(
+        "SELECT id,actor,conn,op,preview,created FROM runs WHERE tenant=? AND state='pending' ORDER BY created",
         t,
+      )
+        .filter((x) => manages(s, x.conn))
+        .map((x) => ({
+          ...x,
+          preview:
+            x.op === 'loops.contacts.import_chunk'
+              ? batchView(db, get('SELECT * FROM batches WHERE approval=?', x.id)!)
+              : open(x.preview, x.id + '/preview'),
+        })),
+      events: all(
+        'SELECT action,subject,at,actor FROM events WHERE tenant=? AND (?=1 OR actor=?) ORDER BY id DESC LIMIT 100',
+        t,
+        Number(s.role === 'owner'),
+        profileId(s),
       ),
     }
   })
@@ -418,6 +552,11 @@ export function service(
     tx(() => {
       if (!run('UPDATE members SET active=0 WHERE tenant=? AND id=?', s.tenant, id(r)).changes)
         fail(404, 'Member unavailable')
+      run(
+        'UPDATE grants SET active=0 WHERE id IN (SELECT grant_id FROM grant_issuers WHERE profile=?) OR connection_id IN (SELECT conn FROM credential_ownership WHERE owner=?)',
+        id(r),
+        id(r),
+      )
       event(s.tenant, 'Member revoked', id(r))
     })
     return { ok: true }
@@ -538,7 +677,8 @@ export function service(
     return {
       connection_id: c.id,
       connection_revision: String(c.revision),
-      external_identity: c.identity,
+      external_identity: deviceIdentity(g, c),
+      label: c.label,
       operations: providers[c.provider].actions
         .filter((a) => ops.includes(a.id))
         .map((a) => ({
@@ -597,7 +737,7 @@ export function service(
   api.post('/admin/oauth/notion', async (r) => {
     const s = session(r),
       b = oauthConfig
-        .pick({ label: true, client_id: true, client_secret: true })
+        .pick({ label: true, client_id: true, client_secret: true, ownership: true })
         .strict()
         .parse(intakeBody(r, 'client_secret')),
       state = opaque(),
@@ -615,7 +755,7 @@ export function service(
   })
   api.get('/oauth/notion/callback', async (r, reply) => {
     const s = session(r)
-    if (s.role === 'viewer') fail(403, 'Editor required')
+
     const { code, state } = z
       .object({ code: z.string().min(1).max(4000), state: name })
       .parse(r.query)
@@ -639,7 +779,7 @@ export function service(
     )
     if (!token.workspace_id) fail(400, 'Notion workspace unavailable')
     const live = session(r)
-    if (live.tenant !== s.tenant || live.role === 'viewer') fail(403, 'Workspace changed')
+    if (live.tenant !== s.tenant) fail(403, 'Workspace changed')
     const c = 'con_' + randomUUID()
     tx(() => {
       run(
@@ -659,6 +799,7 @@ export function service(
         ),
       )
       run('INSERT INTO resources VALUES(?,?)', c, '[]')
+      recordOwner(session(r), c, b.ownership)
       event(s.tenant, 'Notion workspace connected', c)
     })
     return reply.redirect(origin + '/')
@@ -682,7 +823,7 @@ export function service(
   })
   api.get('/oauth/google/callback', async (r, reply) => {
     const s = session(r)
-    if (s.role === 'viewer') fail(403, 'Editor required')
+
     const { code, state } = z
       .object({ code: z.string().min(1).max(4000), state: name })
       .parse(r.query)
@@ -738,6 +879,7 @@ export function service(
         seal(bundle, c),
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
+      recordOwner(session(r), c, b.ownership)
       event(s.tenant, 'Google account connected', c)
     })
     return reply.redirect(origin + '/')
@@ -803,6 +945,7 @@ export function service(
   api.post('/admin/connections/:id/oauth-refresh', async (r) => {
     const s = session(r),
       c = conn(s.tenant, id(r))
+    own(r, c.id)
     if (!c.active || typeof open(c.secret, c.id) === 'string')
       fail(409, 'Select an active OAuth connection')
     await credential(c, true)
@@ -850,6 +993,7 @@ export function service(
         seal(b.secret, c),
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
+      recordOwner(session(r), c, b.ownership)
       event(t, 'Connection added', c)
     })
     return { connection_id: c }
@@ -858,6 +1002,7 @@ export function service(
     const t = session(r).tenant,
       c = conn(t, id(r)),
       { secret } = z.object({ secret: z.string().min(1).max(32768) }).parse(intakeBody(r, 'secret'))
+    own(r, c.id)
     if (!c.active) fail(409, 'Connection revoked')
     tx(() => {
       run(
@@ -872,6 +1017,7 @@ export function service(
   api.delete('/admin/connections/:id', async (r) => {
     const t = session(r).tenant,
       c = conn(t, id(r))
+    own(r, c.id)
     tx(() => {
       run("UPDATE connections SET active=0,secret='',revision=revision+1 WHERE id=?", c.id)
       run('UPDATE grants SET active=0 WHERE connection_id=?', c.id)
@@ -935,6 +1081,7 @@ export function service(
         })
         .parse(r.body)
     const c = conn(t, b.connection_id)
+    if (!available(c.id, profileId(session(r)))) fail(404, 'Connection unavailable')
     if (
       !c.active ||
       b.operations.some((op) => !providers[c.provider].actions.some((a) => a.id === op))
@@ -952,6 +1099,7 @@ export function service(
         JSON.stringify(b.operations),
         expires,
       )
+      run('INSERT INTO grant_issuers VALUES(?,?)', g, profileId(session(r)))
       if (b.draft_limit) {
         if (
           session(r).role !== 'owner' ||
@@ -1034,6 +1182,10 @@ export function service(
   })
   api.delete('/admin/grants/:id', async (r) => {
     const t = session(r).tenant
+    const g =
+      get('SELECT * FROM grants WHERE id=? AND tenant=?', id(r), t) ??
+      fail(404, 'Grant unavailable')
+    if (!grantManager(session(r), g)) fail(403, 'Grant unavailable')
     if (!run('UPDATE grants SET active=0 WHERE id=? AND tenant=?', id(r), t).changes)
       fail(404, 'Grant unavailable')
     event(t, 'Access revoked', id(r))
@@ -1052,6 +1204,10 @@ export function service(
         .strict()
         .parse(r.body)
     return tx(() => {
+      const pending =
+        get('SELECT conn FROM runs WHERE id=? AND tenant=?', id(r), t) ??
+        fail(409, 'Approval unavailable')
+      own(r, pending.conn)
       const batch = get('SELECT * FROM batches WHERE tenant=? AND approval=?', t, id(r))
       if (batch) {
         const view = batchView(db, batch)
@@ -1148,7 +1304,8 @@ export function service(
       {
         connection_id: c.id,
         provider: c.provider,
-        external_identity: c.identity,
+        external_identity: deviceIdentity(g, c),
+        label: c.label,
         status: c.active ? 'active' : 'revoked',
         operations: JSON.parse(g.ops),
         resources: JSON.parse(
@@ -1451,7 +1608,7 @@ export function service(
         b.expect &&
         (!fenced(r) ||
           b.expect.connection_revision !== String(c.revision) ||
-          b.expect.external_identity !== c.identity)
+          b.expect.external_identity !== deviceIdentity(g, c))
       )
         fail(400, 'connection_binding_changed')
       const labels: string[] = JSON.parse(
@@ -1503,7 +1660,7 @@ export function service(
       (old && old.revision !== c.revision) ||
       (b.expect &&
         (!fenced(r) ||
-          b.expect.external_identity !== c.identity ||
+          b.expect.external_identity !== deviceIdentity(g, c) ||
           b.expect.connection_revision !== String(c.revision)))
     )
       fail(400, 'connection_binding_changed')
@@ -2332,6 +2489,7 @@ export function service(
     (r) => {
       const s = session(r)
       if (s.role !== 'owner') fail(403, 'Owner required')
+      if (r.method === 'POST') own(r, z.object({ connection_id: name }).parse(r.body).connection_id)
       return s.tenant
     },
     intakeBody,

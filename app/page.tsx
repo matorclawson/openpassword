@@ -26,6 +26,10 @@ import {
 } from 'lucide-react'
 import type { Provider } from '../packages/connectors'
 type Connection = {
+  source: string
+  visibility: string
+  manage: boolean
+  recipients: string[]
   id: string
   provider: string
   label: string
@@ -43,6 +47,7 @@ type Grant = {
 }
 type Approval = { id: string; actor: string; conn: string; op: string; preview: unknown }
 type Workspace = {
+  directory: { id: string; label: string }[]
   operation_stops: string[]
   provider_stops: string[]
   billing: { label: string; available: number; spent: number; held: number }[]
@@ -184,6 +189,7 @@ export default function Page() {
         if (selected === 'notion') {
           const a = await request('admin/oauth/notion', {
             label: f.label,
+            ownership: f.ownership,
             client_id: f.client_id,
             sealed,
           })
@@ -233,6 +239,12 @@ export default function Page() {
             .map((s) => s.trim())
             .filter(Boolean),
           provider: selected,
+        })
+      if (modal === 'sharing')
+        await request('admin/connections/' + selected + '/sharing', {
+          label: f.label,
+          visibility: f.visibility,
+          recipients: form.getAll('recipients'),
         })
       if (modal === 'rotate') await request('admin/connections/' + selected + '/rotate', { sealed })
       if (modal === 'revoke')
@@ -334,7 +346,7 @@ export default function Page() {
     </button>
   )
   const creation =
-    w.role === 'viewer'
+    w.role === 'viewer' && tab === 'Vault items'
       ? null
       : tab === 'Vault items'
         ? (['Add item', () => show('item')] as const)
@@ -503,14 +515,23 @@ export default function Page() {
                     <div className="grow">
                       <strong>{c.label}</strong>
                       <small>
-                        {w.providers[c.provider].name} · {c.identity}
+                        {w.providers[c.provider].name} · {c.source}
+                        {c.identity && ' · ' + c.identity}
+                        {c.manage &&
+                          ' · ' +
+                            {
+                              private: 'Only you',
+                              specific: 'Specific people',
+                              organization: 'Whole organization',
+                            }[c.visibility]}
                       </small>
                     </div>
                     <span className={'pill ' + (c.active ? 'ok' : '')}>
                       {c.active ? 'Active' : 'Revoked'}
                     </span>
-                    {!!c.active && w.role !== 'viewer' && (
+                    {!!c.active && c.manage && (
                       <div className="actions">
+                        {btn('Edit access', () => show('sharing', c.id))}
                         {btn('Rotate', () => show('rotate', c.id))}
                         {btn('Revoke', () => show('revoke', c.id))}
                       </div>
@@ -559,7 +580,7 @@ export default function Page() {
                           {JSON.parse(g.ops).length} operations · Expires {stamp(g.expires)}
                         </small>
                       </div>
-                      {g.active && g.expires > Date.now() && w.role !== 'viewer' ? (
+                      {g.active && g.expires > Date.now() ? (
                         btn('Revoke', () => show('revoke', g.id))
                       ) : (
                         <span className="pill">
@@ -822,6 +843,7 @@ export default function Page() {
                       : 'Connect Google with OAuth',
                   connection: 'Add connection',
                   provider: w.providers[selected]?.name,
+                  sharing: 'Edit access',
                   rotate: 'Rotate credential',
                   revoke: 'Revoke access',
                   grant: tokens ? 'Device credentials' : 'Issue access grant',
@@ -845,11 +867,11 @@ export default function Page() {
                 </li>
               ))}
             </ul>
-            {w.role !== 'viewer' && (
+            {
               <button className="primary" onClick={() => M('connection')}>
                 Connect account <ArrowUpRight size={16} />
               </button>
-            )}
+            }
           </>
         ) : tokens ? (
           <>
@@ -979,6 +1001,60 @@ export default function Page() {
                 )}
               </>
             )}
+            {['connection', 'oauth'].includes(modal) && (
+              <label>
+                Credential owner
+                <select
+                  name="ownership"
+                  defaultValue={w.role === 'owner' ? 'organization' : 'personal'}
+                >
+                  <option value="personal">Me · private until shared</option>
+                  {w.role === 'owner' && (
+                    <option value="organization">Organization · everyone in this workspace</option>
+                  )}
+                </select>
+              </label>
+            )}
+            {modal === 'sharing' &&
+              (() => {
+                const c = w.connections.find((x) => x.id === selected)!
+                return (
+                  <>
+                    <label>
+                      Connection name
+                      <input name="label" defaultValue={c.label} required />
+                    </label>
+                    <label>
+                      Who can use this credential?
+                      <select name="visibility" defaultValue={c.visibility}>
+                        {c.source !== 'Organization' && (
+                          <>
+                            <option value="private">Only me</option>
+                            <option value="specific">Specific people</option>
+                          </>
+                        )}
+                        <option value="organization">Whole organization</option>
+                      </select>
+                    </label>
+                    {c.source !== 'Organization' && (
+                      <fieldset>
+                        <legend>People with access when “Specific people” is selected</legend>
+                        {w.directory.map((m) => (
+                          <label key={m.id}>
+                            <input
+                              type="checkbox"
+                              name="recipients"
+                              value={m.id}
+                              defaultChecked={c.recipients.includes(m.id)}
+                            />
+                            {m.label}
+                          </label>
+                        ))}
+                      </fieldset>
+                    )}
+                  </>
+                )
+              })()}
             {['connection', 'rotate'].includes(modal) && (
               <label>
                 {selected === 'supabase_data'
@@ -1092,7 +1168,7 @@ export default function Page() {
                   >
                     {active.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.label}
+                        {c.label} · {c.source}
                       </option>
                     ))}
                   </select>
@@ -1198,6 +1274,7 @@ export default function Page() {
                     member: 'Create member token',
                     oauth: selected === 'notion' ? 'Continue to Notion' : 'Continue to Google',
                     connection: 'Save connection',
+                    sharing: 'Save changes',
                     rotate: 'Rotate credential',
                     grant: 'Issue grant',
                     revoke: 'Revoke access',

@@ -2,6 +2,7 @@ import { z } from 'zod'
 export const name = z.string().trim().min(1).max(200)
 export const connectionInput = z
   .object({
+    ownership: z.enum(['organization', 'personal']).optional(),
     provider: name,
     resources: z.array(name).max(100).optional(),
     label: name,
