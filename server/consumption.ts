@@ -9,8 +9,8 @@ type Attribution = {
   provider: string
   revision: number
   profile: string
-  seat: string
-  seatLabel: string
+  grantId: string
+  agentLabel: string
   operation: string
   execution?: string
   model?: string
@@ -42,8 +42,8 @@ export function consumption(db: DatabaseSync, transport: typeof fetch) {
       a.provider,
       a.revision,
       a.profile,
-      a.seat,
-      a.seatLabel,
+      a.grantId,
+      a.agentLabel,
       a.operation,
       a.execution ?? null,
       a.model ?? null,
@@ -68,7 +68,7 @@ export function consumption(db: DatabaseSync, transport: typeof fetch) {
   function report(tenant: string, profile: string, admin: boolean, query: unknown) {
     const q = z
       .object({
-        group: z.enum(['credential', 'seat']).default('credential'),
+        group: z.enum(['credential', 'agent', 'seat']).default('credential'),
         days: z.coerce.number().int().min(0).max(366).default(7),
         before: z.coerce.number().int().positive().optional(),
       })
@@ -85,8 +85,8 @@ export function consumption(db: DatabaseSync, transport: typeof fetch) {
     const from =
       ' FROM consumption_events e LEFT JOIN model_charges c ON c.execution=e.execution WHERE ' +
       where
-    const dimension = q.group === 'seat' ? 'e.seat' : 'e.conn'
-    const label = q.group === 'seat' ? 'e.seat_label' : 'e.label'
+    const dimension = q.group !== 'credential' ? 'e.seat' : 'e.conn'
+    const label = q.group !== 'credential' ? 'e.seat_label' : 'e.label'
     const groups = db
       .prepare(
         'SELECT ' +
@@ -102,7 +102,7 @@ export function consumption(db: DatabaseSync, transport: typeof fetch) {
       .all(...args)
     const events = db
       .prepare(
-        'SELECT e.*,c.charged AS cost_micro_usd,c.state AS cost_state' +
+        'SELECT e.*,e.seat AS grant_id,e.seat_label AS agent_label,c.charged AS cost_micro_usd,c.state AS cost_state' +
           from +
           (q.before ? ' AND e.id<?' : '') +
           ' ORDER BY e.id DESC LIMIT 101',

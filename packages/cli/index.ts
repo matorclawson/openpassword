@@ -21,10 +21,11 @@ async function identity<T>(
   db.exec(
     'PRAGMA busy_timeout=95000; CREATE TABLE IF NOT EXISTS identities(origin TEXT PRIMARY KEY,tokens TEXT); BEGIN IMMEDIATE',
   )
-  const key = new URL(origin).origin
+  const profile = process.env.OPENPASSWORD_AGENT?.trim()
+  const key = profile ? JSON.stringify([new URL(origin).origin, profile]) : new URL(origin).origin
   try {
     const record = db.prepare('SELECT tokens FROM identities WHERE origin=?').get(key)
-    const legacy = !record && existsSync(file)
+    const legacy = !profile && !record && existsSync(file)
     const previous = record
       ? JSON.parse(String(record.tokens))
       : legacy
@@ -47,10 +48,37 @@ async function identity<T>(
     db.close()
   }
 }
+async function tokens(revoke = false) {
+  return identity(async (previous, save) => {
+    if (!previous) throw Error('Pair this device first')
+    let current = previous
+    if (Date.parse(current.access_expires_at) <= Date.now() + 10000) {
+      current = await new OpenPassword(origin).refresh(current.refresh_token)
+      save(current)
+    }
+    if (revoke) {
+      await new OpenPassword(origin, current.access_token).request('/v1/device/revoke', {})
+      save(null)
+    }
+    return current
+  })
+}
 async function main() {
   const client = new OpenPassword(origin)
+  if (cmd === 'mcp') {
+    const { serve } = await import('./mcp.js')
+    // Serialize refreshes in this process before acquiring the cross-process SQLite lock.
+    let pending: Promise<DeviceTokens> | undefined
+    await serve(async () => {
+      pending ??= tokens().finally(() => {
+        pending = undefined
+      })
+      return new OpenPassword(origin, (await pending).access_token)
+    })
+    return
+  }
   if (cmd === 'pair') {
-    const p = await client.pair(args[0] || 'CLI')
+    const p = await client.pair(args[0] || process.env.OPENPASSWORD_AGENT || 'CLI')
     console.log('Open', p.verification_url, 'and approve code', p.user_code)
     while (Date.now() < Date.parse(p.expires_at)) {
       await new Promise((r) => setTimeout(r, p.interval_seconds * 1000))
@@ -67,21 +95,9 @@ async function main() {
   }
   if (!['connections', 'invoke', 'revoke'].includes(cmd))
     throw Error(
-      'Usage: openpassword pair [name] | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
+      'Usage: openpassword pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
     )
-  const t = await identity(async (previous, save) => {
-    if (!previous) throw Error('Pair this device first')
-    let current = previous
-    if (Date.parse(current.access_expires_at) <= Date.now() + 10000) {
-      current = await client.refresh(current.refresh_token)
-      save(current)
-    }
-    if (cmd === 'revoke') {
-      await new OpenPassword(origin, current.access_token).request('/v1/device/revoke', {})
-      save(null)
-    }
-    return current
-  })
+  const t = await tokens(cmd === 'revoke')
   if (cmd === 'revoke') return
   const bound = new OpenPassword(origin, t.access_token)
   const result =

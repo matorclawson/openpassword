@@ -93,8 +93,8 @@ export function service(
       label: c.label,
       provider: c.provider,
       revision: c.revision,
-      seat: g.id,
-      seatLabel: g.label,
+      grantId: g.id,
+      agentLabel: g.label,
       profile: get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner',
       operation,
       execution,
@@ -361,26 +361,30 @@ export function service(
   )
   const attempts = new Map<string, { count: number; until: number }>()
   api.addHook('onRequest', async (r, reply) => {
-    reply.header('ZEOconnect-Protocol-Version', '1')
+    reply.header('OpenPassword-Protocol-Version', '1').header('ZEOconnect-Protocol-Version', '1')
     if (
       r.url.startsWith('/v1/') &&
       !['/v1/chat/completions', '/v1/models', '/v1/delegation/check'].includes(r.url.split('?')[0])
     ) {
-      const values =
-        r.raw.headersDistinct?.['zeoconnect-protocol-version'] ??
-        (r.headers['zeoconnect-protocol-version'] === undefined
-          ? []
-          : [String(r.headers['zeoconnect-protocol-version'])])
-      if (values.length !== 1 || values[0] !== '1') {
+      const names = ['openpassword-protocol-version', 'zeoconnect-protocol-version']
+      const values = names.flatMap(
+        (key) =>
+          r.raw.headersDistinct?.[key] ??
+          (r.headers[key] === undefined ? [] : [String(r.headers[key])]),
+      )
+      const duplicates =
+        names.some((key) => (r.raw.headersDistinct?.[key]?.length ?? 0) > 1) ||
+        values.some((v) => v.includes(','))
+      if (!values.length || duplicates || values.some((v) => v !== '1')) {
         const reason = !values.length
           ? 'header_missing'
-          : values.length > 1 || values[0].includes(',')
+          : duplicates
             ? 'header_duplicated'
             : 'version_unsupported'
         return reply.code(426).header('Cache-Control', 'no-store').send({
           code: 'protocol_incompatible',
           reason,
-          required: 'ZEOconnect-Protocol-Version: 1',
+          required: 'OpenPassword-Protocol-Version: 1',
         })
       }
     }
@@ -1338,7 +1342,7 @@ export function service(
     })
   })
   const fenced = (r: FastifyRequest) =>
-    String(r.headers['zeoconnect-capabilities'] || '')
+    String(r.headers['openpassword-capabilities'] ?? r.headers['zeoconnect-capabilities'] ?? '')
       .split(',')
       .map((x) => x.trim())
       .includes('expected-binding')

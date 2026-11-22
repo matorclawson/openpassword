@@ -15,7 +15,7 @@ type Group = {
 type Event = {
   id: number
   started: number
-  seat_label: string
+  agent_label: string
   label: string
   operation: string
   model: string | null
@@ -76,7 +76,7 @@ export function Consumption({ request }: { request: (path: string) => Promise<Re
           }}
         >
           <option value="credential">Credential</option>
-          <option value="seat">Seat grant</option>
+          <option value="agent">Agent grant</option>
         </select>
       </label>
       <button
@@ -102,7 +102,7 @@ export function Consumption({ request }: { request: (path: string) => Promise<Re
                 · {report.groups.reduce((sum, g) => sum + g.requests - g.priced_requests, 0)}{' '}
                 requests without a settled cost
               </p>
-              <h2>Usage by {group === 'seat' ? 'seat grant' : 'credential'}</h2>
+              <h2>Usage by {group === 'agent' ? 'agent grant' : 'credential'}</h2>
               {report.groups.map((g) => (
                 <article key={g.id}>
                   <div className="grow">
@@ -130,7 +130,7 @@ export function Consumption({ request }: { request: (path: string) => Promise<Re
                 <article key={e.id}>
                   <div className="grow">
                     <strong>
-                      {e.seat_label} · {e.label}
+                      {e.agent_label} · {e.label}
                     </strong>
                     <small>
                       {new Date(e.started).toLocaleString()} · {e.operation}

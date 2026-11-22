@@ -194,7 +194,7 @@ export function keymaster(
       done(null, b),
     )
     const caps = (r: FastifyRequest) =>
-      String(r.headers['zeoconnect-capabilities'] || '')
+      String(r.headers['openpassword-capabilities'] ?? r.headers['zeoconnect-capabilities'] ?? '')
         .split(',')
         .map((x) => x.trim())
     for (const op of Object.keys(schemas))

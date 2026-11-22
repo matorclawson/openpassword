@@ -489,7 +489,7 @@ export default function Page() {
                     Consumption: 'Review API requests, billed units and estimated spend.',
                     Connections: 'Manage the accounts your people and agents can use.',
                     Integrations: 'Explore providers and the operations each connection supports.',
-                    'Access grants': 'Give a device access to specific operations on one account.',
+                    'Access grants': 'Give an agent access to specific operations on one account.',
                     Approvals: 'Review the exact request before a provider write.',
                     'Vault items': 'Store shared passwords and secure notes.',
                     Workspace: 'Manage workspace access and provider dispatch.',
@@ -540,7 +540,7 @@ export default function Page() {
                   : tab === 'Integrations'
                     ? 'Provider directory'
                     : tab === 'Access grants'
-                      ? 'Device access'
+                      ? 'Agent access'
                       : tab === 'Approvals'
                         ? 'Review queue'
                         : tab === 'Workspace'
@@ -607,7 +607,7 @@ export default function Page() {
                   <p>
                     {q
                       ? 'Try a provider or account name.'
-                      : 'Add a provider account, then grant access to the operations a device needs.'}
+                      : 'Add a provider account, then grant access to the operations an agent needs.'}
                   </p>
                   {!q && btn('Browse integrations', () => go('Integrations'))}
                 </div>
@@ -657,7 +657,7 @@ export default function Page() {
                   <h3>No grants issued</h3>
                   <p>
                     {active.length
-                      ? 'Issue a grant to pair a device or generate scoped credentials.'
+                      ? 'Issue a grant to pair an agent or generate scoped credentials.'
                       : 'Add a connection to issue your first grant.'}
                   </p>
                 </div>
@@ -761,7 +761,7 @@ export default function Page() {
                   <div className="grow">
                     <strong>Provider dispatch</strong>
                     <small>
-                      {w.paused ? 'Paused' : 'Running'} · Applies to all workspace devices
+                      {w.paused ? 'Paused' : 'Running'} · Applies to all workspace agents
                     </small>
                   </div>
                   {w.role === 'owner' &&
@@ -908,7 +908,7 @@ export default function Page() {
                   sharing: 'Edit access',
                   rotate: 'Rotate credential',
                   revoke: 'Revoke access',
-                  grant: tokens ? 'Device credentials' : 'Issue access grant',
+                  grant: tokens ? 'Agent credentials' : 'Issue access grant',
                   workspace: 'New workspace',
                 } as Record<string, string>
               )[modal]
@@ -1236,7 +1236,7 @@ export default function Page() {
             {modal === 'grant' && (
               <>
                 <label>
-                  Device name
+                  Agent name
                   <input name="label" required />
                 </label>
                 <label>

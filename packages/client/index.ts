@@ -40,13 +40,18 @@ export class OpenPassword {
       signal: AbortSignal.timeout(90000),
       headers: {
         'Content-Type': 'application/json',
+        'OpenPassword-Protocol-Version': '1',
         'ZEOconnect-Protocol-Version': '1',
+        'OpenPassword-Capabilities': 'expected-binding',
         'ZEOconnect-Capabilities': 'expected-binding',
         ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
     })
-    if (r.headers.get('zeoconnect-protocol-version') !== '1')
+    if (
+      (r.headers.get('openpassword-protocol-version') ??
+        r.headers.get('zeoconnect-protocol-version')) !== '1'
+    )
       throw Error('Broker protocol unavailable')
     if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
     return r.status === 204 ? (undefined as T) : ((await r.json()) as T)
@@ -112,6 +117,7 @@ export class OpenPassword {
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         headers: {
           'Content-Type': 'application/octet-stream',
+          'OpenPassword-Protocol-Version': '1',
           'ZEOconnect-Protocol-Version': '1',
           Authorization: 'Bearer ' + this.token,
           'x-zeo-upload-link': session.upload_url,
@@ -122,7 +128,11 @@ export class OpenPassword {
         },
         body: chunk,
       })
-      if (!r.ok || r.headers.get('zeoconnect-protocol-version') !== '1')
+      if (
+        !r.ok ||
+        (r.headers.get('openpassword-protocol-version') ??
+          r.headers.get('zeoconnect-protocol-version')) !== '1'
+      )
         throw Error('Broker relay refused transfer (' + r.status + ')')
       return (await r.json()) as {
         status: number

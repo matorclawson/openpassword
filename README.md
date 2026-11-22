@@ -1,6 +1,6 @@
 # OpenPassword
 
-An open-source workspace for business credentials and agent access. An operator connects a provider account, grants a device specific operations and can revoke it without distributing the provider key. A separate human vault stores shared passwords and notes.
+OpenPassword is a self-hosted credential broker for people and AI agents. Connect a provider, give an agent permission to use specific operations, and revoke that access from the console. A harness such as Codex runs the agent and calls OpenPassword on its behalf. A separate human vault stores shared passwords and notes.
 
 ## Run locally
 
@@ -33,6 +33,24 @@ In **Workspace → Authentication**, expand the provider and open its developer 
 2. In **Access grants**, select a connection, expiry and the allowed operations. Supply a pairing code for an interactive device, or copy the one-time access and refresh credentials. Access tokens last at most 15 minutes. Refresh rotates both tokens.
 3. A device reads its connections and capabilities. Writes enter **Approvals**. Review the account, actor and arguments, approve, then repeat the exact request and idempotency key to receive its outcome. A standing allowance can authorize a bounded number of unsent Loops campaign drafts or updates to broker-created HubSpot drafts that leave audiences unchanged.
 4. Use **Workspace** to issue viewer or editor access, revoke a member, or pause dispatch. **Vault items** allows editors and the owner to reveal shared item values. Provider credentials are never displayed by the vault item routes.
+
+## Use OpenPassword with a standalone Codex agent
+
+After local setup, add a provider under **Connections**. From the OpenPassword checkout, run:
+
+```sh
+OPENPASSWORD_AGENT=my-codex node packages/cli/dist/index.js pair
+```
+
+Open the displayed URL, enter the pairing code under **Access grants**, choose the connection, allowed operations and expiry, and finish pairing. Register the paired client as a local MCP server:
+
+```sh
+codex mcp add openpassword --env OPENPASSWORD_AGENT=my-codex -- node "$PWD/packages/cli/dist/index.js" mcp
+```
+
+Start Codex normally and ask it to list its OpenPassword connections and capabilities. The harness launches the local tool server. The agent receives the results of permitted operations, while the broker handles upstream credentials and approvals. For a remote broker, set the same `OPENPASSWORD_BROKER` HTTPS origin during pairing and in the MCP server environment. Each named agent profile has its own pairing per broker. Other MCP harnesses can launch the same stdio command.
+
+This connects Codex to provider tools. Routing the harness’s own model inference is a separate integration; the current model endpoint implements Chat Completions.
 
 ## Agent CLI
 
@@ -75,7 +93,7 @@ Copyright 2026 Dreamhuggers. The service is AGPL-3.0-only. Each reusable package
 
 ## Sign in to another application
 
-Under **Workspace → Register app**, enter the application's exact HTTPS callback and audience. Activate its registration. A signed-in workspace member can confirm an identity-only handoff at `/delegate` with a one-use S256 challenge. The application backend exchanges the returned code at `/delegate/exchange` and verifies the Ed25519 signature against its pinned key. The public key document is available at `/.well-known/zeoconnect-delegation-keys.json`. Identity-only grants expire within ten minutes. Applications can also register action classes. The owner receives a one-time checker credential. The application exchanges a code, rotates the refresh credential and checks each action against POST /v1/delegation/check. A repeated refresh revokes its grant. POST /delegate/status checks identity-only delegations, including those issued by a recently retired key. Owners rotate the signing key with POST /admin/delegation/signing-key/rotate.
+Under **Workspace → Register app**, enter the application's exact HTTPS callback and audience. Activate its registration. A signed-in workspace member can confirm an identity-only handoff at `/delegate` with a one-use S256 challenge. The application backend exchanges the returned code at `/delegate/exchange` and verifies the Ed25519 signature against its pinned key. The public key document is available at `/.well-known/openpassword-jwks.json`. Identity-only grants expire within ten minutes. Applications can also register action classes. The owner receives a one-time checker credential. The application exchanges a code, rotates the refresh credential and checks each action against POST /v1/delegation/check. A repeated refresh revokes its grant. POST /delegate/status checks identity-only delegations, including those issued by a recently retired key. Owners rotate the signing key with POST /admin/delegation/signing-key/rotate.
 
 ## Browser acceptance
 
@@ -126,7 +144,7 @@ A device grant ends at the earliest of its requested expiry, the credential dead
 
 ### Consumption
 
-Open **Consumption** to inspect provider requests by credential or seat grant, with a period selector and paginated event history. Seat attribution comes from the device grant used by the caller. Give each seat a distinct grant. The issuing profile sees its usage; credential owners can also see consumption through their credentials. Organization-owned connections are visible to the administrator.
+Open **Consumption** to inspect provider requests by credential or agent grant, with a period selector and paginated event history. Usage is attributed to the grant the caller presents. Give each agent a distinct grant when you want separate permissions or usage history. The issuing profile sees its usage; credential owners can also see consumption through their credentials. Organization-owned connections are visible to the administrator.
 
 The SQLite ledger records each outbound HTTP attempt made by a brokered connector operation, model chat completion or YouTube upload relay before dispatch. Each attempt retains the timestamp, credential ID and revision, provider, device grant and label, issuing profile, operation and outcome. Retries that contact a provider count again. Cached replays and broker-only requests add no upstream event. A crashed or incomplete attempt remains visible with an unresolved outcome. A successful HTTP status describes the upstream response; it does not prove a billable operation completed.
 
