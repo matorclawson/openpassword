@@ -5,7 +5,6 @@ import { join } from 'node:path'
 const inputs = [
   'README.md',
   'CHANGELOG.md',
-  'THIRD-PARTY-NOTICES.txt',
   'CONTRIBUTING.md',
   'PARITY.md',
   'Makefile',

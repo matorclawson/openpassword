@@ -89,10 +89,10 @@ test('OAuth state is session bound and consumed once; approved upload session is
   const headers = {
     ...auth,
     'content-type': 'application/octet-stream',
-    'x-openpassword-connection': c,
-    'x-openpassword-content-range': 'bytes 0-2/3',
-    'x-openpassword-upload-link': link,
-    'x-openpassword-relay-seal': result.relay_seal,
+    'openpassword-connection': c,
+    'openpassword-content-range': 'bytes 0-2/3',
+    'openpassword-upload-link': link,
+    'openpassword-relay-seal': result.relay_seal,
   }
   const relay = (headers: Record<string, string>) =>
     api.inject({
@@ -102,7 +102,7 @@ test('OAuth state is session bound and consumed once; approved upload session is
       headers,
     })
   assert.equal(
-    (await relay({ ...headers, 'x-openpassword-upload-link': 'https://example.invalid' })).statusCode,
+    (await relay({ ...headers, 'openpassword-upload-link': 'https://example.invalid' })).statusCode,
     403,
   )
   assert.equal((await relay(headers)).json().status, 200)
