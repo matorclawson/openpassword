@@ -1,3 +1,4 @@
+import { delegation } from './delegation.ts'
 import { scopedToken } from './provider-auth.ts'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { intakeKeys, envelope } from './intake.ts'
@@ -89,7 +90,11 @@ export function service(
       s.token,
     )
     if (member && (!member.active || member.tenant !== s.tenant)) fail(401, 'Membership revoked')
-    if (member?.role === 'viewer' && r.method !== 'GET' && r.url !== '/admin/logout')
+    if (
+      member?.role === 'viewer' &&
+      r.method !== 'GET' &&
+      !['/admin/logout', '/delegate/confirm'].includes(r.url)
+    )
       fail(403, 'Workspace editor required')
     actor(member?.id || 'owner')
     return {
@@ -153,7 +158,7 @@ export function service(
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff')
     if (r.headers.origin && r.headers.origin !== origin) fail(403, 'Origin refused')
     if (
-      r.url !== '/v1/youtube/uploads:relay' &&
+      !['/v1/youtube/uploads:relay', '/delegate/confirm'].includes(r.url) &&
       ['POST', 'PATCH', 'PUT'].includes(r.method) &&
       r.headers['content-type'] &&
       !r.headers['content-type'].startsWith('application/json')
@@ -178,6 +183,7 @@ export function service(
     })
   })
   api.addHook('onClose', async () => db.close())
+  delegation(api, db, origin, session, seal, open, event)
   api.get('/health', async () => ({ status: 'ok' }))
   api.post('/admin/login', async (r, reply) => {
     const { token } = z.object({ token: name }).parse(r.body)
@@ -267,6 +273,13 @@ export function service(
       role: s.role,
       paused: !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
       items: all('SELECT id,title,username,updated FROM items WHERE tenant=? ORDER BY title', t),
+      apps:
+        s.role === 'owner'
+          ? all(
+              'SELECT id,label,audience,active FROM delegation_apps WHERE tenant=? ORDER BY label',
+              t,
+            )
+          : [],
       members:
         s.role === 'owner' ? all('SELECT id,label,role,active FROM members WHERE tenant=?', t) : [],
       workspaces:

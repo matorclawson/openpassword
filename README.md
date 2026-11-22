@@ -56,3 +56,11 @@ Keep the SQLite database and master.key together in a protected backup. For an o
 Run `make verify`. Provider tests use synthetic data and controlled transports. See PARITY.md for the distinction between implementation, exercised behavior and migration readiness.
 
 Copyright 2026 Dreamhuggers. The service is AGPL-3.0-only. Each reusable package includes its MIT license. The bundled Space Grotesk font carries its SIL Open Font License in public/fonts.
+
+## Sign in to another application
+
+Under **Workspace → Register app**, enter the application's exact HTTPS callback and audience. Activate its registration. A signed-in workspace member can confirm an identity-only handoff at `/delegate` with a one-use S256 challenge. The application backend exchanges the returned code at `/delegate/exchange` and verifies the Ed25519 signature against its pinned key. The public key document is available at `/.well-known/zeoconnect-delegation-keys.json`. Identity-only grants expire within ten minutes.
+
+## Browser acceptance
+
+After a production build, run `npm run test:browser` with Chromium installed. Set `CHROMIUM_PATH` if the binary is outside /usr/bin/chromium. The check starts an isolated temporary vault and requires the configured broker port to be free. It exercises login, a sealed provider credential, issuance of a scoped grant, mobile search and source download.

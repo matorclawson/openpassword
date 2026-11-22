@@ -11,7 +11,8 @@
     "verify": "npm run packages && npm run typecheck && npm test && npm run build",
     "packages": "npm run build -w @openpassword/client -w @openpassword/connectors -w @openpassword/schemas -w @openpassword/cli",
     "prebuild": "node --experimental-strip-types scripts/source.ts",
-    "test:browser": "node --import tsx scripts/browser.ts"
+    "test:browser": "node --import tsx scripts/browser.ts",
+    "predev": "node --experimental-strip-types scripts/source.ts"
   },
   "keywords": [],
   "author": "",

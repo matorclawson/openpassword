@@ -45,6 +45,7 @@ type Workspace = {
   tenant: string
   role: string
   paused: boolean
+  apps: { id: string; label: string; audience: string; active: number }[]
   members: { id: string; label: string; role: string; active: number }[]
   workspaces: { id: string; label: string }[]
   providers: Record<string, Provider>
@@ -184,6 +185,7 @@ export default function Page() {
         location.assign(data.url)
         return
       }
+      if (modal === 'app') await request('admin/apps', { ...f, days: Number(f.days) })
       if (modal === 'item') await request('admin/items', f)
       if (modal === 'deleteItem') await request('admin/items/' + selected, undefined, 'DELETE')
       if (modal === 'member') {
@@ -519,7 +521,9 @@ export default function Page() {
                       {g.active && g.expires > Date.now() && w.role !== 'viewer' ? (
                         btn('Revoke', () => show('revoke', g.id))
                       ) : (
-                        <span className="pill">Inactive</span>
+                        <span className="pill">
+                          {g.active && g.expires > Date.now() ? 'Active' : 'Inactive'}
+                        </span>
                       )}
                     </article>
                   ))
@@ -636,6 +640,31 @@ export default function Page() {
                       </div>
                       {btn('Add member', () => show('member'))}
                     </article>
+                    <article>
+                      <div className="grow">
+                        <strong>Identity applications</strong>
+                        <small>Allow an application to request a signed workspace identity.</small>
+                      </div>
+                      {btn('Register app', () => show('app'))}
+                    </article>
+                    {w.apps
+                      .filter((a) => includes(a.label, a.audience))
+                      .map((a) => (
+                        <article key={a.id}>
+                          <div className="grow">
+                            <strong>{a.label}</strong>
+                            <small>
+                              {a.id} · {a.audience}
+                            </small>
+                          </div>
+                          {btn(a.active ? 'Suspend' : 'Activate', () =>
+                            work(async () => {
+                              await request('admin/apps/' + a.id, { active: !a.active })
+                              await load()
+                            }),
+                          )}
+                        </article>
+                      ))}
                     {w.members
                       .filter((m) => includes(m.label, m.role))
                       .map((m) => (
@@ -686,6 +715,7 @@ export default function Page() {
                   item: 'Add vault item',
                   deleteItem: 'Delete vault item',
                   revealed: 'Vault item value',
+                  app: 'Register identity application',
                   member: tokens ? 'Member access token' : 'Add workspace member',
                   oauth: 'Connect Google with OAuth',
                   connection: 'Add connection',
@@ -865,6 +895,26 @@ export default function Page() {
                 </label>
               </>
             )}
+            {modal === 'app' && (
+              <>
+                <label>
+                  Application name
+                  <input name="label" required />
+                </label>
+                <label>
+                  HTTPS callback URL
+                  <input name="callback" type="url" required />
+                </label>
+                <label>
+                  Audience
+                  <input name="audience" required placeholder="app.example.com" />
+                </label>
+                <label>
+                  Registration duration (days)
+                  <input name="days" type="number" min="1" max="365" defaultValue="30" required />
+                </label>
+              </>
+            )}
             {modal === 'member' && (
               <>
                 <label>
@@ -975,6 +1025,7 @@ export default function Page() {
                   {
                     item: 'Save item',
                     deleteItem: 'Delete item',
+                    app: 'Register application',
                     member: 'Create member token',
                     oauth: 'Continue to Google',
                     connection: 'Save connection',
