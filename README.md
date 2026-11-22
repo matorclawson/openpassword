@@ -1,188 +1,140 @@
 # OpenPassword
 
-OpenPassword is a self-hosted credential broker for people and AI agents. Connect a provider, give an agent permission to use specific operations, and revoke that access from the console. A harness such as Codex runs the agent and calls OpenPassword on its behalf. A separate human vault stores shared passwords and notes.
+**An open-source credential manager for model routing and agentic tools.**
 
-## Run locally
+Give Claude Code permission to read a GitHub account for a week. Let an application call a specific model through your OpenAI account with a spending limit. In both cases, the provider key stays on your server. Each client gets its own access token, permissions, and usage history.
 
-Install Node.js 24 LTS, npm and Make. From this directory:
+OpenPassword runs on your laptop or a Linux server. It exposes two interfaces: an **OpenAI-compatible Chat Completions API** for model calls and a **Model Context Protocol (MCP) server** for agents that use tools.
+
+| I want to… | Start here |
+| --- | --- |
+| Try OpenPassword on my machine | [Start locally](#start-locally) |
+| Give Codex or Claude Code a tool | [Connect an agent](#connect-an-agent) |
+| Make a model request from my app | [Route a model request](#route-a-model-request) |
+| Run the server in the cloud and the agent on my laptop | [Deploy on a server](#deploy-on-a-server) |
+
+## Start locally
+
+From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, and **Make** installed:
 
 ```sh
 make setup
 make dev
 ```
 
-### Create the first administrator
+1. Open **http://localhost:3000**. The first visit shows **Create your administrator account**.
+2. Read the setup code on the computer running OpenPassword. The startup log prints the path. For the default installation, run `cat ~/.openpassword/operator.token` in a second terminal.
+3. Enter the code, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
 
-Open the console. Choose a username and a password of at least 12 characters, or expand **Create administrator with social sign-in**. Enter the setup code from the host that runs the broker. The startup message prints the file path. A user-run installation defaults to `~/.openpassword/operator.token`. With the supplied systemd units, read it on the server with `sudo cat /var/lib/openpassword/operator.token`. For a cloud VM, use its SSH or administrative console to read the file. Keep the code private.
+You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Choose either walkthrough below.
 
-| How you reach the console | Address and deployment settings |
-| --- | --- |
-| On the deployment device | Open `http://localhost:3000`. |
-| Private VM through SSH | Run `ssh -N -L 3000:127.0.0.1:3000 user@server` on your computer, then open `http://localhost:3000`. |
-| Domain behind a TLS proxy | Set `OPENPASSWORD_WEB_ORIGIN=https://vault.example.com` on the broker, substituting your exact browser origin, and restart it. Route that domain through the proxy to the console on port 3000. The console forwards its API requests to the broker. |
+## Connect an agent
 
-Creating the administrator signs you in and opens **Workspace → Authentication**. You can start using OpenPassword immediately. On subsequent visits use any sign-in method attached to your profile. An existing 0.2.0 installation uses its current operator token for this one-time setup. After setup the token stops working for owner login. Existing workspace members can still choose **Use a workspace access token**. For a production-mode local run, use `make build && make start`.
+This walkthrough lets a coding agent read your GitHub profile. You need a GitHub token that can read the authenticated user, plus Codex or Claude Code installed on the machine where you run the agent.
 
-### Enable Google or GitHub sign-in
+**1. Connect GitHub.** In **Integrations → GitHub → Connect account**, give the connection a recognizable name, enter your GitHub username as the account identity, and enter the provider token. Choose **Me** to keep the connection private. Save it.
 
-In **Workspace → Authentication**, expand the provider and open its developer settings. Create a Google OAuth web application or a GitHub OAuth App and register the exact callback URL displayed by OpenPassword. Paste the **client ID** and **client secret**, save, then choose **Link my account** and authorize with the intended administrator identity. The sign-in page shows that provider after linking. OpenPassword encrypts the client secret and recognizes the linked provider account by its stable ID. You can rotate the application secret while retaining the same client ID and linked profiles. If you change the console domain, update the broker origin and registered callback URLs together.
-
-### Connect your first integration
-
-1. Open **Integrations**, choose a provider and inspect its operations. Choose **Connect account** to add a credential. A workspace can hold several named accounts for the same provider.
-2. In **Access grants**, select a connection, expiry and the allowed operations. Supply a pairing code for an interactive device, or copy the one-time access and refresh credentials. Access tokens last at most 15 minutes. Refresh rotates both tokens.
-3. A device reads its connections and capabilities. Writes enter **Approvals**. Review the account, actor and arguments, approve, then repeat the exact request and idempotency key to receive its outcome. A standing allowance can authorize a bounded number of unsent Loops campaign drafts or updates to broker-created HubSpot drafts that leave audiences unchanged.
-4. Use **Workspace** to issue viewer or editor access, revoke a member, or pause dispatch. **Vault items** allows editors and the owner to reveal shared item values. Provider credentials are never displayed by the vault item routes.
-
-## Use OpenPassword with a standalone Codex agent
-
-After local setup, add a provider under **Connections**. From the OpenPassword checkout, run:
+**2. Pair the agent.** In a second terminal, from the OpenPassword project root on the agent’s machine, run:
 
 ```sh
-OPENPASSWORD_AGENT=my-codex node packages/cli/dist/index.js pair
-```
-
-Open the displayed URL, enter the pairing code under **Access grants**, choose the connection, allowed operations and expiry, and finish pairing. Register the paired client as a local MCP server:
-
-```sh
-codex mcp add openpassword --env OPENPASSWORD_AGENT=my-codex -- node "$PWD/packages/cli/dist/index.js" mcp
-```
-
-Start Codex normally and ask it to list its OpenPassword connections and capabilities. The harness launches the local tool server. The agent receives the results of permitted operations, while the broker handles upstream credentials and approvals. For a remote broker, set the same `OPENPASSWORD_BROKER` HTTPS origin during pairing and in the MCP server environment. Each named agent profile has its own pairing per broker. Other MCP harnesses can launch the same stdio command.
-
-This connects Codex to provider tools. Routing the harness’s own model inference is a separate integration; the current model endpoint implements Chat Completions.
-
-### Remote broker, local Codex
-
-For a Hetzner deployment, set `OPENPASSWORD_WEB_ORIGIN=https://vault.example.com` on the broker and point your HTTPS reverse proxy at the OpenPassword web service on port 3000. The web service forwards the client’s `/v1/` requests to the broker on loopback. Both server processes run on Hetzner. Substitute your actual domain.
-
-On the computer running Codex, build the OpenPassword CLI with `make setup` in the checkout. Run:
-
-```sh
-export OPENPASSWORD_BROKER=https://vault.example.com
+export OPENPASSWORD_BROKER=http://localhost:3000
 export OPENPASSWORD_AGENT=my-codex
 node packages/cli/dist/index.js pair
-codex mcp add openpassword --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" --env OPENPASSWORD_AGENT="$OPENPASSWORD_AGENT" -- node "$PWD/packages/cli/dist/index.js" mcp
 ```
 
-Approve the code in the remote console. The local MCP process uses the paired grant over HTTPS. Provider keys and consumption records stay on the server.
+For Claude Code, use `my-claude` as the agent name. For a hosted installation, use your server’s HTTPS origin as the broker address. Leave the pairing command running. Open the URL it prints, choose **Issue grant**, select your GitHub connection and the single operation `github.user.get`, enter the pairing code, and choose an expiry. The terminal confirms pairing.
 
-### Use Claude Code with OpenPassword on Hetzner
+**3. Register the tool server.** Run the command for your client in the same terminal, after pairing finishes.
 
-From the built OpenPassword checkout on your laptop, pair a grant for Claude Code with the remote instance. Substitute the HTTPS origin of your deployment.
+**Codex**
 
 ```sh
-export OPENPASSWORD_BROKER=https://vault.example.com
-export OPENPASSWORD_AGENT=my-claude
-node packages/cli/dist/index.js pair
+codex mcp add openpassword \
+  --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
+  --env OPENPASSWORD_AGENT="$OPENPASSWORD_AGENT" \
+  -- node "$PWD/packages/cli/dist/index.js" mcp
 ```
 
-Open the displayed verification URL and approve the code, provider connection, operations and expiry. Then register the local stdio server for your Claude Code user:
+**Claude Code**
 
 ```sh
 claude mcp add --scope user --transport stdio openpassword \
   --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
   --env OPENPASSWORD_AGENT="$OPENPASSWORD_AGENT" \
   -- node "$PWD/packages/cli/dist/index.js" mcp
-claude mcp get openpassword
 ```
 
-Open Claude Code in your working project and check `/mcp`. Ask it to use the OpenPassword connections and capabilities tools to show which provider operations are available. Tool execution uses the paired grant and the broker's existing approval flow. A distinct profile and grant let you revoke Claude Code access or track its usage independently of Codex. The same instructions work with a local broker using `http://127.0.0.1:4141`. Claude Code's inference and subscription billing are separate from the OpenPassword tool connection.
+**4. Make the first call.** Open your coding agent and ask:
 
-## Agent CLI
+> Use OpenPassword to list my connections and permitted operations. Then use my GitHub connection to tell me my GitHub username.
 
-After `make setup`:
+The agent can discover and invoke the read operation you selected. Open **Consumption** to see the upstream request. To check pairing directly from the terminal, run `node packages/cli/dist/index.js connections`. To end access, revoke the grant in **Access grants**.
 
-```sh
-node packages/cli/dist/index.js pair editorial
-node packages/cli/dist/index.js connections
-node packages/cli/dist/index.js invoke CONNECTION_ID github.user.get ticket-001 '{}'
-node packages/cli/dist/index.js revoke
+The MCP connection gives the agent tools. The coding client continues to use its own configured model for inference.
+
+## Route a model request
+
+OpenPassword routes each model grant to **one provider connection and one exact model ID**. Supported upstreams are OpenAI, OpenRouter, and Moonshot. Clients can discover their authorized model through `GET /v1/models` and use `POST /v1/chat/completions` for text, streaming responses, and tool calls.
+
+1. Add your provider under **Connections**. For this example, choose OpenAI and enter your provider API key.
+2. In **Access grants → Issue grant**, name the client, select the connection, and enable `openai.chat`. Under **Standing model access**, enter a model ID available to your provider account, permit at least one request, and allow at least 32 output tokens. You can also set a monetary budget using the provider’s rates.
+3. Leave the pairing code blank, issue the grant, and copy its **access token**. The following Python 3 example prompts for that token without echoing it, discovers the authorized model, and makes one request.
+
+```python
+import getpass
+import json
+import os
+import urllib.request
+
+base = os.environ.get("OPENPASSWORD_BROKER", "http://localhost:3000").rstrip("/")
+token = getpass.getpass("OpenPassword access token: ")
+
+def api(path, body=None):
+    request = urllib.request.Request(
+        base + "/v1/" + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return json.load(response)
+
+model = api("models")["data"][0]["id"]
+reply = api("chat/completions", {
+    "model": model,
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+    "max_tokens": 32,
+})
+print(reply["choices"][0]["message"]["content"])
 ```
 
-Use a new task-stable key for a new request. Reuse the original key to obtain an earlier outcome. Devices authenticate to the broker on 127.0.0.1:4141. Set `OPENPASSWORD_BROKER` to an HTTPS broker origin for remote use. CLI identity tokens are stored with mode 0600 under the user's config directory.
+A successful call prints the model’s reply. Open **Consumption** to see the model, request, and reported token counts. With pricing configured, you also see estimated spend. Requests without pricing are marked **Unpriced**. For a long-running client, use the grant’s refresh token to renew access; the paired CLI handles renewal automatically.
 
-## Model clients
+## Deploy on a server
 
-An owner or editor can grant an OpenAI, OpenRouter or Moonshot account's chat operation with an exact upstream model ID, maximum calls and maximum output tokens per call. Configure an OpenAI-compatible client with the broker's `/v1` base URL and its device bearer. `GET /v1/models` exposes the permitted model. `POST /v1/chat/completions` accepts text messages, explicit `max_tokens`, optional temperature and optional SSE streaming. A repeated supplied `Idempotency-Key` is refused to avoid a second billable submission. An optional grant tariff reserves integer micro-USD before dispatch. The broker settles from reported usage and retains the reservation when usage is incomplete or the call has an uncertain outcome. The workspace shows the spent, held and available amounts. The owner can list unresolved charges with GET /admin/billing/holds and reconcile one with POST /admin/billing/holds/{execution}, supplying actual_micro_usd and evidence_sha256. Tool-call messages, tool results and function schemas pass through the chat interface.
+The web console and broker run on the server. Codex, Claude Code, or your application can run on another machine. One HTTPS domain serves the console, pairing flow, and API.
 
-## Provider setup
+1. On the server, run `make setup` and `make build`. Set `OPENPASSWORD_WEB_ORIGIN` to your public origin, such as `https://vault.example.com`, and run `make start` with that setting. For persistent Linux services, use the [systemd units](deploy/systemd/).
+2. Point your HTTPS reverse proxy at the web service on port **3000**. It forwards API calls to the broker on loopback port **4141**. Read the initial setup code on the server. With the supplied systemd units, use `sudo cat /var/lib/openpassword/operator.token`.
+3. On your laptop, run `make setup` in a local copy of the project to build the agent CLI. Follow [Connect an agent](#connect-an-agent), using `https://vault.example.com` as `OPENPASSWORD_BROKER` for **both pairing and MCP registration**.
 
-Google OAuth uses authorization code, PKCE and a single-use session-bound state. Register the console origin followed by `/api/oauth/google/callback` in the Google client. Configure the client ID, secret and scope through the console. Gmail page reads require explicitly authorized label IDs. The Google Sheets connector restricts requests to selected spreadsheet IDs. For a read-only Revolut credential, supply account IDs. Twilio accepts `accountSID:authToken`. Supabase Database takes a JSON credential with `project` and `key`, and an explicit list of table names. The public briefing adapter does not send credentials upstream. GitHub also accepts a JSON credential with app_id, installation_id, private_key and an explicit repository_ids list for read-only installation tokens. Reddit accepts client_id, client_secret and user_agent. Bluesky accepts identifier and app_password. In those modes the broker obtains the short-lived provider token at dispatch. Other token-based integrations take the upstream access token or API key. Provider-specific scopes, account entitlement and test accounts determine which upstream calls succeed.
+For a private trial over SSH, forward the console with `ssh -N -L 3000:127.0.0.1:3000 user@server` and use the local quickstart URLs while the tunnel is open.
 
-## Operations
+## Share access and track usage
 
-The broker binds to loopback. Next.js also defaults to localhost. Use a TLS reverse proxy for remote access and publish only the intended surfaces. `OPENPASSWORD_HOME` selects the data directory. `OPENPASSWORD_PORT` changes the broker port and the console rewrite destination. Set it consistently at build and start. `OPENPASSWORD_WEB_ORIGIN` must match the browser origin. Enable the optional YouTube chunk relay with `OPENPASSWORD_YOUTUBE_RELAY=1`. Provider keys are entered via the console, without provider environment variables.
+| Control | How it works |
+| --- | --- |
+| Ownership | Administrators manage organization credentials. Personal credentials start private. Their owners can rotate them and share access with named people or the whole workspace. |
+| Expiry | Set a deadline for the credential itself, an individual recipient, or organization-wide sharing. A grant ends at the earliest applicable deadline. |
+| Approvals | For a tool call requiring approval, review the operation and arguments in **Approvals**. The client retries with the same request key to obtain the result. |
+| Consumption | Inspect upstream requests by credential or agent grant. Revocation stops future access and preserves the request history. |
+| Human sign-in | Link Google, GitHub, Apple, or a password under **Workspace → My profile**. Configure installation-wide sign-in providers under **Workspace → Authentication**. |
 
-Keep the SQLite database and master.key together in a protected backup. For an offline backup stop the service, copy the complete data directory including SQLite sidecars, and preserve file permissions. The default deployment uses a local master key and process-level trust. Use a dedicated service user with a private home. Protect the operator token during initial setup. The local launch and storage layout are designed for Linux including ARM64. Qualification evidence in this archive comes from Linux x86-64.
+## Operate and contribute
 
-## Packages and verification
+OpenPassword stores encrypted provider credentials, grants, and usage history in SQLite. The encryption key lives in a separate file on the server. For a restorable offline backup, stop the service and copy the **entire data directory**, including `master.key`, preserving permissions. The default location is `~/.openpassword`; use `OPENPASSWORD_HOME` to choose another.
 
-- `packages/client` provides the typed device client.
-- `packages/cli` implements pairing, token rotation, capability use and revocation.
-- `packages/schemas` defines the public request validators.
-- `packages/connectors` builds fixed provider requests. It also includes FFmpeg helpers (require system ffmpeg and ffprobe), percent-script notebook conversion and webhook verification.
-- `server` owns authentication, dispatch, SQLite and envelopes. `app` owns the browser console. `tests` contains deterministic contract and workflow checks.
+- [Provider and deployment reference](docs/operations.md) — OAuth callbacks, connector setup, backups, service configuration, and integration workflows.
+- [Contributing](CONTRIBUTING.md) — contribution terms and how to verify a change. Run `make verify` to build the packages, check types, run tests, and build the console.
+- [Changelog](CHANGELOG.md) — project release history.
 
-Run `make verify`. Provider tests use synthetic data and controlled transports. See PARITY.md for the distinction between implementation, exercised behavior and migration readiness.
-
-Copyright 2026 Dreamhuggers. The service is AGPL-3.0-only. Each reusable package includes its MIT license. The bundled Space Grotesk font carries its SIL Open Font License in public/fonts.
-
-## Sign in to another application
-
-Under **Workspace → Register app**, enter the application's exact HTTPS callback and audience. Activate its registration. A signed-in workspace member can confirm an identity-only handoff at `/delegate` with a one-use S256 challenge. The application backend exchanges the returned code at `/delegate/exchange` and verifies the Ed25519 signature against its pinned key. The public key document is available at `/.well-known/openpassword-jwks.json`. Identity-only grants expire within ten minutes. Applications can also register action classes. The owner receives a one-time checker credential. The application exchanges a code, rotates the refresh credential and checks each action against POST /v1/delegation/check. A repeated refresh revokes its grant. POST /delegate/status checks identity-only delegations, including those issued by a recently retired key. Owners rotate the signing key with POST /admin/delegation/signing-key/rotate.
-
-## Browser acceptance
-
-After a production build, run `npm run test:browser` with Chromium installed. Set `CHROMIUM_PATH` if the binary is outside /usr/bin/chromium. The check starts an isolated temporary vault and requires the configured broker port to be free. It exercises login, a sealed provider credential, issuance of a scoped grant, mobile search and source download.
-
-## Integration workflows
-
-- Choose **Authorize with Notion** when adding a Notion connection. Register the exact console callback ending in `/api/oauth/notion/callback`. An editor can refresh a stored OAuth grant with `POST /admin/connections/{id}/oauth-refresh`.
-- Set the allowed template directories on each HubSpot connection. Each directory must end with a slash. Draft upload checks the exact UTF-8 file digests. Publish rereads the draft files, checks their canonical bundle digest and asks for a separate approval.
-- On a relay-enabled broker, call `OpenPassword.uploadYouTube(session, blob)` with the authorized connection, upload URL, relay seal, media type, size and SHA-256. The client verifies the file before querying the provider's accepted range through the broker. Keep the session receipt in private storage to resume after a restart.
-- `@openpassword/client/publishing` exports `PublishingJournal` and `composePublishingTarget`. Store the SQLite journal in a private application directory. Save a revision, approve its digest, then drive `tick` on a schedule. Its transport takes a scoped broker request. Use an asset resolver that verifies the manifest's digest and returns the selected media reference. After a lost reply or process interruption, recover and resume the original request and idempotency key. The broker remains responsible for provider-side approvals. The publishing test is an executable example.
-- An owner can register a Loops or Twilio signing secret using `POST /admin/webhooks` with `connection_id` and a sealed secret from the intake workflow. Configure the returned HTTPS callback with the provider. Read the encrypted delivery inbox via `GET /admin/webhooks/{id}/events?after=0&limit=50`. The cursor is the sequence of the last delivery. Revoke with `DELETE /admin/webhooks/{id}`.
-- Use `@openpassword/connectors/local` for local media and notebook operations, `@openpassword/connectors/webhooks` for signature verification, and `@openpassword/connectors/x-thread` for digest-bound X thread planning.
-
-## Linux service identities
-
-The two systemd units in deploy/systemd run the broker and console under separate dynamic users. Build the checkout in /opt/openpassword, readable by both services, with Node 24 on the system service PATH. Install the units in /etc/systemd/system. The broker owns its private state directory. Set OPENPASSWORD_WEB_ORIGIN in a broker unit override to the externally visible console origin before enabling the services. For an existing instance, migrate the vault and its installation key during an offline maintenance window. The units were syntax checked in the council environment. Host installation, TLS routing and upgrades require deployment qualification.
-
-Run `npm run test:reference -- /path/to/zeoconnect-source` to compare the upstream fixtures with the public TypeScript validators and preview producer.
-
-### Issue bundles and dispatch controls
-
-Enroll a HubSpot connection with the selected resource `/rasa-newsletter/` and each permitted template directory. Issue the device a grant for `hubspot.files.upload_bundle`. Stage each image at `POST /v1/hubspot/issue-assets` with its original media type and the query fields `connection_id`, `file_name` and `sha256`. Invoke the operation with the returned file manifests, issue ID and bundle digest. The owner can review the upload destination, draft changes and exact manifest before dispatch. Read durable per-step receipts at `GET /v1/hubspot/issues/:id?connection_id=…`. Each issue ID can be reserved once per connection. The public service uses explicit workspace, connection, grant and folder selection in place of the private deployment’s hard-coded organization and portal.
-
-Workspace owners can pause a single operation under **Workspace → Provider dispatch controls**. An upgrade from v0.1 expires outstanding YouTube relay proofs because they lack the operation identity needed for pause enforcement. Request a fresh upload session for an interrupted relay. Revolut transaction reads now require a selected account ID, including the legacy list alias. Supabase table selection permits columns from the selected table and explicitly scoped row writes.
-
-### Personal profiles and sign-in methods
-
-At first launch you can also expand **Create administrator with social sign-in**. Enter the installation setup code and the provider's OAuth web application credentials. Successful authorization creates the owner profile. A password is optional.
-
-Under **Workspace → My profile**, owners, editors and viewers can add or change their username and password, link a configured Google, GitHub or Apple account, and remove individual methods. Each identity belongs to one profile. Linking requires a signed-in session. A workspace member can use their issued access token to enroll. The owner's **Authentication** settings configure the provider applications for the installation. Removing a provider is blocked if a profile depends exclusively on it.
-
-For Apple, configure a Services ID, register the HTTPS domain and the displayed return URL in Apple Developer, and enter a signed Apple client-secret JWT. Rotate the JWT before expiry using the same Services ID. Local installations need a registered HTTPS domain for Apple. Password sign-in works on loopback.
-
-### Credential ownership and sharing
-
-Each workspace is an organization boundary. **Connections** lists the provider accounts you can use, with their source: **Organization**, **Owned by you**, or **Shared by** a named owner. The grant picker uses the same connections. Agent access uses scoped, expiring device tokens; the provider secret stays in the broker.
-
-Only the administrator can add an organization credential. It is available to the entire workspace. Any active member can add a personal credential, which starts private. The owner can use **Edit access** to rename it and share with specific active people or everyone in that workspace. Rotation and revocation belong to the credential owner; the administrator manages organization-owned credentials. Sharing a personal credential with everyone preserves its personal ownership.
-
-Removing someone's access invalidates agent grants they issued for that credential. Restoring sharing requires a new grant. Removing a member invalidates grants issued by that member and grants against that member's personal credentials. Existing installations migrate previously workspace-wide connections to organization ownership. Sign-in methods and human vault items use their existing access rules.
-
-### Credential and sharing expiry
-
-Set **Credential expiry** when connecting a provider or later under **Connections → Edit access**. A blank field gives the connection no OpenPassword deadline. For named sharing, each recipient has a separate deadline. **Whole-organization sharing expiry** limits organization-wide access. The owner retains access until the credential itself expires. All fields accept a UTC date and time and include an **In 7 days** shortcut.
-
-A device grant ends at the earliest of its requested expiry, the credential deadline, and its issuer’s applicable sharing deadline. Shortening a deadline caps existing grants. Extending it permits new grants without extending previously issued ones. These deadlines control use through OpenPassword. A provider can expire or revoke its underlying key independently.
-
-### Consumption
-
-Open **Consumption** to inspect provider requests by credential or agent grant, with a period selector and paginated event history. Usage is attributed to the grant the caller presents. Give each agent a distinct grant when you want separate permissions or usage history. The issuing profile sees its usage; credential owners can also see consumption through their credentials. Organization-owned connections are visible to the administrator.
-
-The SQLite ledger records each outbound HTTP attempt made by a brokered connector operation, model chat completion or YouTube upload relay before dispatch. Each attempt retains the timestamp, credential ID and revision, provider, device grant and label, issuing profile, operation and outcome. Retries that contact a provider count again. Cached replays and broker-only requests add no upstream event. A crashed or incomplete attempt remains visible with an unresolved outcome. A successful HTTP status describes the upstream response; it does not prove a billable operation completed.
-
-Model usage is captured from JSON and streaming usage frames even without a tariff. Optional grant tariffs calculate USD estimates from reported usage. The report joins existing settlement and reconciliation records and shows unsettled reservations separately. Missing usage or pricing remains unpriced. Counts and totals begin with deployment of the ledger. The deployment's existing vault backup includes the ledger. Provider invoices, native Claude Code/Codex sessions and API calls outside the supported broker routes require separate ingestion.
+The server and console use [AGPL-3.0-only](LICENSE). The [client](packages/client/LICENSE), [CLI](packages/cli/LICENSE), [connectors](packages/connectors/LICENSE), and [schemas](packages/schemas/LICENSE) use the MIT license.

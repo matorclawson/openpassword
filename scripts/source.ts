@@ -39,6 +39,7 @@ for (const dir of [
   'tests',
   'examples',
   'deploy',
+  'docs',
   'public/fonts',
 ])
   collect(dir)
