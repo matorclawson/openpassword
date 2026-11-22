@@ -169,3 +169,6 @@ node_modules/
 *.token
 *.tgz
 public/openpassword-source.tar.gz*
+
+# release packaging
+dist-release/

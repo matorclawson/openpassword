@@ -41,7 +41,7 @@ After a production build, run `npm run test:browser` with Chromium installed. Se
 
 ## Linux service identities
 
-The two systemd units in deploy/systemd run the broker and console under separate dynamic users. Build the checkout in /opt/openpassword, readable by both services, with Node 24 on the system service PATH. Install the units in /etc/systemd/system. The broker owns its private state directory. Set OPENPASSWORD_WEB_ORIGIN in a broker unit override to the externally visible console origin before enabling the services. For an existing instance, migrate the vault and its installation key during an offline maintenance window. Set up and verify HTTPS routing for your domain before connecting remote clients.
+The two systemd units in deploy/systemd run the broker and console under separate dynamic users. Place the built tree in /opt/openpassword/releases/<version>, readable by both services, and point the root-owned symlink /opt/openpassword/current at it (switch the symlink to roll back), with Node 24 on the system service PATH. Install the units in /etc/systemd/system. The broker owns its private state directory. Set OPENPASSWORD_WEB_ORIGIN in a broker unit override to the externally visible console origin before enabling the services. For an existing instance, migrate the vault and its installation key during an offline maintenance window. Set up and verify HTTPS routing for your domain before connecting remote clients.
 
 
 
@@ -80,3 +80,7 @@ Open **Consumption** to inspect provider requests by credential or agent grant, 
 The SQLite ledger records each outbound HTTP attempt made by a brokered connector operation, model chat completion or YouTube upload relay before dispatch. Each attempt retains the timestamp, credential ID and revision, provider, device grant and label, issuing profile, operation and outcome. Retries that contact a provider count again. Cached replays and broker-only requests add no upstream event. A crashed or incomplete attempt remains visible with an unresolved outcome. A successful HTTP status describes the upstream response; it does not prove a billable operation completed.
 
 Model usage is captured from JSON and streaming usage frames even without a tariff. Optional grant tariffs calculate USD estimates from reported usage. The report joins existing settlement and reconciliation records and shows unsettled reservations separately. Missing usage or pricing remains unpriced. Counts and totals begin with deployment of the ledger. The deployment's existing vault backup includes the ledger. Provider invoices, native Claude Code/Codex sessions and API calls outside the supported broker routes require separate ingestion.
+
+## Release package
+
+On a Linux host with Node 24, run `make verify`, then `make package` and `make checksum` from a clean checkout. This writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, its `.sha256` sidecar and `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256). Extract the archive into `/opt/openpassword/releases/<version>/`. The archive includes built output and installed dependencies, so it must be built on the target architecture. ffmpeg and Chromium are not included.
