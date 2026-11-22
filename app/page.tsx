@@ -1,5 +1,6 @@
 'use client'
 import { Authentication, ConsoleLogin, Profile } from './authentication'
+import { Consumption } from './consumption'
 import { ApprovalPreview } from './approval-preview'
 import { sealInput } from './intake'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
@@ -73,6 +74,7 @@ const tabs = [
   ['Integrations', Blocks],
   ['Access grants', KeyRound],
   ['Approvals', ShieldCheck],
+  ['Consumption', Activity],
   ['Audit log', Activity],
   ['Vault items', LockKeyhole],
   ['Workspace', Building2],
@@ -484,6 +486,7 @@ export default function Page() {
               <p>
                 {
                   {
+                    Consumption: 'Review API requests, billed units and estimated spend.',
                     Connections: 'Manage the accounts your people and agents can use.',
                     Integrations: 'Explore providers and the operations each connection supports.',
                     'Access grants': 'Give a device access to specific operations on one account.',
@@ -558,6 +561,7 @@ export default function Page() {
                 <Command size={12} />K
               </label>
             </div>
+            {tab === 'Consumption' && <Consumption key={w.tenant} request={request} />}
             {tab === 'Connections' &&
               (list.length ? (
                 list.map((c) => (

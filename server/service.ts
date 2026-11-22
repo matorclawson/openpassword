@@ -10,6 +10,7 @@ import { billing, StreamUsage } from './billing.ts'
 import { keymaster } from './keymaster.ts'
 import { delegation } from './delegation.ts'
 import { scopedToken } from './provider-auth.ts'
+import { consumption } from './consumption.ts'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { intakeKeys, envelope } from './intake.ts'
 import { batches } from './batches.ts'
@@ -62,7 +63,7 @@ function connectorRevision(provider: string, op: string) {
 export function service(
   dir: string,
   origin = 'http://localhost:3000',
-  send: typeof fetch = fetch,
+  transport: typeof fetch = fetch,
   relay = process.env.OPENPASSWORD_YOUTUBE_RELAY === '1',
 ) {
   const web = new URL(origin)
@@ -82,6 +83,28 @@ export function service(
   db.exec(
     'CREATE TABLE IF NOT EXISTS threads_publications(creation TEXT PRIMARY KEY,execution TEXT NOT NULL)',
   )
+  const usageLedger = consumption(db, transport)
+  const send = usageLedger.send
+  api.addHook('onRequest', (_r, _reply, next) => usageLedger.scope(next))
+  function attribute(g: Row, c: Row, operation: string, execution?: string, model?: string) {
+    usageLedger.attribute({
+      tenant: g.tenant,
+      conn: c.id,
+      label: c.label,
+      provider: c.provider,
+      revision: c.revision,
+      seat: g.id,
+      seatLabel: g.label,
+      profile: get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner',
+      operation,
+      execution,
+      model,
+    })
+  }
+  api.get('/admin/consumption', async (r) => {
+    const s = session(r)
+    return usageLedger.report(s.tenant, profileId(s), s.role === 'owner', r.query)
+  })
   const issues = issueFiles(db, seal, open)
   const meter = billing(db)
   db.exec(
@@ -1409,11 +1432,11 @@ export function service(
         : name.parse(r.headers['idempotency-key'])
     const ex = 'exec_' + randomUUID(),
       op = c.provider + '.chat'
-    let metered = false
+
     tx(() => {
       if (get('SELECT id FROM runs WHERE actor=? AND conn=? AND idem=?', g.id, c.id, key))
         fail(409, 'Model request already claimed')
-      metered = meter.claim(g.id, ex, b, Buffer.byteLength(canonical(b)))
+      meter.claim(g.id, ex, b, Buffer.byteLength(canonical(b)))
       if (
         !run(
           'UPDATE model_leases SET remaining=remaining-1 WHERE grant_id=? AND model=? AND max_tokens>=? AND remaining>0',
@@ -1444,6 +1467,7 @@ export function service(
     function finish(state: string, usage?: unknown) {
       reply.raw.removeListener('close', onClose)
       tx(() => {
+        usageLedger.finish(ex, state, usage)
         meter.finish(ex, usage, state === 'confirmed')
         run('UPDATE runs SET state=? WHERE id=?', state, ex)
         event(g.tenant, op + ' · ' + state, ex)
@@ -1454,13 +1478,12 @@ export function service(
       grant(r)
       checkDispatch(g.tenant, c.provider, c.provider + '.chat')
       if (conn(g.tenant, c.id).revision !== c.revision) fail(409, 'Connection changed')
+      attribute(g, c, op, ex, b.model)
       const response = await send(providers[c.provider].origin + '/chat/completions', {
         method: 'POST',
         redirect: 'error',
         headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          metered && b.stream ? { ...b, stream_options: { include_usage: true } } : b,
-        ),
+        body: JSON.stringify(b.stream ? { ...b, stream_options: { include_usage: true } } : b),
         signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120000)]),
       })
       if (!response.ok || !response.body) {
@@ -1492,7 +1515,7 @@ export function service(
               tail = (tail + Buffer.from(v.value).toString()).slice(-256)
               size += v.value.length
               if (size > 8388608) throw Error('Stream limit')
-              if (metered) usage.feed(v.value)
+              usage.feed(v.value)
               yield Buffer.from(v.value)
             }
           } finally {
@@ -1545,6 +1568,7 @@ export function service(
     const g = grant(r),
       c = conn(g.tenant, g.connection_id)
     checkDispatch(g.tenant, c.provider)
+    attribute(g, c, 'youtube.upload.relay')
     const location = String(r.headers['x-zeo-upload-link'] || ''),
       proof = String(r.headers['x-zeo-relay-seal'] || '')
     const u =
@@ -1659,6 +1683,7 @@ export function service(
       fail(403, 'Outside grant')
     const c = conn(g.tenant, b.connection_id),
       a = providers[c.provider].actions.find((x) => x.id === b.operation_id)!
+    attribute(g, c, a.id)
     const revision = connectorRevision(c.provider, a.id)
     const legacyOne =
       b.connector_revision === '1' &&
