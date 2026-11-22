@@ -45,8 +45,17 @@ try {
     try {
       const p = await browser.newPage()
       await p.goto(origin)
-      await p.getByLabel('Operator token').fill(readFileSync(join(dir, 'operator.token'), 'utf8'))
-      await p.getByRole('button', { name: 'Unlock workspace' }).click()
+      await p.getByLabel('Setup code').fill(readFileSync(join(dir, 'operator.token'), 'utf8'))
+      await p.getByLabel('Username').fill('operator')
+      await p.getByLabel('Choose a password').fill('browser-only-fixture')
+      await p.getByRole('button', { name: 'Create administrator' }).click()
+      await p.getByRole('heading', { name: 'Authentication' }).waitFor()
+      await p.getByText('Google · Optional').click()
+      assert.equal(
+        await p.getByLabel('Callback URL').first().inputValue(),
+        origin + '/api/auth/google/callback',
+      )
+      await p.getByRole('button', { name: 'Connections', exact: true }).click()
       await p.getByRole('button', { name: 'Add connection' }).click()
       await p.getByRole('dialog').locator('select').first().selectOption('github_read')
       await p.getByLabel('Connection name').fill('Engineering')
@@ -72,7 +81,10 @@ try {
       assert.equal(source.status(), 200)
       assert.equal((await source.body()).subarray(0, 2).toString('hex'), '1f8b')
       await p.getByRole('button', { name: 'Lock workspace' }).click()
-      await p.getByLabel('Operator token').waitFor()
+      await p.getByLabel('Username').fill('operator')
+      await p.getByLabel('Password', { exact: true }).fill('browser-only-fixture')
+      await p.getByRole('button', { name: 'Sign in', exact: true }).click()
+      await p.getByRole('button', { name: 'Lock workspace' }).waitFor()
       console.log(
         'Desktop login, sealed credential enrollment, scope selection, grant issuance, mobile search and details, source download and logout passed.',
       )

@@ -1,4 +1,5 @@
 'use client'
+import { Authentication, ConsoleLogin } from './authentication'
 import { ApprovalPreview } from './approval-preview'
 import { sealInput } from './intake'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
@@ -113,6 +114,11 @@ export default function Page() {
     load().catch((e) => {
       if (e.status !== 401) E(e.message)
     })
+    if (new URLSearchParams(location.search).has('signin')) {
+      T('Workspace')
+      if (location.search.includes('signin=failed'))
+        E('Social sign-in failed. Check the callback URL and try linking again.')
+    }
     if (location.pathname.startsWith('/approvals')) T('Approvals')
     if (location.pathname === '/device') T('Access grants')
   }, [])
@@ -167,11 +173,7 @@ export default function Page() {
     const form = new FormData(e.currentTarget)
     const f = Object.fromEntries(form)
     await work(async () => {
-      if (!w) {
-        await request('admin/login', { token: f.token })
-        await load()
-        return
-      }
+      if (!w) return
       let sealed: Awaited<ReturnType<typeof sealInput>> | undefined
       if (['oauth', 'connection', 'rotate'].includes(modal)) {
         const field = modal === 'oauth' ? 'client_secret' : 'secret'
@@ -309,21 +311,14 @@ export default function Page() {
             OpenPassword <span>/</span> Operator console
           </p>
         </section>
-        <section className="loginForm">
-          <LockKeyhole />
-          <h1>Unlock your workspace</h1>
-          <p>Use your workspace access token or the installation’s operator token.</p>
-          <form onSubmit={submit}>
-            <label>
-              Operator token
-              <input name="token" type="password" autoComplete="current-password" required />
-            </label>
-            {error}
-            <button className="primary" disabled={busy}>
-              Unlock workspace <ArrowUpRight size={17} />
-            </button>
-          </form>
-        </section>
+        <ConsoleLogin
+          request={request}
+          done={async (setup) => {
+            await load()
+            if (setup) go('Workspace')
+          }}
+        />
+        {error}
       </main>
     )
   const active = w.connections.filter((c) => c.active),
@@ -666,6 +661,7 @@ export default function Page() {
               ))}
             {tab === 'Workspace' && (
               <>
+                {w.role === 'owner' && <Authentication request={request} />}
                 {w.billing.map((b, i) => (
                   <article key={i}>
                     <div className="grow">

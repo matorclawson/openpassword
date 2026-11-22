@@ -1,3 +1,4 @@
+import { consoleAuth } from './console-auth.ts'
 import { issueFiles, issueFolder, bundleOperation } from './issue-files.ts'
 import { templatePlan, writeTemplate } from './template.ts'
 import { templateOps } from './template-preview.ts'
@@ -64,6 +65,15 @@ export function service(
   send: typeof fetch = fetch,
   relay = process.env.OPENPASSWORD_YOUTUBE_RELAY === '1',
 ) {
+  const web = new URL(origin)
+  if (
+    web.origin !== origin ||
+    !(
+      web.protocol === 'https:' ||
+      (web.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(web.hostname))
+    )
+  )
+    throw Error('Set OPENPASSWORD_WEB_ORIGIN to the HTTPS console origin or a loopback HTTP origin')
   const api = Fastify({ bodyLimit: 65536, routerOptions: { maxParamLength: 200 } })
   const { db, admin, seal, open } = store(dir)
   db.exec(
@@ -208,12 +218,16 @@ export function service(
     if (
       [
         '/admin/login',
+        '/auth/password',
+        '/auth/setup',
+        '/auth/github/start',
+        '/auth/google/start',
         '/v1/device/authorizations',
         '/v1/device/token',
         '/v1/delegation/check',
-      ].includes(r.url)
+      ].includes(r.url.split('?')[0])
     ) {
-      const k = r.ip + r.url,
+      const k = r.ip + r.url.split('?')[0],
         row = attempts.get(k)
       if (!row || row.until <= now()) attempts.set(k, { count: 1, until: now() + 60000 })
       else if (++row.count > 60) fail(429, 'Try again in one minute')
@@ -238,12 +252,7 @@ export function service(
   )
   delegation(api, db, origin, session, seal, open, event)
   api.get('/health', async () => ({ status: 'ok' }))
-  api.post('/admin/login', async (r, reply) => {
-    const { token } = z.object({ token: name }).parse(r.body)
-    const member = timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
-      ? undefined
-      : (get('SELECT * FROM members WHERE token=? AND active=1', digest(token)) ??
-        fail(401, 'Invalid access token'))
+  function startSession(reply: import('fastify').FastifyReply, member?: Row) {
     const s = opaque()
     tx(() => {
       run(
@@ -255,6 +264,16 @@ export function service(
       if (member) run('INSERT INTO session_members VALUES(?,?)', digest(s), member.id)
     })
     reply.header('Set-Cookie', cookie(s))
+  }
+  const consoleOwner = consoleAuth(api, db, origin, admin, session, startSession, seal, open, send)
+  api.post('/admin/login', async (r, reply) => {
+    const { token } = z.object({ token: name }).parse(r.body)
+    const member =
+      !consoleOwner() && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
+        ? undefined
+        : (get('SELECT * FROM members WHERE token=? AND active=1', digest(token)) ??
+          fail(401, 'Invalid access token'))
+    startSession(reply, member)
     return { ok: true }
   })
   api.post('/admin/logout', async (r, reply) => {

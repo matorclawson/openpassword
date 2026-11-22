@@ -502,3 +502,25 @@ textarea {
     font-size: 11px;
   }
 }
+
+.loginForm > button {
+  margin: 12px 8px 0 0;
+}
+.authentication {
+  padding: 20px;
+}
+.authentication details {
+  border-top: 1px solid #dcd5cb;
+  padding: 12px 0;
+}
+.authentication summary, .loginForm summary {
+  cursor: pointer;
+  font-weight: 550;
+}
+.authentication form {
+  max-width: 540px;
+  padding: 12px 0;
+}
+.authentication details > button {
+  margin: 4px 8px 4px 0;
+}

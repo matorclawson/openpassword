@@ -11,7 +11,23 @@ make setup
 make dev
 ```
 
-Open **http://localhost:3000**. Read the bootstrap token from the file named by the broker on startup (by default `~/.openpassword/operator.token`). Paste that token into the unlock screen. Team members use their own workspace access tokens. For a production-mode local run, use `make build && make start`. Use the same hostname when signing in and returning from OAuth.
+### Create the first administrator
+
+Open the console and choose a username and a password of at least 12 characters. Enter the setup code from the host that runs the broker. The startup message prints the file path. A user-run installation defaults to `~/.openpassword/operator.token`. With the supplied systemd units, read it on the server with `sudo cat /var/lib/openpassword/operator.token`. For a cloud VM, use its SSH or administrative console to read the file. Keep the code private.
+
+| How you reach the console | Address and deployment settings |
+| --- | --- |
+| On the deployment device | Open `http://localhost:3000`. |
+| Private VM through SSH | Run `ssh -N -L 3000:127.0.0.1:3000 user@server` on your computer, then open `http://localhost:3000`. |
+| Domain behind a TLS proxy | Set `OPENPASSWORD_WEB_ORIGIN=https://vault.example.com` on the broker, substituting your exact browser origin, and restart it. Route that domain through the proxy to the console on port 3000. The console forwards its API requests to the broker. |
+
+Creating the administrator signs you in and opens **Workspace → Authentication**. You can start using OpenPassword immediately. On subsequent visits use your username and password. An existing 0.2.0 installation uses its current operator token for this one-time setup. After setup the token stops working for owner login. Existing workspace members can still choose **Use a workspace access token**. For a production-mode local run, use `make build && make start`.
+
+### Enable Google or GitHub sign-in
+
+In **Workspace → Authentication**, expand the provider and open its developer settings. Create a Google OAuth web application or a GitHub OAuth App and register the exact callback URL displayed by OpenPassword. Paste the **client ID** and **client secret**, save, then choose **Link my account** and authorize with the intended administrator identity. The sign-in page shows that provider after linking. OpenPassword encrypts the client secret and recognizes the linked provider account by its stable ID. Changing credentials requires linking again. Removing a provider leaves password access available. If you change the console domain, update the broker origin and registered callback URLs together.
+
+### Connect your first integration
 
 1. Open **Integrations**, choose a provider and inspect its operations. Choose **Connect account** to add a credential. A workspace can hold several named accounts for the same provider.
 2. In **Access grants**, select a connection, expiry and the allowed operations. Supply a pairing code for an interactive device, or copy the one-time access and refresh credentials. Access tokens last at most 15 minutes. Refresh rotates both tokens.
@@ -43,7 +59,7 @@ Google OAuth uses authorization code, PKCE and a single-use session-bound state.
 
 The broker binds to loopback. Next.js also defaults to localhost. Use a TLS reverse proxy for remote access and publish only the intended surfaces. `OPENPASSWORD_HOME` selects the data directory. `OPENPASSWORD_PORT` changes the broker port and the console rewrite destination. Set it consistently at build and start. `OPENPASSWORD_WEB_ORIGIN` must match the browser origin. Enable the optional YouTube chunk relay with `OPENPASSWORD_YOUTUBE_RELAY=1`. Provider keys are entered via the console, without provider environment variables.
 
-Keep the SQLite database and master.key together in a protected backup. For an offline backup stop the service, copy the complete data directory including SQLite sidecars, and preserve file permissions. The default deployment uses a local master key and process-level trust. Use a dedicated service user with a private home. The operator token controls the entire installation. The local launch and storage layout are designed for Linux including ARM64. Qualification evidence in this archive comes from Linux x86-64.
+Keep the SQLite database and master.key together in a protected backup. For an offline backup stop the service, copy the complete data directory including SQLite sidecars, and preserve file permissions. The default deployment uses a local master key and process-level trust. Use a dedicated service user with a private home. Protect the operator token during initial setup. The local launch and storage layout are designed for Linux including ARM64. Qualification evidence in this archive comes from Linux x86-64.
 
 ## Packages and verification
 

@@ -6,7 +6,7 @@ const dir = resolve(process.env.OPENPASSWORD_HOME || homedir() + '/.openpassword
 const api = service(dir, process.env.OPENPASSWORD_WEB_ORIGIN || 'http://localhost:3000')
 await api.listen({ host: '127.0.0.1', port: Number(process.env.OPENPASSWORD_PORT || 4141) })
 console.log(
-  'OpenPassword broker is listening. Unlock the console with the token in ' +
+  'OpenPassword broker is listening. For first-time setup, read the setup code on this host from ' +
     dir +
     '/operator.token',
 )
