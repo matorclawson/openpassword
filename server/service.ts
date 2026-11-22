@@ -163,6 +163,32 @@ export function service(
     CREATE TABLE IF NOT EXISTS credential_shares(conn TEXT,profile TEXT,PRIMARY KEY(conn,profile));
     CREATE TABLE IF NOT EXISTS grant_issuers(grant_id TEXT PRIMARY KEY,profile TEXT NOT NULL);
     INSERT OR IGNORE INTO credential_ownership SELECT id,'org','organization' FROM connections;`)
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS credential_deadlines(conn TEXT, target TEXT, expires INTEGER NOT NULL, PRIMARY KEY(conn,target))',
+  )
+  const deadlineSchema = z.number().int().positive().max(8640000000000000).nullable()
+  function deadline(c: string, target: string): number | null {
+    return (
+      get('SELECT expires FROM credential_deadlines WHERE conn=? AND target=?', c, target)
+        ?.expires ?? null
+    )
+  }
+  function setDeadline(c: string, target: string, value: number | null | undefined) {
+    if (value === undefined) return
+    if (value === null) run('DELETE FROM credential_deadlines WHERE conn=? AND target=?', c, target)
+    else run('INSERT OR REPLACE INTO credential_deadlines VALUES(?,?,?)', c, target, value)
+  }
+  function accessDeadline(c: string, profile: string) {
+    const a = ownership(c),
+      manager = a.owner === profile || (a.owner === 'org' && profile === 'owner')
+    return Math.min(
+      deadline(c, 'credential') ?? Infinity,
+      manager
+        ? Infinity
+        : (deadline(c, a.visibility === 'organization' ? 'organization' : 'user/' + profile) ??
+            Infinity),
+    )
+  }
   type Principal = ReturnType<typeof session>
   const profileId = (s: Principal): string => s.member || 'owner'
   function ownership(c: string) {
@@ -177,6 +203,7 @@ export function service(
   }
   function available(c: string, profile: string) {
     const a = ownership(c)
+    if (accessDeadline(c, profile) <= now()) return false
     if (
       a.owner !== 'org' &&
       a.owner !== 'owner' &&
@@ -194,7 +221,8 @@ export function service(
     conn(s.tenant, c)
     if (!manages(s, c)) fail(403, 'Credential owner required')
   }
-  function recordOwner(s: Principal, c: string, scope?: string) {
+  function recordOwner(s: Principal, c: string, scope?: string, expires?: number | null) {
+    setDeadline(c, 'credential', expires)
     const org = (scope ?? (s.member ? 'personal' : 'organization')) === 'organization'
     if (org && s.role !== 'owner')
       fail(403, 'Only the administrator can add organization credentials')
@@ -227,11 +255,23 @@ export function service(
         label: name,
         visibility: z.enum(['private', 'specific', 'organization']),
         recipients: z.array(name).max(100),
+        expires_at: deadlineSchema.optional(),
+        organization_expires_at: deadlineSchema.optional(),
+        recipient_expiries: z.record(name, deadlineSchema).optional(),
       })
       .parse(r.body)
     if (ownership(c).owner === 'org' && b.visibility !== 'organization')
       fail(422, 'Organization credentials are available to the whole workspace')
     return tx(() => {
+      setDeadline(c, 'credential', b.expires_at)
+      setDeadline(
+        c,
+        'organization',
+        b.visibility === 'organization' ? b.organization_expires_at : null,
+      )
+      for (const x of all('SELECT profile FROM credential_shares WHERE conn=?', c))
+        if (b.visibility !== 'specific' || !b.recipients.includes(x.profile))
+          setDeadline(c, 'user/' + x.profile, null)
       run('DELETE FROM credential_shares WHERE conn=?', c)
       if (b.visibility === 'specific')
         for (const p of new Set(b.recipients)) {
@@ -240,15 +280,26 @@ export function service(
             !get('SELECT id FROM members WHERE tenant=? AND active=1 AND id=?', s.tenant, p)
           )
             fail(422, 'Select an active workspace member')
+          setDeadline(c, 'user/' + p, b.recipient_expiries?.[p])
           run('INSERT INTO credential_shares VALUES(?,?)', c, p)
         }
       run('UPDATE credential_ownership SET visibility=? WHERE conn=?', b.visibility, c)
       run('UPDATE connections SET label=? WHERE id=?', b.label, c)
       for (const g of all(
-        'SELECT g.id,i.profile FROM grants g JOIN grant_issuers i ON g.id=i.grant_id WHERE connection_id=? AND active=1',
+        "SELECT g.id,COALESCE(i.profile,'owner') AS profile FROM grants g LEFT JOIN grant_issuers i ON g.id=i.grant_id WHERE connection_id=? AND active=1",
         c,
       ))
         if (!available(c, g.profile)) run('UPDATE grants SET active=0 WHERE id=?', g.id)
+        else {
+          const limit = accessDeadline(c, g.profile)
+          if (Number.isFinite(limit))
+            run(
+              'UPDATE grants SET expires=min(expires,?),access_until=min(access_until,?) WHERE id=?',
+              limit,
+              limit,
+              g.id,
+            )
+        }
       event(s.tenant, 'Credential sharing updated', c)
       return { ok: true }
     })
@@ -485,12 +536,25 @@ export function service(
         'SELECT id,provider,label,identity,revision,active FROM connections WHERE tenant=? ORDER BY label',
         t,
       )
-        .filter((c) => available(c.id, profileId(s)))
+        .filter((c) => manages(s, c.id) || available(c.id, profileId(s)))
         .map((c) => {
           const a = ownership(c.id),
             manage = manages(s, c.id)
           return {
             ...c,
+            expires_at: deadline(c.id, 'credential'),
+            access_expires_at: Number.isFinite(accessDeadline(c.id, profileId(s)))
+              ? accessDeadline(c.id, profileId(s))
+              : null,
+            organization_expires_at: manage ? deadline(c.id, 'organization') : undefined,
+            recipient_expiries: manage
+              ? Object.fromEntries(
+                  all(
+                    "SELECT substr(target,6) AS profile,expires FROM credential_deadlines WHERE conn=? AND target LIKE 'user/%'",
+                    c.id,
+                  ).map((x) => [x.profile, x.expires]),
+                )
+              : undefined,
             identity: manage ? c.identity : '',
             manage,
             visibility: a.visibility,
@@ -737,7 +801,13 @@ export function service(
   api.post('/admin/oauth/notion', async (r) => {
     const s = session(r),
       b = oauthConfig
-        .pick({ label: true, client_id: true, client_secret: true, ownership: true })
+        .pick({
+          label: true,
+          client_id: true,
+          client_secret: true,
+          ownership: true,
+          expires_at: true,
+        })
         .strict()
         .parse(intakeBody(r, 'client_secret')),
       state = opaque(),
@@ -799,7 +869,7 @@ export function service(
         ),
       )
       run('INSERT INTO resources VALUES(?,?)', c, '[]')
-      recordOwner(session(r), c, b.ownership)
+      recordOwner(session(r), c, b.ownership, b.expires_at)
       event(s.tenant, 'Notion workspace connected', c)
     })
     return reply.redirect(origin + '/')
@@ -879,13 +949,14 @@ export function service(
         seal(bundle, c),
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
-      recordOwner(session(r), c, b.ownership)
+      recordOwner(session(r), c, b.ownership, b.expires_at)
       event(s.tenant, 'Google account connected', c)
     })
     return reply.redirect(origin + '/')
   })
   const refreshes = new Map<string, Promise<string>>()
   async function credential(c: Row, force = false): Promise<string> {
+    if ((deadline(c.id, 'credential') ?? Infinity) <= now()) fail(403, 'Credential expired')
     const value = open(c.secret, c.id)
     if (typeof value === 'string')
       return scopedToken(
@@ -993,7 +1064,7 @@ export function service(
         seal(b.secret, c),
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
-      recordOwner(session(r), c, b.ownership)
+      recordOwner(session(r), c, b.ownership, b.expires_at)
       event(t, 'Connection added', c)
     })
     return { connection_id: c }
@@ -1089,7 +1160,7 @@ export function service(
       fail(422, 'Invalid grant')
     return tx(() => {
       const g = 'dev_' + randomUUID(),
-        expires = now() + b.hours * 3600000
+        expires = Math.min(now() + b.hours * 3600000, accessDeadline(c.id, profileId(session(r))))
       run(
         'INSERT INTO grants VALUES(?,?,?,?,?,?,NULL,NULL,0,1)',
         g,

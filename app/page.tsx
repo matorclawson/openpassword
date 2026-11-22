@@ -26,6 +26,10 @@ import {
 } from 'lucide-react'
 import type { Provider } from '../packages/connectors'
 type Connection = {
+  expires_at: number | null
+  access_expires_at: number | null
+  organization_expires_at?: number | null
+  recipient_expiries: Record<string, number>
   source: string
   visibility: string
   manage: boolean
@@ -85,6 +89,40 @@ async function request(path: string, body?: unknown, method = body ? 'POST' : 'G
   const data = await r.json()
   if (!r.ok) throw Object.assign(Error(data.detail || 'Request failed'), { status: r.status })
   return data
+}
+function ExpiryField({
+  label,
+  name,
+  initial,
+}: {
+  label: string
+  name: string
+  initial?: number | null
+}) {
+  const format = (value: number) => new Date(value).toISOString().slice(0, -1)
+  const [value, setValue] = useState(initial ? format(initial) : '')
+  return (
+    <div>
+      <label>
+        {label} (UTC, optional)
+        <input
+          type="datetime-local"
+          step="any"
+          name={name}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+        />
+      </label>
+      <button type="button" onClick={() => setValue(format(Date.now() + 7 * 86400000))}>
+        In 7 days
+      </button>
+      {value && (
+        <button type="button" onClick={() => setValue('')}>
+          No expiry
+        </button>
+      )}
+    </div>
+  )
 }
 function Brand() {
   return (
@@ -170,13 +208,18 @@ export default function Page() {
     E('')
     K('')
     C([])
-    G(w?.connections.find((c) => c.active)?.id || '')
+    G(
+      w?.connections.find(
+        (c) => c.active && (!c.access_expires_at || c.access_expires_at > Date.now()),
+      )?.id || '',
+    )
     M(m)
   }
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     const form = new FormData(e.currentTarget)
     const f = Object.fromEntries(form)
+    const expiry = (key: string) => (form.get(key) ? Date.parse(String(form.get(key)) + 'Z') : null)
     await work(async () => {
       if (!w) return
       let sealed: Awaited<ReturnType<typeof sealInput>> | undefined
@@ -190,6 +233,7 @@ export default function Page() {
           const a = await request('admin/oauth/notion', {
             label: f.label,
             ownership: f.ownership,
+            expires_at: expiry('expires_at'),
             client_id: f.client_id,
             sealed,
           })
@@ -198,6 +242,7 @@ export default function Page() {
         }
         const data = await request('admin/oauth/google', {
           ...f,
+          expires_at: expiry('expires_at'),
           sealed,
           resources: String(f.resources || '')
             .split(',')
@@ -233,6 +278,7 @@ export default function Page() {
       if (modal === 'connection')
         await request('admin/connections', {
           ...f,
+          expires_at: expiry('expires_at'),
           sealed,
           resources: String(f.resources || '')
             .split(',')
@@ -245,6 +291,11 @@ export default function Page() {
           label: f.label,
           visibility: f.visibility,
           recipients: form.getAll('recipients'),
+          expires_at: expiry('expires_at'),
+          organization_expires_at: expiry('organization_expires_at'),
+          recipient_expiries: Object.fromEntries(
+            form.getAll('recipients').map((id) => [id, expiry('expires/' + id)]),
+          ),
         })
       if (modal === 'rotate') await request('admin/connections/' + selected + '/rotate', { sealed })
       if (modal === 'revoke')
@@ -333,7 +384,9 @@ export default function Page() {
         {error}
       </main>
     )
-  const active = w.connections.filter((c) => c.active),
+  const active = w.connections.filter(
+      (c) => c.active && (!c.access_expires_at || c.access_expires_at > Date.now()),
+    ),
     name = w.workspaces.find((x) => x.id === w.tenant)?.label,
     selectedConnection = w.connections.find((x) => x.id === grantId)
   const includes = (...values: string[]) => values.join(' ').toLowerCase().includes(q.toLowerCase())
@@ -516,6 +569,7 @@ export default function Page() {
                       <strong>{c.label}</strong>
                       <small>
                         {w.providers[c.provider].name} · {c.source}
+                        {c.access_expires_at && ' · Access ends ' + stamp(c.access_expires_at)}
                         {c.identity && ' · ' + c.identity}
                         {c.manage &&
                           ' · ' +
@@ -527,7 +581,11 @@ export default function Page() {
                       </small>
                     </div>
                     <span className={'pill ' + (c.active ? 'ok' : '')}>
-                      {c.active ? 'Active' : 'Revoked'}
+                      {!c.active
+                        ? 'Revoked'
+                        : c.access_expires_at && c.access_expires_at <= Date.now()
+                          ? 'Expired'
+                          : 'Active'}
                     </span>
                     {!!c.active && c.manage && (
                       <div className="actions">
@@ -1015,6 +1073,9 @@ export default function Page() {
                 </select>
               </label>
             )}
+            {['connection', 'oauth'].includes(modal) && (
+              <ExpiryField label="Credential expiry" name="expires_at" />
+            )}
             {modal === 'sharing' &&
               (() => {
                 const c = w.connections.find((x) => x.id === selected)!
@@ -1036,19 +1097,36 @@ export default function Page() {
                         <option value="organization">Whole organization</option>
                       </select>
                     </label>
+                    <ExpiryField
+                      label="Credential expiry"
+                      name="expires_at"
+                      initial={c.expires_at}
+                    />
+                    <ExpiryField
+                      label="Whole-organization sharing expiry"
+                      name="organization_expires_at"
+                      initial={c.organization_expires_at}
+                    />
                     {c.source !== 'Organization' && (
                       <fieldset>
                         <legend>People with access when “Specific people” is selected</legend>
                         {w.directory.map((m) => (
-                          <label key={m.id}>
-                            <input
-                              type="checkbox"
-                              name="recipients"
-                              value={m.id}
-                              defaultChecked={c.recipients.includes(m.id)}
+                          <div key={m.id}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                name="recipients"
+                                value={m.id}
+                                defaultChecked={c.recipients.includes(m.id)}
+                              />
+                              {m.label}
+                            </label>
+                            <ExpiryField
+                              label={m.label + ' sharing expiry'}
+                              name={'expires/' + m.id}
+                              initial={c.recipient_expiries[m.id]}
                             />
-                            {m.label}
-                          </label>
+                          </div>
                         ))}
                       </fieldset>
                     )}

@@ -77,9 +77,9 @@ export function inbound(
       const { id } = r.params as { id: string },
         row = db
           .prepare(
-            'SELECT w.* FROM webhook_sites w JOIN connections c ON c.id=w.conn AND c.tenant=w.tenant WHERE w.id=? AND w.active=1 AND c.active=1',
+            "SELECT w.* FROM webhook_sites w JOIN connections c ON c.id=w.conn AND c.tenant=w.tenant WHERE w.id=? AND w.active=1 AND c.active=1 AND NOT EXISTS(SELECT 1 FROM credential_deadlines d WHERE d.conn=c.id AND d.target='credential' AND d.expires<=?)",
           )
-          .get(id) as Row | undefined
+          .get(id, Date.now()) as Row | undefined
       if (!row) return reply.code(404).send()
       const bytes = r.body as Buffer,
         key = open(row.secret, id)

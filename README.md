@@ -117,3 +117,9 @@ Each workspace is an organization boundary. **Connections** lists the provider a
 Only the administrator can add an organization credential. It is available to the entire workspace. Any active member can add a personal credential, which starts private. The owner can use **Edit access** to rename it and share with specific active people or everyone in that workspace. Rotation and revocation belong to the credential owner; the administrator manages organization-owned credentials. Sharing a personal credential with everyone preserves its personal ownership.
 
 Removing someone's access invalidates agent grants they issued for that credential. Restoring sharing requires a new grant. Removing a member invalidates grants issued by that member and grants against that member's personal credentials. Existing installations migrate previously workspace-wide connections to organization ownership. Sign-in methods and human vault items use their existing access rules.
+
+### Credential and sharing expiry
+
+Set **Credential expiry** when connecting a provider or later under **Connections → Edit access**. A blank field gives the connection no OpenPassword deadline. For named sharing, each recipient has a separate deadline. **Whole-organization sharing expiry** limits organization-wide access. The owner retains access until the credential itself expires. All fields accept a UTC date and time and include an **In 7 days** shortcut.
+
+A device grant ends at the earliest of its requested expiry, the credential deadline, and its issuer’s applicable sharing deadline. Shortening a deadline caps existing grants. Extending it permits new grants without extending previously issued ones. These deadlines control use through OpenPassword. A provider can expire or revoke its underlying key independently.

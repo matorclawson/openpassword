@@ -61,6 +61,8 @@ try {
       await p.getByRole('button', { name: 'Add connection' }).click()
       await p.getByRole('dialog').locator('select').first().selectOption('github_read')
       await p.getByLabel('Credential owner').selectOption('personal')
+      await p.getByRole('button', { name: 'In 7 days', exact: true }).click()
+      assert.ok(await p.getByLabel('Credential expiry').inputValue())
       await p.getByLabel('Connection name').fill('Engineering')
       await p.getByLabel('Account identity').fill('demo@example.com')
       await p.getByLabel('Provider credential').fill('synthetic-browser-only')

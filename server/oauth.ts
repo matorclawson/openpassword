@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 export const oauthConfig = z.object({
+  expires_at: z.number().int().positive().max(8640000000000000).nullable().optional(),
   ownership: z.enum(['organization', 'personal']).optional(),
   client_id: z.string().min(1).max(500),
   client_secret: z.string().min(1).max(2000),

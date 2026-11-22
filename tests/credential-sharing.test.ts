@@ -94,3 +94,94 @@ test('organization, personal ownership, named shares and downstream revocation',
     200,
   )
 })
+
+test('recipient, organization and credential expiry independently cap existing and new grants', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'op-deadlines-')),
+    api = service(dir)
+  t.after(async () => {
+    await api.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const day = 86400000,
+    start = Date.now()
+  let clock = start
+  t.mock.method(Date, 'now', () => clock)
+  const post = (url: string, payload: object, cookie = '') =>
+    api.inject({
+      method: 'POST',
+      url,
+      payload,
+      headers: { cookie, 'zeoconnect-protocol-version': '1' },
+    })
+  const adminToken = readFileSync(join(dir, 'operator.token'), 'utf8')
+  const login = async (token: string) =>
+    String((await post('/admin/login', { token })).headers['set-cookie']).split(';')[0]
+  let owner = await login(adminToken)
+  const jane = (await post('/admin/members', { role: 'viewer', label: 'Jane' }, owner)).json()
+  const pat = (await post('/admin/members', { role: 'viewer', label: 'Pat' }, owner)).json()
+  const credential = (
+    await post(
+      '/admin/connections',
+      {
+        provider: 'openai',
+        ownership: 'personal',
+        label: 'Images',
+        external_identity: 'account',
+        secret: 'fixture',
+      },
+      owner,
+    )
+  ).json().connection_id
+  const share = (body: object) =>
+    post(
+      '/admin/connections/' + credential + '/sharing',
+      {
+        label: 'Images',
+        visibility: 'specific',
+        recipients: [jane.member_id, pat.member_id],
+        ...body,
+      },
+      owner,
+    )
+  const grant = (cookie: string) =>
+    post(
+      '/admin/grants',
+      { connection_id: credential, label: 'agent', operations: ['openai.chat'], hours: 720 },
+      cookie,
+    )
+  const refresh = (refresh_token: string) => post('/v1/device/token/refresh', { refresh_token })
+  assert.equal((await share({})).statusCode, 200)
+  const prior = (await grant(await login(jane.token))).json()
+  const end = start + 7 * day
+  assert.equal((await share({ recipient_expiries: { [jane.member_id]: end } })).statusCode, 200)
+  const capped = (await refresh(prior.refresh_token)).json()
+  assert.equal(Date.parse(capped.refresh_expires_at), end)
+  clock = end - 1
+  const janeBrowser = await login(jane.token)
+  const justBefore = (await grant(janeBrowser)).json()
+  assert.equal(Date.parse(justBefore.access_expires_at), end)
+  clock = end
+  assert.equal((await refresh(capped.refresh_token)).statusCode, 401)
+  assert.equal((await grant(janeBrowser)).statusCode, 404)
+  owner = await login(adminToken)
+  assert.equal((await grant(owner)).statusCode, 200)
+  assert.equal((await grant(await login(pat.token))).statusCode, 200)
+  assert.equal(
+    (await share({ visibility: 'organization', organization_expires_at: end + day })).statusCode,
+    200,
+  )
+  clock += day
+  owner = await login(adminToken)
+  assert.equal((await grant(await login(pat.token))).statusCode, 404)
+  assert.equal((await grant(owner)).statusCode, 200)
+  assert.equal((await share({ expires_at: clock + day })).statusCode, 200)
+  const device = (await grant(owner)).json()
+  assert.equal(Date.parse(device.refresh_expires_at), clock + day)
+  clock += day
+  owner = await login(adminToken)
+  assert.equal((await refresh(device.refresh_token)).statusCode, 401)
+  assert.equal((await grant(owner)).statusCode, 404)
+  assert.equal((await share({ expires_at: null })).statusCode, 200)
+  assert.equal((await grant(owner)).statusCode, 200)
+  assert.equal((await refresh(device.refresh_token)).statusCode, 401)
+})
