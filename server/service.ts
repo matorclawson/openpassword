@@ -142,7 +142,9 @@ export function service(
     if (
       member?.role === 'viewer' &&
       r.method !== 'GET' &&
-      !['/admin/logout', '/delegate/confirm'].includes(r.url)
+      !['/admin/logout', '/delegate/confirm'].includes(r.url) &&
+      !r.url.startsWith('/profile/') &&
+      !/^\/auth\/(apple|github|google)\/(start|callback)(\?|$)/.test(r.url)
     )
       fail(403, 'Workspace editor required')
     actor(member?.id || 'owner')
@@ -220,6 +222,7 @@ export function service(
         '/admin/login',
         '/auth/password',
         '/auth/setup',
+        '/auth/apple/start',
         '/auth/github/start',
         '/auth/google/start',
         '/v1/device/authorizations',

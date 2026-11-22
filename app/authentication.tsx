@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState, type FormEvent } from 'react'
 type Request = (path: string, body?: unknown, method?: string) => Promise<any>
-const labels: Record<string, string> = { google: 'Google', github: 'GitHub' }
+const labels: Record<string, string> = { google: 'Google', github: 'GitHub', apple: 'Apple' }
 export function ConsoleLogin({
   request,
   done,
@@ -99,6 +99,12 @@ export function ConsoleLogin({
                 {setup ? 'Create administrator' : 'Sign in'}
               </button>
             </form>
+            {setup && (
+              <details>
+                <summary>Create administrator with social sign-in</summary>
+                <BootstrapSocial request={request} origin={status.origin} error={setError} />
+              </details>
+            )}
             {!setup &&
               !member &&
               status.providers.map((p) => (
@@ -160,10 +166,7 @@ export function Authentication({ request }: { request: Request }) {
   return (
     <section className="authentication">
       <h2>Authentication</h2>
-      <p>
-        Your username and password are ready. To add social sign-in, register an OAuth app with the
-        provider, then link your account.
-      </p>
+      <p>Configure the OAuth apps available to profiles on this installation.</p>
       {apps.map((p) => (
         <details key={p.provider}>
           <summary>
@@ -177,7 +180,8 @@ export function Authentication({ request }: { request: Request }) {
               void act(async () => {
                 await request('admin/authentication/' + p.provider, data)
                 form.reset()
-                M('Saved. Link your account to enable sign-in.')
+                window.dispatchEvent(new Event('signin-apps-updated'))
+                M('Saved. You can link this provider under My profile.')
               })
             }}
           >
@@ -186,7 +190,9 @@ export function Authentication({ request }: { request: Request }) {
                 href={
                   p.provider === 'google'
                     ? 'https://console.cloud.google.com/auth/clients'
-                    : 'https://github.com/settings/developers'
+                    : p.provider === 'apple'
+                      ? 'https://developer.apple.com/account/resources/identifiers/list'
+                      : 'https://github.com/settings/developers'
                 }
                 target="_blank"
                 rel="noreferrer"
@@ -199,11 +205,11 @@ export function Authentication({ request }: { request: Request }) {
               <input value={p.callback} readOnly onFocus={(e) => e.target.select()} />
             </label>
             <label>
-              Client ID
+              {p.provider === 'apple' ? 'Services ID' : 'Client ID'}
               <input name="client" defaultValue={p.client} required />
             </label>
             <label>
-              Client secret
+              {p.provider === 'apple' ? 'Apple signed client secret (JWT)' : 'Client secret'}
               <input type="password" name="secret" autoComplete="new-password" required />
             </label>
             <button disabled={busy}>Save credentials</button>
@@ -227,6 +233,7 @@ export function Authentication({ request }: { request: Request }) {
                 onClick={() =>
                   act(async () => {
                     await request('admin/authentication/' + p.provider, undefined, 'DELETE')
+                    window.dispatchEvent(new Event('signin-apps-updated'))
                   })
                 }
               >
@@ -235,6 +242,147 @@ export function Authentication({ request }: { request: Request }) {
             </>
           )}
         </details>
+      ))}
+      {message && <p role="status">{message}</p>}
+    </section>
+  )
+}
+
+function BootstrapSocial({
+  request,
+  origin,
+  error,
+}: {
+  request: Request
+  origin: string
+  error: (m: string) => void
+}) {
+  const [provider, P] = useState('google')
+  return (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault()
+        const setup = Object.fromEntries(new FormData(e.currentTarget))
+        try {
+          location.assign(
+            (await request('auth/' + provider + '/start', { link: false, setup })).url,
+          )
+        } catch (ex) {
+          error((ex as Error).message)
+        }
+      }}
+    >
+      <label>
+        Sign-in provider
+        <select value={provider} onChange={(e) => P(e.target.value)}>
+          {Object.entries(labels).map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p>Register this callback in your provider’s web application settings.</p>
+      <input
+        aria-label="Registration callback"
+        value={origin + '/api/auth/' + provider + '/callback'}
+        readOnly
+      />
+      <label>
+        Installation setup code
+        <input name="token" type="password" required />
+      </label>
+      <label>
+        {provider === 'apple' ? 'Services ID' : 'OAuth client ID'}
+        <input name="client" required />
+      </label>
+      <label>
+        {provider === 'apple' ? 'Apple signed client secret (JWT)' : 'OAuth client secret'}
+        <input name="secret" type="password" required />
+      </label>
+      <button>Continue with {labels[provider]}</button>
+    </form>
+  )
+}
+export function Profile({ request }: { request: Request }) {
+  const [profile, P] = useState<{
+      role: string
+      username?: string
+      providers: { provider: string; linked: number }[]
+    }>(),
+    [message, M] = useState('')
+  async function load() {
+    P(await request('profile'))
+  }
+  useEffect(() => {
+    const refresh = () => load().catch((e) => M(e.message))
+    refresh()
+    window.addEventListener('signin-apps-updated', refresh)
+    return () => window.removeEventListener('signin-apps-updated', refresh)
+  }, [])
+  async function act(fn: () => Promise<void>) {
+    try {
+      await fn()
+      await load()
+      M('Profile updated.')
+    } catch (e) {
+      M((e as Error).message)
+    }
+  }
+  return (
+    <section className="authentication">
+      <h2>My profile</h2>
+      <p>Workspace role · {profile?.role}</p>
+      <details>
+        <summary>
+          {profile?.username ? 'Change username or password' : 'Add username and password'}
+        </summary>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const form = e.currentTarget,
+              data = Object.fromEntries(new FormData(form))
+            void act(async () => {
+              await request('profile/password', data)
+              form.reset()
+            })
+          }}
+        >
+          <label>
+            Username
+            <input name="username" defaultValue={profile?.username} required />
+          </label>
+          <label>
+            New password
+            <input
+              name="password"
+              type="password"
+              minLength={12}
+              autoComplete="new-password"
+              required
+            />
+          </label>
+          <button>Save password</button>
+        </form>
+        {profile?.username && (
+          <button onClick={() => act(() => request('profile/password', undefined, 'DELETE'))}>
+            Remove password
+          </button>
+        )}
+      </details>
+      {profile?.providers.map(({ provider, linked }) => (
+        <button
+          key={provider}
+          onClick={() =>
+            act(async () => {
+              if (linked) await request('profile/' + provider, undefined, 'DELETE')
+              else
+                location.assign((await request('auth/' + provider + '/start', { link: true })).url)
+            })
+          }
+        >
+          {linked ? 'Unlink' : 'Link'} {labels[provider]}
+        </button>
       ))}
       {message && <p role="status">{message}</p>}
     </section>

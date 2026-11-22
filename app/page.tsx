@@ -1,5 +1,5 @@
 'use client'
-import { Authentication, ConsoleLogin } from './authentication'
+import { Authentication, ConsoleLogin, Profile } from './authentication'
 import { ApprovalPreview } from './approval-preview'
 import { sealInput } from './intake'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
@@ -661,6 +661,7 @@ export default function Page() {
               ))}
             {tab === 'Workspace' && (
               <>
+                <Profile request={request} />
                 {w.role === 'owner' && <Authentication request={request} />}
                 {w.billing.map((b, i) => (
                   <article key={i}>

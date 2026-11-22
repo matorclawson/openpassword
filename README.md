@@ -13,7 +13,7 @@ make dev
 
 ### Create the first administrator
 
-Open the console and choose a username and a password of at least 12 characters. Enter the setup code from the host that runs the broker. The startup message prints the file path. A user-run installation defaults to `~/.openpassword/operator.token`. With the supplied systemd units, read it on the server with `sudo cat /var/lib/openpassword/operator.token`. For a cloud VM, use its SSH or administrative console to read the file. Keep the code private.
+Open the console. Choose a username and a password of at least 12 characters, or expand **Create administrator with social sign-in**. Enter the setup code from the host that runs the broker. The startup message prints the file path. A user-run installation defaults to `~/.openpassword/operator.token`. With the supplied systemd units, read it on the server with `sudo cat /var/lib/openpassword/operator.token`. For a cloud VM, use its SSH or administrative console to read the file. Keep the code private.
 
 | How you reach the console | Address and deployment settings |
 | --- | --- |
@@ -21,11 +21,11 @@ Open the console and choose a username and a password of at least 12 characters.
 | Private VM through SSH | Run `ssh -N -L 3000:127.0.0.1:3000 user@server` on your computer, then open `http://localhost:3000`. |
 | Domain behind a TLS proxy | Set `OPENPASSWORD_WEB_ORIGIN=https://vault.example.com` on the broker, substituting your exact browser origin, and restart it. Route that domain through the proxy to the console on port 3000. The console forwards its API requests to the broker. |
 
-Creating the administrator signs you in and opens **Workspace → Authentication**. You can start using OpenPassword immediately. On subsequent visits use your username and password. An existing 0.2.0 installation uses its current operator token for this one-time setup. After setup the token stops working for owner login. Existing workspace members can still choose **Use a workspace access token**. For a production-mode local run, use `make build && make start`.
+Creating the administrator signs you in and opens **Workspace → Authentication**. You can start using OpenPassword immediately. On subsequent visits use any sign-in method attached to your profile. An existing 0.2.0 installation uses its current operator token for this one-time setup. After setup the token stops working for owner login. Existing workspace members can still choose **Use a workspace access token**. For a production-mode local run, use `make build && make start`.
 
 ### Enable Google or GitHub sign-in
 
-In **Workspace → Authentication**, expand the provider and open its developer settings. Create a Google OAuth web application or a GitHub OAuth App and register the exact callback URL displayed by OpenPassword. Paste the **client ID** and **client secret**, save, then choose **Link my account** and authorize with the intended administrator identity. The sign-in page shows that provider after linking. OpenPassword encrypts the client secret and recognizes the linked provider account by its stable ID. Changing credentials requires linking again. Removing a provider leaves password access available. If you change the console domain, update the broker origin and registered callback URLs together.
+In **Workspace → Authentication**, expand the provider and open its developer settings. Create a Google OAuth web application or a GitHub OAuth App and register the exact callback URL displayed by OpenPassword. Paste the **client ID** and **client secret**, save, then choose **Link my account** and authorize with the intended administrator identity. The sign-in page shows that provider after linking. OpenPassword encrypts the client secret and recognizes the linked provider account by its stable ID. You can rotate the application secret while retaining the same client ID and linked profiles. If you change the console domain, update the broker origin and registered callback URLs together.
 
 ### Connect your first integration
 
@@ -101,3 +101,11 @@ Run `npm run test:reference -- /path/to/zeoconnect-source` to compare the upstre
 Enroll a HubSpot connection with the selected resource `/rasa-newsletter/` and each permitted template directory. Issue the device a grant for `hubspot.files.upload_bundle`. Stage each image at `POST /v1/hubspot/issue-assets` with its original media type and the query fields `connection_id`, `file_name` and `sha256`. Invoke the operation with the returned file manifests, issue ID and bundle digest. The owner can review the upload destination, draft changes and exact manifest before dispatch. Read durable per-step receipts at `GET /v1/hubspot/issues/:id?connection_id=…`. Each issue ID can be reserved once per connection. The public service uses explicit workspace, connection, grant and folder selection in place of the private deployment’s hard-coded organization and portal.
 
 Workspace owners can pause a single operation under **Workspace → Provider dispatch controls**. An upgrade from v0.1 expires outstanding YouTube relay proofs because they lack the operation identity needed for pause enforcement. Request a fresh upload session for an interrupted relay. Revolut transaction reads now require a selected account ID, including the legacy list alias. Supabase table selection permits columns from the selected table and explicitly scoped row writes.
+
+### Personal profiles and sign-in methods
+
+At first launch you can also expand **Create administrator with social sign-in**. Enter the installation setup code and the provider's OAuth web application credentials. Successful authorization creates the owner profile. A password is optional.
+
+Under **Workspace → My profile**, owners, editors and viewers can add or change their username and password, link a configured Google, GitHub or Apple account, and remove individual methods. Each identity belongs to one profile. Linking requires a signed-in session. A workspace member can use their issued access token to enroll. The owner's **Authentication** settings configure the provider applications for the installation. Removing a provider is blocked if a profile depends exclusively on it.
+
+For Apple, configure a Services ID, register the HTTPS domain and the displayed return URL in Apple Developer, and enter a signed Apple client-secret JWT. Rotate the JWT before expiry using the same Services ID. Local installations need a registered HTTPS domain for Apple. Password sign-in works on loopback.

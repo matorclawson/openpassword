@@ -45,14 +45,16 @@ try {
     try {
       const p = await browser.newPage()
       await p.goto(origin)
-      await p.getByLabel('Setup code').fill(readFileSync(join(dir, 'operator.token'), 'utf8'))
+      await p
+        .getByLabel('Setup code', { exact: true })
+        .fill(readFileSync(join(dir, 'operator.token'), 'utf8'))
       await p.getByLabel('Username').fill('operator')
       await p.getByLabel('Choose a password').fill('browser-only-fixture')
       await p.getByRole('button', { name: 'Create administrator' }).click()
       await p.getByRole('heading', { name: 'Authentication' }).waitFor()
       await p.getByText('Google · Optional').click()
       assert.equal(
-        await p.getByLabel('Callback URL').first().inputValue(),
+        await p.locator('details[open]').getByLabel('Callback URL').inputValue(),
         origin + '/api/auth/google/callback',
       )
       await p.getByRole('button', { name: 'Connections', exact: true }).click()
