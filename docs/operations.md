@@ -83,4 +83,4 @@ Model usage is captured from JSON and streaming usage frames even without a tari
 
 ## Release package
 
-On a Linux host with Node 24, run `make verify`, then `make package` and `make checksum` from a clean checkout. This writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, its `.sha256` sidecar and `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256). Extract the archive into `/opt/openpassword/releases/<version>/`. The archive includes built output and installed dependencies, so it must be built on the target architecture. ffmpeg and Chromium are not included.
+On a Linux host with Node 24, run `make verify`, then `make package` and `make checksum` from a clean checkout. This writes `dist-release/openpassword-<version>-<os>-<arch>.tar.gz`, its `.sha256` sidecar and `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256). Extract the archive into `/opt/openpassword/releases/<version>/`. The archive includes built output and installed dependencies, so it must be built on the target architecture. ffmpeg and Chromium are not included.
