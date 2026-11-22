@@ -44,6 +44,12 @@ try {
     })
     try {
       const p = await browser.newPage()
+      const pair = await p.request.post(origin + '/v1/device/authorizations', {
+        headers: { 'OpenPassword-Protocol-Version': '1' },
+        data: { device_name: 'remote client' },
+      })
+      assert.equal(pair.status(), 200)
+      assert.equal((await pair.json()).verification_url, origin + '/device')
       await p.goto(origin)
       await p
         .getByLabel('Setup code', { exact: true })
@@ -79,6 +85,25 @@ try {
       await p.getByRole('dialog').getByRole('button', { name: 'Issue grant' }).click()
       await p.getByText('Agent credentials', { exact: true }).waitFor()
       await p.getByRole('button', { name: 'Close dialog' }).click()
+      const challenge = await pair.json()
+      await p.getByRole('button', { name: 'Issue grant' }).click()
+      await p.getByLabel('Agent name').fill('Remote Codex')
+      await p.getByLabel('Pairing code (optional)').fill(challenge.user_code)
+      await p.getByLabel('github.user.get', { exact: true }).check()
+      await p.getByRole('dialog').getByRole('button', { name: 'Issue grant' }).click()
+      const headers = { 'OpenPassword-Protocol-Version': '1' }
+      await p.getByRole('dialog').waitFor({ state: 'hidden' })
+      const redeemed = await p.request.post(origin + '/v1/device/token', {
+        headers,
+        data: { device_code: challenge.device_code },
+      })
+      assert.equal(redeemed.status(), 200)
+      const token = await redeemed.json()
+      const capabilities = await p.request.get(origin + '/v1/capabilities', {
+        headers: { ...headers, Authorization: 'Bearer ' + token.access_token },
+      })
+      assert.equal(capabilities.status(), 200)
+      assert.match(await capabilities.text(), /github.user.get/)
       await p.getByRole('button', { name: 'Consumption', exact: true }).click()
       await p.getByText('No brokered API requests in this period.').waitFor()
       await p.getByLabel('Group by').selectOption('agent')

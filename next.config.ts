@@ -5,6 +5,10 @@ const config: NextConfig = {
   async rewrites() {
     return [
       {
+        source: '/v1/:path*',
+        destination: 'http://127.0.0.1:' + (process.env.OPENPASSWORD_PORT || 4141) + '/v1/:path*',
+      },
+      {
         source: '/api/:path*',
         destination: 'http://127.0.0.1:' + (process.env.OPENPASSWORD_PORT || 4141) + '/:path*',
       },

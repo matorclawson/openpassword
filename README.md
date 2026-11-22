@@ -52,6 +52,21 @@ Start Codex normally and ask it to list its OpenPassword connections and capabil
 
 This connects Codex to provider tools. Routing the harness’s own model inference is a separate integration; the current model endpoint implements Chat Completions.
 
+### Remote broker, local Codex
+
+For a Hetzner deployment, set `OPENPASSWORD_WEB_ORIGIN=https://vault.example.com` on the broker and point your HTTPS reverse proxy at the OpenPassword web service on port 3000. The web service forwards the client’s `/v1/` requests to the broker on loopback. Both server processes run on Hetzner. Substitute your actual domain.
+
+On the computer running Codex, build the OpenPassword CLI with `make setup` in the checkout. Run:
+
+```sh
+export OPENPASSWORD_BROKER=https://vault.example.com
+export OPENPASSWORD_AGENT=my-codex
+node packages/cli/dist/index.js pair
+codex mcp add openpassword --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" --env OPENPASSWORD_AGENT="$OPENPASSWORD_AGENT" -- node "$PWD/packages/cli/dist/index.js" mcp
+```
+
+Approve the code in the remote console. The local MCP process uses the paired grant over HTTPS. Provider keys and consumption records stay on the server.
+
 ## Agent CLI
 
 After `make setup`:
