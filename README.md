@@ -67,6 +67,28 @@ codex mcp add openpassword --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" --en
 
 Approve the code in the remote console. The local MCP process uses the paired grant over HTTPS. Provider keys and consumption records stay on the server.
 
+### Use Claude Code with OpenPassword on Hetzner
+
+From the built OpenPassword checkout on your laptop, pair a grant for Claude Code with the remote instance. Substitute the HTTPS origin of your deployment.
+
+```sh
+export OPENPASSWORD_BROKER=https://vault.example.com
+export OPENPASSWORD_AGENT=my-claude
+node packages/cli/dist/index.js pair
+```
+
+Open the displayed verification URL and approve the code, provider connection, operations and expiry. Then register the local stdio server for your Claude Code user:
+
+```sh
+claude mcp add --scope user --transport stdio openpassword \
+  --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
+  --env OPENPASSWORD_AGENT="$OPENPASSWORD_AGENT" \
+  -- node "$PWD/packages/cli/dist/index.js" mcp
+claude mcp get openpassword
+```
+
+Open Claude Code in your working project and check `/mcp`. Ask it to use the OpenPassword connections and capabilities tools to show which provider operations are available. Tool execution uses the paired grant and the broker's existing approval flow. A distinct profile and grant let you revoke Claude Code access or track its usage independently of Codex. The same instructions work with a local broker using `http://127.0.0.1:4141`. Claude Code's inference and subscription billing are separate from the OpenPassword tool connection.
+
 ## Agent CLI
 
 After `make setup`:
