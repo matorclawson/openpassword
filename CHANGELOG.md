@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Adds an encrypted off-host backup and a tested restore (`deploy/backup/`, borg with client-side encryption; daily timer unit). `master.key` and the vault travel together only inside the encrypted archive.
+
 Breaking wire changes. Clients and integrations written against the predecessor service's names must update.
 
 - Protocol, capability and on-behalf-of headers use only the `openpassword-` prefix. The legacy headers are no longer sent or accepted.
