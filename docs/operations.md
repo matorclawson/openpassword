@@ -92,3 +92,33 @@ The browser long-polls `/api/admin/activity` with its authenticated session. Own
 Keep the reverse proxy's response timeout above 20 seconds. Each broker process caps pending polls at 4,096 total and 512 per audience. A full group returns HTTP 429. SQLite retains the audit events across disconnects and restarts. Wake notifications are local to one broker process. The separate consumption ledger tracks provider requests and usage.
 
 To reproduce the gateway load checks, run `node --import tsx scripts/gateway-load.ts --minute` for 3,000 scheduled chat requests over one minute or omit `--minute` for a 40-client burst. Both use loopback HTTP, a disposable SQLite vault and a simulated upstream. The check verifies dispatches, saved requests, consumption records and the grant's activity cursor.
+
+## Upgrade a running systemd installation
+
+This procedure targets the supplied Linux services, with the original installation in `/opt/openpassword` and the vault in the broker's separate state directory. It accepts release builds compatible with the current database. Take a protected backup before changes that alter the storage format. Automatic rollback switches application code and keeps the current vault, so it depends on backward-compatible migrations.
+
+Build the trusted candidate in a **new directory** on the deployment host while the current installation serves requests. Use the production value of `OPENPASSWORD_PORT` when building. From the candidate checkout:
+
+```sh
+set -eu
+release=$(git rev-parse HEAD)
+make setup
+make build
+sudo install -d -m 755 /opt/openpassword-releases
+target="/opt/openpassword-releases/$release"
+if ! sudo test -d "$target"; then
+  stage=$(sudo mktemp -d /opt/openpassword-releases/staging.XXXXXXXX)
+  sudo cp -a . "$stage/"
+  sudo chmod 755 "$stage"
+  sudo mv -Tn "$stage" "$target"
+fi
+sudo python3 deploy/upgrade.py --upgrade "$target"
+```
+
+Use a clean build checkout with service-readable files and directories. Keep vault files, secrets and private configuration outside release directories. Stage a complete release before activation. Publish updates to clients through the installation's existing HTTPS origin.
+
+The updater locks activation, checks the candidate against a disposable vault, drains a supporting broker for up to 90 seconds, then restarts the two services from the selected directory. During the drain, new broker requests receive HTTP 503 and a one-second retry hint. In-flight requests have time to finish. The first upgrade from a broker predating drain support uses the existing service shutdown behavior. Expect a brief reconnect during restart. A long stream that outlasts the shutdown window can be interrupted. Check its execution record before deciding whether to retry a billable call.
+
+Activation checks the broker through the live web proxy, the console page, and both service working directories. If any check fails it restarts the previous build. To switch back explicitly, run `sudo python3 deploy/upgrade.py --rollback` from the update package. Supply `--web-port PORT` if the console listens on a port other than 3000. Following an interrupted activation, rerun the updater to recover the previous release before proceeding.
+
+On a Mac or Linux client, set `OPENPASSWORD_BROKER` and run `sh deploy/update-client.sh` from this update package. The same script is served at `/update-client.sh` on the updated installation. It downloads the client to a temporary file beside the executable, verifies its SHA-256 against the server, runs an offline startup check, and atomically replaces the executable. CLI profiles stay on the workstation. Restart long-running MCP processes to pick up the new client. A running watch retries temporary gateway failures and continues from its event cursor.

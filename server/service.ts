@@ -129,6 +129,29 @@ export function service(
     "CREATE INDEX IF NOT EXISTS cli_connected ON events(tenant,subject,at) WHERE action='CLI connected'",
   )
   const feed = activity(db)
+  let draining = false
+  let inFlight = 0
+  api.decorate('beginDrain', () => {
+    draining = true
+    feed.wakeAll()
+  })
+  api.addHook('onRequest', async (r, reply) => {
+    if (r.url.split('?')[0] === '/health') return
+    if (draining)
+      return reply
+        .code(503)
+        .header('Retry-After', '1')
+        .header('OpenPassword-Protocol-Version', '1')
+        .send({ detail: 'Broker is updating' })
+    inFlight++
+    const finish = () => {
+      reply.raw.off('close', finish)
+      reply.raw.off('finish', finish)
+      inFlight--
+    }
+    reply.raw.once('finish', finish)
+    reply.raw.once('close', finish)
+  })
   const event = (t: string, action: string, id: string) => {
     const by = auditContext.getStore()?.actor || 'system'
     run(
@@ -483,7 +506,11 @@ export function service(
     (t) => !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
   )
   delegation(api, db, origin, session, seal, open, event)
-  api.get('/health', async () => ({ status: 'ok' }))
+  api.get('/health', async () => ({
+    status: draining ? 'draining' : 'ok',
+    drain_supported: true,
+    in_flight: inFlight,
+  }))
   function startSession(reply: import('fastify').FastifyReply, member?: Row) {
     const s = opaque()
     tx(() => {

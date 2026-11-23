@@ -151,3 +151,7 @@ OpenPassword stores encrypted provider credentials, grants, and usage history in
 - [Changelog](CHANGELOG.md) — project release history.
 
 The server and console use [AGPL-3.0-only](LICENSE). The [client](packages/client/LICENSE), [CLI](packages/cli/LICENSE), [connectors](packages/connectors/LICENSE), and [schemas](packages/schemas/LICENSE) use the MIT license.
+
+## Update an existing installation
+
+For the supplied Linux services, stage a fresh build while the current version runs, then activate it with `deploy/upgrade.py --upgrade`. The updater checks readiness and restores the previous build on failure. On each workstation, `sh deploy/update-client.sh` updates the installed CLI using its configured broker address. [Upgrade and rollback instructions](docs/operations.md#upgrade-a-running-systemd-installation)

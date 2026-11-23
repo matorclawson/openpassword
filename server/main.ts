@@ -10,4 +10,5 @@ console.log(
     dir +
     '/operator.token',
 )
+process.on('SIGUSR2', () => api.getDecorator<() => void>('beginDrain')())
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => void api.close())

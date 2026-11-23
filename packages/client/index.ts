@@ -53,7 +53,7 @@ export class OpenPassword {
       (r.headers.get('openpassword-protocol-version') ??
         r.headers.get('zeoconnect-protocol-version')) !== '1'
     )
-      throw Error('Broker protocol unavailable')
+      throw Object.assign(Error('Broker protocol unavailable'), { status: r.status })
     if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
     return r.status === 204 ? (undefined as T) : ((await r.json()) as T)
   }

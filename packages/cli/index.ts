@@ -72,6 +72,10 @@ async function tokens(revoke = false) {
   })
 }
 async function main() {
+  if (cmd === 'version') {
+    console.log('OpenPassword CLI 0.2.0 · protocol 1')
+    return
+  }
   const client = new OpenPassword(origin)
   if (cmd === 'mcp') {
     const { serve } = await import('./mcp.js')
@@ -152,9 +156,6 @@ async function main() {
     throw Error(
       'Usage: openpassword connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
     )
-  const t = await tokens(cmd === 'revoke')
-  if (cmd === 'revoke') return
-  const bound = new OpenPassword(origin, t.access_token)
   if (cmd === 'watch') {
     let cursor: number | undefined = args.length ? Number(args[0]) : undefined
     if (
@@ -165,8 +166,8 @@ async function main() {
     }
     let delay = 500
     while (true) {
-      const live = new OpenPassword(origin, (await tokens()).access_token)
       try {
+        const live = new OpenPassword(origin, (await tokens()).access_token)
         const page: { events: unknown[]; cursor: number } = await live.request(
           '/v1/activity' + (cursor === undefined ? '' : '?after=' + cursor),
         )
@@ -182,6 +183,9 @@ async function main() {
       }
     }
   }
+  const t = await tokens(cmd === 'revoke')
+  if (cmd === 'revoke') return
+  const bound = new OpenPassword(origin, t.access_token)
   if (cmd === 'chat') {
     if (args.length !== 3 || process.stdin.isTTY)
       throw Error('Usage: openpassword chat MODEL MAX_TOKENS KEY < prompt.txt')

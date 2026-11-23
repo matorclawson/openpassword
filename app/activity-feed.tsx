@@ -22,7 +22,10 @@ export function ActivityFeed({ query }: { query: string }) {
             location.reload()
             return
           }
-          if (!response.ok) throw Error()
+          if (!response.ok) {
+            const updating = response.status === 503 && response.headers.has('retry-after')
+            throw Error(updating ? 'Server updating · reconnecting…' : 'Reconnecting…')
+          }
           const page = await response.json()
           if (signal.aborted) return
           cursor = page.cursor
@@ -30,9 +33,13 @@ export function ActivityFeed({ query }: { query: string }) {
           if (rows.length) setEvents((previous) => [...rows, ...previous].slice(0, 100))
           setStatus('Live')
           delay = 500
-        } catch {
+        } catch (error) {
           if (signal.aborted) return
-          setStatus('Reconnecting…')
+          setStatus(
+            error instanceof Error && error.message.startsWith('Server updating')
+              ? error.message
+              : 'Reconnecting…',
+          )
           await new Promise<void>((resolve) => {
             retry = setTimeout(resolve, delay + Math.random() * 250)
           })

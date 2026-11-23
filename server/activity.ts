@@ -24,6 +24,9 @@ export function activity(db: DatabaseSync) {
     return { events, cursor: Number(events.at(-1)?.id ?? after ?? 0) }
   }
   return {
+    wakeAll() {
+      for (const group of waiting.values()) for (const wake of group) wake()
+    },
     signal(tenant: string, actor: string) {
       for (const scope of [{ tenant }, { tenant, actor }])
         for (const wake of waiting.get(key(scope)) ?? []) wake()

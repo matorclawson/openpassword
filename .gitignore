@@ -11,3 +11,6 @@ node_modules/
 public/openpassword-source.tar.gz*
 
 public/openpassword-cli.cjs
+public/openpassword-cli.sha256
+public/update-client.sh
+__pycache__/
