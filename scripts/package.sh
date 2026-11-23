@@ -149,7 +149,9 @@ const [commit, tree, version, arch, node, node_binary_sha256, node_tarball_sha25
 console.log(JSON.stringify({ name: 'openpassword', version, commit, tree, platform: 'linux', arch, node, node_binary_sha256, node_tarball_sha256, lockfile_sha256, source_epoch: Number(source_epoch), manifest_sha256, per_build_files: perBuild.split('\n').filter(Boolean) }, null, 2))
 JS
 
-# 4. Deterministic archive, written under a temporary name and renamed only when complete.
+# 4. Normalized archive (sorted names, fixed mtime and owner, gzip -n), written under a temporary name and renamed
+# only when complete. Normalized packing makes the manifest reproducible; the archive digest still differs between
+# builds because of the per-build files listed in scripts/per-build-files.txt.
 tmp=$out/$name.tar.gz.partial
 tar -C "$out/stage" --mode=u+rwX,go+rX,go-w --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu -cf - . | gzip -n > "$tmp"
 listing=$(tar -tzf "$tmp")
