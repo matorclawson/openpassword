@@ -9,6 +9,15 @@
 // Glob syntax: `*` matches any run of characters except `/`, `**` matches any run including `/`, and
 // `?` matches exactly one character other than `/`. A pattern may hold at most 8 wildcard characters
 // (`*` and `?` each count one, so `**` counts two), and a run of three or more `*` is refused.
+//
+// ID alphabet: model ids, voice ids and patterns use one alphabet, printable ASCII (U+0021..U+007E)
+// without backslash and percent. Nothing else is admitted, so every character an id can hold is matched
+// by `.`, `[^/]` and `?` alike and a wildcard cannot disagree with the validator.
+//
+// Rule data is validated once, before any matching (checkRule): `effect` is `allow` or `deny`;
+// `max_tokens` and `calls` are positive safe integers; `expires` is a non-negative safe integer in one
+// unit chosen by the caller and used for every rule of a decision (the engine only takes the minimum).
+// An invalid rule throws PolicyError('bad_rule'); no decision is returned for it.
 
 export type Effect = 'allow' | 'deny'
 export interface Rule {
@@ -51,12 +60,13 @@ export class PolicyError extends Error {
 
 const VENDOR = /^[a-z0-9][a-z0-9-]{0,62}$/
 const FAMILY = /^[a-z0-9][a-z0-9._-]{0,62}$/
-const BAD_CHARS = /[\u0000- \u007f\\%]/
+const ID_ALPHABET = /^[\u0021-\u007e]+$/
+const BAD_CHARS = /[\\%]/
 const MAX_WILDCARDS = 8
 
 function checkNative(id: string, what: string) {
   if (typeof id !== 'string' || id.length < 1 || id.length > 200) throw new PolicyError(what)
-  if (BAD_CHARS.test(id)) throw new PolicyError(what)
+  if (!ID_ALPHABET.test(id) || BAD_CHARS.test(id)) throw new PolicyError(what)
   for (const part of id.split('/')) if (part === '' || part === '.' || part === '..') throw new PolicyError(what)
 }
 
@@ -74,7 +84,7 @@ type Pattern =
 export function parsePattern(source: string): Pattern {
   if (typeof source !== 'string' || source.length < 1 || source.length > 200)
     throw new PolicyError('bad_pattern')
-  if (/[\u0000-\u001f\u007f\\%\s]/.test(source)) throw new PolicyError('bad_pattern')
+  if (!ID_ALPHABET.test(source) || BAD_CHARS.test(source)) throw new PolicyError('bad_pattern')
   if (source.startsWith('family:')) {
     const name = source.slice(7)
     if (!FAMILY.test(name)) throw new PolicyError('bad_pattern')
@@ -98,7 +108,7 @@ function globToRegExp(glob: string, fold: boolean): RegExp {
     else if (c === '?') out += '[^/]'
     else out += c.replace(/[.+^${}()|[\]\\]/g, '\\$&')
   }
-  return new RegExp('^' + out + '$', fold ? 'i' : '')
+  return new RegExp('^' + out + '$', fold ? 'is' : 's')
 }
 
 function ruleMatches(p: Pattern, ids: string[], family: string, fold: boolean) {
@@ -131,7 +141,10 @@ function consult(list: Rule[], m: ResolvedModel, fold: boolean): Listed {
   const canonical = policyId(m.vendor, m.canonicalId)
   const requested = policyId(m.vendor, m.requestedId)
   const denyIds = canonical === requested ? [canonical] : [canonical, requested]
-  const parsed = list.map((rule) => ({ rule, p: parsePattern(rule.model) }))
+  const parsed = list.map((rule) => {
+    checkRule(rule)
+    return { rule, p: parsePattern(rule.model) }
+  })
   for (const { rule, p } of parsed)
     if (rule.effect === 'deny' && ruleMatches(p, denyIds, m.family, fold))
       return { ok: false, allows: [], denied: rule }
@@ -143,6 +156,17 @@ function consult(list: Rule[], m: ResolvedModel, fold: boolean): Listed {
   // by an exact allow rule that names it.
   if (familyDeny && m.family === 'unknown') allows = allows.filter((x) => x.p.kind === 'exact')
   return { ok: allows.length > 0, allows }
+}
+
+const isCount = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1
+const isLimit = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+function checkRule(rule: Rule) {
+  if (!rule || typeof rule !== 'object' || (rule.effect !== 'allow' && rule.effect !== 'deny'))
+    throw new PolicyError('bad_rule')
+  if (rule.tariff !== undefined && typeof rule.tariff !== 'string') throw new PolicyError('bad_rule')
+  if (rule.max_tokens !== undefined && !isCount(rule.max_tokens)) throw new PolicyError('bad_rule')
+  if (rule.calls !== undefined && !isCount(rule.calls)) throw new PolicyError('bad_rule')
+  if (rule.expires !== undefined && !isLimit(rule.expires)) throw new PolicyError('bad_rule')
 }
 
 function minOf(values: (number | undefined)[]) {
@@ -230,7 +254,10 @@ export function evaluateVoice(input: {
   if (input.rules.length === 0) return { ok: true, restricted: false }
   const id = policyId(input.vendor, input.voiceId)
   const fold = input.foldCase === true
-  const parsed = input.rules.map((r) => ({ rule: r, p: parsePattern(r.voice) }))
+  const parsed = input.rules.map((r) => {
+    if (!r || (r.effect !== 'allow' && r.effect !== 'deny')) throw new PolicyError('bad_rule')
+    return { rule: r, p: parsePattern(r.voice) }
+  })
   const hit = (x: { p: Pattern }) => ruleMatches(x.p, [id], 'unknown', fold)
   const deny = parsed.find((x) => x.rule.effect === 'deny' && hit(x))
   if (deny) return { ok: false, code: 'voice_not_permitted', rule: deny.rule }

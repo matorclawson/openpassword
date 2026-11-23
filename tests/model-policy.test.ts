@@ -15,7 +15,7 @@ const ok = (grant: Rule[], model: ResolvedModel, connection: Rule[] = []) =>
 
 test('policy ids keep the native id byte for byte and reject path tricks', () => {
   assert.equal(policyId('openrouter', 'anthropic/Claude-Fable:1.2'), 'openrouter/anthropic/Claude-Fable:1.2')
-  for (const bad of ['', ' x', 'x ', 'a//b', '/a', 'a/', 'a/../b', 'a/./b', 'a\\b', 'a%2fb', 'a\u0000b', 'a b'])
+  for (const bad of ['', ' x', 'x ', 'a//b', '/a', 'a/', 'a/../b', 'a/./b', 'a\\b', 'a%2fb', 'a\u0000b', 'a b', 'a\u0085b', 'a\u2028b', 'a\u2029b', 'a\nb', 'a\u00e9b'])
     assert.throws(() => policyId('openai', bad), bad)
   assert.throws(() => policyId('OpenAI', 'gpt'))
   assert.throws(() => policyId('open/ai', 'gpt'))
@@ -131,7 +131,7 @@ test('equally specific rules with different tariffs are refused as ambiguous', (
 })
 
 test('patterns are validated', () => {
-  for (const bad of ['', ' a', 'a b', 'a\\b', 'family:', 'family:Bad Name', 'a%b', '*'.repeat(9), '***', 'a/?'.repeat(9), 'x'.repeat(201)])
+  for (const bad of ['', ' a', 'a b', 'a\\b', 'family:', 'family:Bad Name', 'a%b', '*'.repeat(9), '***', 'a/?'.repeat(9), 'x'.repeat(201), 'a\u2028*', 'a\u0085?', '\u00e9*'])
     assert.throws(() => parsePattern(bad), bad)
   assert.equal(parsePattern('openai/gpt-5').kind, 'exact')
   assert.equal(parsePattern('family:qwen').kind, 'family')
@@ -151,4 +151,42 @@ test('voice ids are part of the authorization', () => {
   // No voice rules: unrestricted, and the result says so.
   assert.deepEqual(evaluateVoice({ vendor: 'rime', voiceId: 'anything', rules: [] }), { ok: true, restricted: false })
   assert.throws(() => evaluateVoice({ vendor: 'rime', voiceId: 'a/../b', rules }))
+})
+
+test('one id alphabet: no line terminator or non-ASCII character is an id or matches a wildcard', () => {
+  for (const c of ['\u0085', '\u2028', '\u2029', '\n', '\r', '\u00e9'])
+    assert.throws(() => policyId('openai', 'gpt-' + c + '5'), c)
+  // Every admitted character is matched by `**`, so a deny and an allow see the same ids.
+  const all = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) => String.fromCharCode(0x21 + i)).filter((c) => c !== '\\' && c !== '%' && c !== '/')
+  for (const c of all) {
+    const t = m('openrouter', 'a' + c + 'b')
+    assert.equal(ok([allow('openrouter/**')], t), true, c)
+    assert.equal(ok([allow('openrouter/**'), deny('openrouter/a?b')], t), false, c)
+  }
+})
+
+test('rule data is validated before matching and fails closed', () => {
+  const t = m('openai', 'gpt-5')
+  const run = (extra: object) => () => evaluate({ model: t, connection: [], grant: [{ effect: 'allow', model: 'openai/**', ...extra } as Rule] })
+  for (const bad of [
+    { max_tokens: NaN },
+    { max_tokens: Infinity },
+    { max_tokens: 0 },
+    { max_tokens: -1 },
+    { max_tokens: 1.5 },
+    { max_tokens: '10' },
+    { calls: 0 },
+    { calls: 2 ** 53 },
+    { calls: null },
+    { expires: -1 },
+    { expires: NaN },
+    { expires: '5' },
+    { expires: 1.2 },
+    { tariff: 5 },
+  ])
+    assert.throws(run(bad), JSON.stringify(bad))
+  assert.throws(() => evaluate({ model: t, connection: [{ effect: 'maybe', model: 'openai/**' } as unknown as Rule], grant: [] }))
+  assert.throws(() => evaluateVoice({ vendor: 'rime', voiceId: 'x', rules: [{ effect: 'allow ', voice: 'rime/*' } as never] }))
+  const d = run({ max_tokens: 10, calls: 1, expires: 0 })()
+  assert.deepEqual(d.ok && d.caps, { max_tokens: 10, expires: 0, calls: 1 })
 })

@@ -3,6 +3,12 @@
 // operation needs a recorded approval by a human workspace owner in the console, never by an
 // agent or an API grant, and a vendor that documents a consent mechanism.
 
+//
+// Trusted binding (required before any caller uses cloningDecision): this helper checks only the shape of
+// the approval. The caller must build `approval` from a server-side record that the workspace owner created
+// in the console for this exact operation and grant (approver identity from the owner's console session,
+// never from request data; `consent_ref` pointing at the stored consent record for the voice), and must
+// refuse a record whose operation, workspace or grant differs from the one being authorized.
 const CLONING = /(^|\.)voice\.(clone|convert|design)(\.|$)/
 
 export function isCloningOperation(op: string): boolean {
