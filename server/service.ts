@@ -134,6 +134,9 @@ export function service(
   // Model calls claimed but not yet settled (usage, meter and run state written). A drain must wait for
   // these, not only for open sockets: a client can disconnect while the upstream call is still running.
   let unsettled = 0
+  // Runs whose durable settlement failed. They stay counted in `unsettled` and are reported by /health, so
+  // a drain never mistakes them for finished work. There is no automatic recovery: restart the broker.
+  const settlementFailed = new Set<string>()
   api.decorate('beginDrain', () => {
     draining = true
     feed.wakeAll()
@@ -515,6 +518,7 @@ export function service(
     // Zero only when no request is open AND no model call is unsettled. A model call is counted by its
     // request while the socket is open, and by `unsettled` after a disconnect, so the larger of the two.
     in_flight: Math.max(inFlight, unsettled),
+    settlement_failed: settlementFailed.size,
   }))
   function startSession(reply: import('fastify').FastifyReply, member?: Row) {
     const s = opaque()
@@ -1572,7 +1576,6 @@ export function service(
     reply.raw.once('close', onClose)
     function finish(state: string, usage?: unknown) {
       if (settled) return
-      settled = true
       reply.raw.removeListener('close', onClose)
       try {
         tx(() => {
@@ -1581,9 +1584,14 @@ export function service(
           run('UPDATE runs SET state=? WHERE id=?', state, ex)
           event(g.tenant, op + ' · ' + state, ex)
         })
-      } finally {
-        unsettled--
+      } catch (error) {
+        // Not durably settled: keep it counted so health and the drain cannot report zero.
+        settlementFailed.add(ex)
+        throw error
       }
+      settled = true
+      settlementFailed.delete(ex)
+      unsettled--
     }
     try {
       const secret = await credential(c)

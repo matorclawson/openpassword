@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { DatabaseSync } from 'node:sqlite'
 import { service } from '../server/service.ts'
 
 test('drain rejects new model calls and lets one accepted call settle exactly once', async (t) => {
@@ -126,4 +127,64 @@ test('drain waits for a model call that outlives its client until it settles', a
     left = (await (await fetch(origin + '/health')).json()).in_flight
   }
   assert.equal(left, 0)
+})
+
+test('a failed settlement keeps the call counted and visible, and never reports zero', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'op-drain-'))
+  const entered = Promise.withResolvers<void>()
+  const resume = Promise.withResolvers<void>()
+  const api = service(dir, undefined, async () => {
+    entered.resolve()
+    await resume.promise
+    return Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 2 } })
+  })
+  t.after(async () => {
+    resume.resolve()
+    await api.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const origin = await api.listen({ host: '127.0.0.1', port: 0 })
+  const login = await api.inject({
+    method: 'POST',
+    url: '/admin/login',
+    payload: { token: readFileSync(join(dir, 'operator.token'), 'utf8') },
+  })
+  const cookie = String(login.headers['set-cookie']).split(';')[0]
+  const post = async (url: string, payload: object) =>
+    (await api.inject({ method: 'POST', url, payload, headers: { cookie } })).json()
+  const c = await post('/admin/connections', {
+    provider: 'openai',
+    label: 'Test',
+    external_identity: 'example',
+    secret: 'fixture',
+  })
+  const g = await post('/admin/grants', {
+    label: 'CLI',
+    connection_id: c.connection_id,
+    operations: ['openai.chat'],
+    hours: 1,
+    model_lease: { model: 'test', max_tokens: 10, calls: 2 },
+  })
+  const client = new AbortController()
+  const running = fetch(origin + '/v1/chat/completions', {
+    method: 'POST',
+    signal: client.signal,
+    headers: { 'Content-Type': 'application/json', authorization: 'Bearer ' + g.access_token },
+    body: JSON.stringify({ model: 'test', max_tokens: 5, messages: [{ role: 'user', content: 'test' }] }),
+  }).catch(() => undefined)
+  await entered.promise
+  // Make the settlement transaction fail: any update of a run now aborts.
+  const other = new DatabaseSync(join(dir, 'vault.sqlite'))
+  other.exec('PRAGMA busy_timeout=5000')
+  other.exec("CREATE TRIGGER fail_settlement BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'settlement refused'); END")
+  api.getDecorator<() => void>('beginDrain')()
+  client.abort()
+  await running
+  resume.resolve()
+  await new Promise((done) => setTimeout(done, 300))
+  const health = await (await fetch(origin + '/health')).json()
+  assert.equal(health.in_flight, 1, 'a call that failed to settle must stay counted')
+  assert.equal(health.settlement_failed, 1)
+  assert.equal(other.prepare('SELECT state FROM runs').get()?.state, 'running')
+  other.close()
 })
