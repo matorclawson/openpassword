@@ -12,7 +12,7 @@ mkdir -m 0700 "$t/data"
 "$node_bin" --input-type=module -e '
 import { DatabaseSync } from "node:sqlite"
 const db = new DatabaseSync(process.argv[1] + "/vault.sqlite")
-db.exec("PRAGMA journal_mode=WAL; CREATE TABLE t(a TEXT); INSERT INTO t VALUES (\"sealed-value\")")
+db.exec(`PRAGMA journal_mode=WAL; CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('sealed-value')`)
 db.close()
 ' "$t/data"
 printf 'test-master-key\n' > "$t/data/master.key"; printf 'test-token\n' > "$t/data/operator.token"
