@@ -9,6 +9,24 @@ export async function serve(client: () => Promise<OpenPassword>) {
     content: [{ type: 'text' as const, text: JSON.stringify(data) }],
   })
   server.registerTool(
+    'whoami',
+    { description: 'Verify this profile against the broker and return its stable grant ID.' },
+    async () => result(await (await client()).request('/v1/whoami')),
+  )
+  server.registerTool(
+    'activity',
+    {
+      description: 'Read recent events for this grant, or continue after a cursor.',
+      inputSchema: { after: z.number().int().nonnegative().optional() },
+    },
+    async ({ after }) =>
+      result(
+        await (
+          await client()
+        ).request('/v1/activity?wait=0' + (after === undefined ? '' : '&after=' + after)),
+      ),
+  )
+  server.registerTool(
     'connections',
     { description: 'List provider connections available under this agent grant.' },
     async () => result(await (await client()).connections()),

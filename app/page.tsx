@@ -1,5 +1,7 @@
 'use client'
 import { Authentication, ConsoleLogin, Profile } from './authentication'
+import { ActivityFeed } from './activity-feed'
+import { usePathname } from 'next/navigation'
 import { Consumption } from './consumption'
 import { ApprovalPreview } from './approval-preview'
 import { sealInput } from './intake'
@@ -49,6 +51,7 @@ type Grant = {
   active: number
   expires: number
   ops: string
+  connected_at: number | null
 }
 type Approval = { id: string; actor: string; conn: string; op: string; preview: unknown }
 type Workspace = {
@@ -75,11 +78,21 @@ const tabs = [
   ['Access grants', KeyRound],
   ['Approvals', ShieldCheck],
   ['Consumption', Activity],
-  ['Audit log', Activity],
+  ['Activity', Activity],
   ['Vault items', LockKeyhole],
   ['Workspace', Building2],
 ] as const
 type Tab = (typeof tabs)[number][0]
+const paths: Record<Tab, string> = {
+  Connections: '/connections',
+  Integrations: '/integrations',
+  'Access grants': '/grants',
+  Approvals: '/approvals',
+  Consumption: '/consumption',
+  Activity: '/activity',
+  'Vault items': '/vault',
+  Workspace: '/workspace',
+}
 const stamp = (n: number) => new Date(n).toLocaleString()
 async function request(path: string, body?: unknown, method = body ? 'POST' : 'GET') {
   const r = await fetch('/api/' + path, {
@@ -137,8 +150,15 @@ function Brand() {
   )
 }
 export default function Page() {
+  const pathname = usePathname()
+  const tab =
+    tabs.find(([t]) => paths[t] === pathname)?.[0] ??
+    (pathname === '/device'
+      ? 'Access grants'
+      : pathname.startsWith('/approvals/')
+        ? 'Approvals'
+        : 'Connections')
   const [w, W] = useState<Workspace | null>(null),
-    [tab, T] = useState<Tab>('Connections'),
     [busy, B] = useState(false),
     [err, E] = useState(''),
     [q, Q] = useState(''),
@@ -160,12 +180,10 @@ export default function Page() {
       if (e.status !== 401) E(e.message)
     })
     if (new URLSearchParams(location.search).has('signin')) {
-      T('Workspace')
+      history.replaceState(null, '', '/workspace' + location.search)
       if (location.search.includes('signin=failed'))
         E('Social sign-in failed. Check the callback URL and try linking again.')
     }
-    if (location.pathname.startsWith('/approvals')) T('Approvals')
-    if (location.pathname === '/device') T('Access grants')
   }, [])
   useEffect(() => {
     if (modal) dialog.current?.showModal()
@@ -201,7 +219,7 @@ export default function Page() {
     }
   }
   function go(t: Tab) {
-    T(t)
+    history.pushState(null, '', paths[t])
     Q('')
     E('')
   }
@@ -326,6 +344,7 @@ export default function Page() {
           operations: checked,
           label: f.label,
           hours: Number(f.hours),
+          enrollment: f.delivery === 'enroll' && !f.user_code,
           ...(f.user_code ? { user_code: f.user_code } : {}),
           ...(f.draft_limit ? { draft_limit: Number(f.draft_limit) } : {}),
           ...(f.model
@@ -349,8 +368,8 @@ export default function Page() {
               }
             : {}),
         })
-        if (a.access_token) {
-          K(JSON.stringify(a, null, 2))
+        if (a.enrollment_token || a.access_token) {
+          K(a.enrollment_token || JSON.stringify(a, null, 2))
           await load()
           return
         }
@@ -439,11 +458,11 @@ export default function Page() {
         </label>
         <nav aria-label="Workspace navigation">
           {tabs.map(([t, Icon]) => (
-            <button key={t} aria-current={t === tab ? 'page' : undefined} onClick={() => go(t)}>
+            <a href={paths[t]} key={t} aria-current={t === tab ? 'page' : undefined}>
               <Icon size={18} />
               {t}
               {t === 'Approvals' && w.approvals.length > 0 && <b>{w.approvals.length}</b>}
-            </button>
+            </a>
           ))}
         </nav>
         <a className="sourceLink" href="/openpassword-source.tar.gz" download>
@@ -493,7 +512,7 @@ export default function Page() {
                     Approvals: 'Review the exact request before a provider write.',
                     'Vault items': 'Store shared passwords and secure notes.',
                     Workspace: 'Manage workspace access and provider dispatch.',
-                    'Audit log': 'Inspect recent access decisions and provider activity.',
+                    Activity: 'Inspect recent access decisions and provider activity.',
                   }[tab]
                 }
               </p>
@@ -637,6 +656,10 @@ export default function Page() {
                       <KeyRound />
                       <div className="grow">
                         <strong>{g.label}</strong>
+                        {g.connected_at && <small>CLI connected {stamp(g.connected_at)}</small>}
+                        <small>
+                          Grant ID: <code>{g.id}</code>
+                        </small>
                         <small>
                           {w.connections.find((c) => c.id === g.connection_id)?.label} ·{' '}
                           {JSON.parse(g.ops).length} operations · Expires {stamp(g.expires)}
@@ -862,29 +885,7 @@ export default function Page() {
                 )}
               </>
             )}
-            {tab === 'Audit log' &&
-              (w.events.length ? (
-                w.events
-                  .filter((x) => includes(x.action, x.subject))
-                  .map((x, i) => (
-                    <article key={i}>
-                      <Activity size={18} />
-                      <div className="grow">
-                        <strong>{x.action}</strong>
-                        <small>
-                          {x.actor} · {x.subject}
-                        </small>
-                      </div>
-                      <small>{stamp(x.at)}</small>
-                    </article>
-                  ))
-              ) : (
-                <div className="empty">
-                  <Activity />
-                  <h3>No activity yet</h3>
-                  <p>Workspace events appear as you add connections and issue grants.</p>
-                </div>
-              ))}
+            {tab === 'Activity' && <ActivityFeed key={w.tenant} query={q} />}
           </section>
         </div>
       </main>
@@ -944,8 +945,18 @@ export default function Page() {
                   ? 'Give this token to the member through a private channel.'
                   : modal === 'app'
                     ? 'Copy the action-check credential now and provide it to the registered application.'
-                    : 'Copy these credentials now. The access token expires in 15 minutes or when the grant ends.'}
+                    : modal === 'grant' && !tokens.startsWith('{')
+                      ? 'On the client machine, set OPENPASSWORD_BROKER to this server, run openpassword connect and paste this single-use token. It expires within 10 minutes.'
+                      : 'Copy these credentials now. The access token expires in 15 minutes or when the grant ends.'}
             </p>
+            {modal === 'grant' && !tokens.startsWith('{') && (
+              <>
+                <a href="/openpassword-cli.cjs" download="openpassword">
+                  Download CLI (Node.js 24+)
+                </a>
+                <pre>{`export OPENPASSWORD_BROKER=${location.origin}\nopenpassword connect`}</pre>
+              </>
+            )}
             <pre>{tokens}</pre>
             <button
               onClick={() =>
@@ -1340,7 +1351,14 @@ export default function Page() {
                     </fieldset>
                   )}
                 <label>
-                  Pairing code (optional)
+                  Credential delivery
+                  <select name="delivery">
+                    <option value="enroll">One-time CLI enrollment token</option>
+                    <option value="api">API access and refresh tokens</option>
+                  </select>
+                </label>
+                <label>
+                  Existing CLI pairing code (optional)
                   <input name="user_code" />
                 </label>
               </>

@@ -17,3 +17,9 @@ build:
 	npm run build
 start:
 	npm start
+
+.PHONY: install-cli
+install-cli: packages/cli/dist/index.js
+	mkdir -p "$(HOME)/.local/bin"
+	chmod +x packages/cli/dist/index.js
+	ln -sfn "$(CURDIR)/packages/cli/dist/index.js" "$(HOME)/.local/bin/openpassword"
