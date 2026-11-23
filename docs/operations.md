@@ -111,14 +111,14 @@ for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.
          node_modules/tsx/package.json .next/server/server-reference-manifest.json .next/server/server-reference-manifest.js; do
   sudo test -f "$NEW/$f" || { echo "missing $f in the release; not switching" >&2; exit 1; }
 done
+# Probe under the units' own sandbox (identity and restrictions), resolving `env node` on the manager's PATH.
+SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes"
 # The release must be the one named: RELEASE.json comes from the verified, extracted copy.
-sudo node -e '
+$SD /usr/bin/env node -e '
 const r = JSON.parse(require("fs").readFileSync(process.argv[1] + "/RELEASE.json", "utf8"));
 const [v, a, c] = process.argv.slice(2);
 if (r.name !== "openpassword" || r.platform !== "linux" || r.version !== v || r.arch !== a || r.commit !== c) { console.error("RELEASE.json does not match", JSON.stringify([r.version, r.arch, r.commit])); process.exit(1) }
 ' "$NEW" "$VERSION" "$ARCH" "$EXPECTED_COMMIT" || { echo "release identity mismatch; not switching" >&2; exit 1; }
-# Probe under the units' own sandbox (identity and restrictions), resolving `env node` on the manager's PATH.
-SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes"
 V=$($SD /usr/bin/env node -p process.version)
 [ "$V" = v24.19.0 ] || { echo "service Node is $V, not v24.19.0; not switching" >&2; exit 1; }
 # Broker: the tsx loader, and read access to its entry point.
