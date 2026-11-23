@@ -9,12 +9,21 @@ t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 export OPENPASSWORD_NODE=$node_bin OPENPASSWORD_HOME=$t/data OPENPASSWORD_BACKUP_ENV=$t/backup.env
 export BORG_BASE_DIR=$t/borg-base BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=no
 mkdir -m 0700 "$t/data"
-"$node_bin" --input-type=module -e '
-import { DatabaseSync } from "node:sqlite"
-const db = new DatabaseSync(process.argv[1] + "/vault.sqlite")
-db.exec(`PRAGMA journal_mode=WAL; CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('sealed-value')`)
+# The fixture scripts are quoted heredocs written to files, so no shell quoting touches the SQL.
+cat > "$t/seed.mjs" <<'JS'
+import { DatabaseSync } from 'node:sqlite'
+const db = new DatabaseSync(process.argv[2] + '/vault.sqlite')
+db.exec("PRAGMA journal_mode=WAL; CREATE TABLE t(a TEXT); INSERT INTO t VALUES ('sealed-value')")
+const row = db.prepare('SELECT a FROM t').get()
+if (row?.a !== 'sealed-value') throw new Error('the seeded row does not read back: ' + JSON.stringify(row))
 db.close()
-' "$t/data"
+JS
+cat > "$t/read.mjs" <<'JS'
+import { DatabaseSync } from 'node:sqlite'
+const db = new DatabaseSync(process.argv[2] + '/vault.sqlite', { readOnly: true })
+console.log(db.prepare('SELECT a FROM t').get().a)
+JS
+"$node_bin" "$t/seed.mjs" "$t/data"
 printf 'test-master-key\n' > "$t/data/master.key"; printf 'test-token\n' > "$t/data/operator.token"
 printf 'correct-passphrase\n' > "$t/pass"; chmod 600 "$t/pass"
 printf 'BORG_REPO=%s\nBORG_PASSCOMMAND="cat %s"\n' "$t/repo" "$t/pass" > "$t/backup.env"; chmod 600 "$t/backup.env"
@@ -30,11 +39,7 @@ if grep -rqa 'sealed-value\|test-master-key' "$t/repo"; then fail "plain text fo
 
 mkdir -m 0700 "$t/restored"
 bash deploy/backup/restore.sh "$archive" "$t/restored" >/dev/null || fail "restore"
-got=$("$node_bin" --input-type=module -e '
-import { DatabaseSync } from "node:sqlite"
-const db = new DatabaseSync(process.argv[1] + "/vault.sqlite", { readOnly: true })
-console.log(db.prepare("SELECT a FROM t").get().a)
-' "$t/restored")
+got=$("$node_bin" "$t/read.mjs" "$t/restored")
 [ "$got" = sealed-value ] || fail "restored row differs"
 cmp -s "$t/data/master.key" "$t/restored/master.key" || fail "restored master.key differs"
 
