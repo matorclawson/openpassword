@@ -85,22 +85,36 @@ Model usage is captured from JSON and streaming usage frames even without a tari
 
 On a Linux host with Node 24.19.0 (the release refuses any other version), check out the exact commit to release and run `make package COMMIT=<sha>`, then `make checksum`. `make package` refuses a dirty tree or a different HEAD, builds that commit in a scratch directory from `git archive`, keeps only production dependencies and the runtime files, and writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256, source epoch) and a completion marker. `make checksum` writes the `.sha256` sidecar only for an archive that matches its marker and `RELEASE.json`. Two builds of the same commit and toolchain are reproducible except for the per-build files listed in `scripts/per-build-files.txt` and in `RELEASE.json` (`per_build_files`): Next.js generates a secret server-reference key on every build, which must differ per build and is never made deterministic. `make package` also writes `<name>.manifest`, the sha256 of every other file, and `scripts/compare-builds.sh <dirA> <dirB>` compares two manifests. Build diagnostics (`.next/trace`, `.next/diagnostics`, `.next/cache`) are not shipped. It includes built output and installed dependencies, so build it on the target architecture. ffmpeg and Chromium are not included.
 
-To install, save this as a Bash script (it stops at the first failure) with `VERSION` and `ARCH` set (for example `VERSION=0.2.0 ARCH=arm64`) and the archive and its `.sha256` in the current directory:
+`make package` refuses to build when `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` is set in the environment, because Next.js embeds a caller-supplied key in the build output; the generated key stays random per build. It also refuses unless both per-build files exist as regular files in the staged release. The only two per-build paths are `.next/server/server-reference-manifest.json` and `.next/server/server-reference-manifest.js`; the first two-build run must confirm they are the only legitimate differences. These two files hold the key Next generated for that build, which the server needs at run time to encrypt Server Action closures. It is random, belongs to no operator, and protects no credential or vault data. Do not substitute your own key at build time. This is the maintainer's reading of Next.js behaviour and is unverified until the gate inspects the built archive.
+
+To install, save this as a Bash script (it stops at the first failure). Set `VERSION` and `ARCH` (for example `VERSION=0.2.0 ARCH=arm64`), `ARCHIVE` to the archive's path, and `EXPECTED_SHA256` to the archive digest recorded for the tag by the party that gated it. Do not take the digest from a sidecar next to the archive. The script copies the archive into a root-owned 0700 staging directory, verifies that staged copy, and extracts only that copy. The archive in your own directory is read once, by the copy.
 
 ```bash
 set -euo pipefail
-A="openpassword-${VERSION}-linux-${ARCH}.tar.gz"
-sha256sum -c "$A.sha256"                     # nothing below runs if this fails
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$ARCH" =~ ^[a-z0-9_]+$ ]] && [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || { echo "VERSION, ARCH or EXPECTED_SHA256 is malformed" >&2; exit 1; }
 R=/opt/openpassword/releases
 sudo mkdir -p "$R"
 if sudo test -e "$R/$VERSION"; then echo "release $VERSION already exists" >&2; exit 1; fi   # never overlay a release
+STAGE=$(sudo mktemp -d /opt/openpassword/.stage-XXXXXX)   # root-owned, mode 0700
+NEW=
+trap 'sudo rm -rf "$STAGE" ${NEW:+"$NEW"}' EXIT
+sudo cp -- "$ARCHIVE" "$STAGE/release.tar.gz"
+GOT=$(sudo sha256sum "$STAGE/release.tar.gz" | cut -d' ' -f1)
+[ "$GOT" = "$EXPECTED_SHA256" ] || { echo "digest mismatch: $GOT" >&2; exit 1; }
 NEW=$(sudo mktemp -d "$R/.new-XXXXXX")
-sudo tar -xzf "$A" -C "$NEW" --no-same-owner
-for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.js .next/BUILD_ID; do
-  if ! sudo test -f "$NEW/$f"; then echo "missing $f in the release; not switching" >&2; exit 1; fi
-done
+sudo tar -xzf "$STAGE/release.tar.gz" -C "$NEW" --no-same-owner
 sudo chmod 755 "$NEW"
-sudo mv -T "$NEW" "$R/$VERSION"
+for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.js .next/BUILD_ID \
+         node_modules/tsx/package.json .next/server/server-reference-manifest.json .next/server/server-reference-manifest.js; do
+  sudo test -f "$NEW/$f" || { echo "missing $f in the release; not switching" >&2; exit 1; }
+done
+# Run the check as systemd would: a transient unit resolves `env node` on the manager's PATH.
+SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW"
+V=$($SD /usr/bin/env node -p process.version)
+[ "$V" = v24.19.0 ] || { echo "service Node is $V, not v24.19.0; not switching" >&2; exit 1; }
+$SD /usr/bin/env node --import tsx -e 'process.exit(0)' || { echo "tsx loader does not resolve; not switching" >&2; exit 1; }
+sudo mv -T "$NEW" "$R/$VERSION"; NEW=
 sudo ln -sfn "releases/$VERSION" /opt/openpassword/current.new
 sudo mv -T /opt/openpassword/current.new /opt/openpassword/current   # atomic switch
 ```

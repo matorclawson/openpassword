@@ -35,6 +35,12 @@ epoch=$(git log -1 --format=%ct "$commit")
 tracked=$(git ls-tree -r --name-only "$commit")
 if grep -Eq '(^|/)\.env' <<<"$tracked"; then echo "package: a tracked .env file exists" >&2; exit 1; fi
 
+# Deployment key material must never reach the build: Next embeds a caller-supplied server-action
+# key in the build output. The generated key stays random and per build.
+for v in NEXT_SERVER_ACTIONS_ENCRYPTION_KEY; do
+  [ -z "${!v-}" ] || { echo "package: $v is set in the environment; refusing to build" >&2; exit 1; }
+done
+
 sha() { local h; h=$(sha256sum "$1" | cut -d' ' -f1); [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "package: bad digest for $1" >&2; return 1; }; printf '%s\n' "$h"; }
 root=$PWD
 out=$root/dist-release
@@ -82,7 +88,14 @@ if [ -n "$stray" ]; then echo "package: .env file in payload" >&2; exit 1; fi
 # 3. Provenance. Files that legitimately differ per build are listed, one exact path per line, in
 # scripts/per-build-files.txt (Next generates a secret server-reference key on every build; it must
 # not be made deterministic). The manifest lists the sha256 of every other file.
-per_build=$(grep -v '^#' "$out/build/scripts/per-build-files.txt" | grep -v '^$' || true)
+per_build_file=$out/build/scripts/per-build-files.txt
+[ -r "$per_build_file" ] || { echo "package: cannot read $per_build_file" >&2; exit 1; }
+per_build=$(grep -vE '^(#|$)' "$per_build_file" || [ $? -eq 1 ])
+[ -n "$per_build" ] || { echo "package: no per-build files are listed" >&2; exit 1; }
+while IFS= read -r f; do
+  [ -f "$out/stage/$f" ] && [ ! -L "$out/stage/$f" ] \
+    || { echo "package: per-build file $f is missing from the staged release" >&2; exit 1; }
+done <<<"$per_build"
 (cd "$out/stage" && find . -type f -o -type l | LC_ALL=C sort) > "$out/files.list"
 : > "$out/manifest.tmp"
 while IFS= read -r f; do
