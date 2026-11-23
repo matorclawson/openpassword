@@ -2,6 +2,8 @@
 
 ## 0.3.0 (unreleased)
 
+- Replace the Python updater and production build procedure with verified archive installation. The production host uses a small shell bootstrap, the archive’s own Node v24.19.0 and a TypeScript activation controller. Failed activation restores the old release and its systemd units, including the host-Node to bundled-Node transition. Retain the previous host runtime for rollback.
+
 - The release archive bundles the pinned Node.js v24.19.0 (`node/bin/node`, from the official tarball checked against `scripts/node-pins.txt`); the systemd units run it by absolute path, so a host needs no system Node. `RELEASE.json` records the bundled binary and tarball sha256. The build now needs `xz` and network access to nodejs.org. The root package, lockfile root and MCP server version are 0.3.0; the workspace packages under `packages/` keep their own 0.2.0 versions.
 
 Breaking wire changes. Clients and integrations written against the predecessor service's names must update.

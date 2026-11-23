@@ -87,52 +87,7 @@ On a Linux host with Node 24.19.0 as the build Node (the release refuses any oth
 
 `make package` refuses to build when `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` is set in the environment, because Next.js embeds a caller-supplied key in the build output; the generated key stays random per build. It also refuses unless every per-build file exists as regular files in the staged release. The only per-build paths are `.next/server/server-reference-manifest.json` (the generated key described below; its `.js` companion showed no variance and is compared) and `.next/server/preview-props.json` and `.next/prerender-manifest.json` (Next's random preview-mode keys, diagnosed in the 4fd28b31 gate diff). `make package` builds in the fixed directory `/tmp/openpassword-release-build` and refuses if it exists, before changing anything, and holds it until the build ends; the directory and `dist-release/` are created owner-only (0700) because they hold per-build key material. It builds there because Next embeds absolute build paths and derives module ids from them, which made two builds in different checkouts differ (also diagnosed in that diff); the first two-build run must confirm they are the only legitimate differences. The server-reference files hold the key Next generated for that build, which the server needs at run time to encrypt Server Action closures. It is random, belongs to no operator, and protects no credential or vault data. Do not substitute your own key at build time. No server action exists in the source today, so that key protects none. `make package` also refuses to build if `app`, `server` or `packages` mention Server Actions or preview/draft mode (`use server`, `draftMode`, `setPreviewData`, `previewData`, `__prerender_bypass`). **The release archive is not a public download.** It also contains Next's random preview-mode values, which the locked Next.js runtime loads at run time; a public archive would disclose the same values to everyone running that build. Do not attach it to a public release. It stays in gate custody and installs are made from there, until a distribution design with per-install keys, or with the framework behaviour disabled, has been qualified. This is the maintainer's reading of Next.js behaviour and is unverified until the gate inspects the built archive.
 
-To install, save this as a Bash script (it stops at the first failure). Set `VERSION` and `ARCH` (for example `VERSION=0.3.0 ARCH=arm64`), `ARCHIVE` to the archive's path, `EXPECTED_SHA256` to the archive digest and `EXPECTED_COMMIT` to the commit recorded by the party that gated it. Archive digests differ between builds, because Next generates a per-build key, so the gate record must name the one build it published and that archive's sha256; the digest is not a property of the commit. Do not take the digest from a sidecar next to the archive. The script copies the archive into a root-owned 0700 staging directory, verifies that staged copy, and extracts only that copy. The archive in your own directory is read once, by the copy.
-
-```bash
-set -euo pipefail
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$ARCH" =~ ^[a-z0-9_]+$ ]] && [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] && [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
-  || { echo "VERSION, ARCH, EXPECTED_SHA256 or EXPECTED_COMMIT is malformed" >&2; exit 1; }
-case "$(uname -m)" in aarch64|arm64) HOST_ARCH=arm64 ;; x86_64) HOST_ARCH=x64 ;; *) HOST_ARCH=$(uname -m) ;; esac
-[ "$(uname -s)" = Linux ] && [ "$ARCH" = "$HOST_ARCH" ] || { echo "ARCH $ARCH is not this Linux host ($HOST_ARCH)" >&2; exit 1; }
-R=/opt/openpassword/releases
-sudo mkdir -p "$R"
-if sudo test -e "$R/$VERSION"; then echo "release $VERSION already exists" >&2; exit 1; fi   # never overlay a release
-STAGE=$(sudo mktemp -d /opt/openpassword/.stage-XXXXXX)   # root-owned, mode 0700
-NEW=
-trap 'sudo rm -rf "$STAGE" ${NEW:+"$NEW"}' EXIT
-sudo cp -- "$ARCHIVE" "$STAGE/release.tar.gz"
-GOT=$(sudo sha256sum "$STAGE/release.tar.gz" | cut -d' ' -f1)
-[ "$GOT" = "$EXPECTED_SHA256" ] || { echo "digest mismatch: $GOT" >&2; exit 1; }
-NEW=$(sudo mktemp -d "$R/.new-XXXXXX")
-sudo tar -xzf "$STAGE/release.tar.gz" -C "$NEW" --no-same-owner
-sudo chmod 755 "$NEW"
-for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.js .next/BUILD_ID \
-         node_modules/tsx/package.json node/bin/node .next/server/server-reference-manifest.json .next/server/server-reference-manifest.js; do
-  sudo test -f "$NEW/$f" || { echo "missing $f in the release; not switching" >&2; exit 1; }
-done
-# Probe under the units' own sandbox (identity and restrictions), with the Node that ships in the release.
-SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes"
-# The release must be the one named: RELEASE.json comes from the verified, extracted copy.
-$SD "$NEW/node/bin/node" -e '
-const r = JSON.parse(require("fs").readFileSync(process.argv[1] + "/RELEASE.json", "utf8"));
-const [v, a, c] = process.argv.slice(2);
-if (r.name !== "openpassword" || r.platform !== "linux" || r.version !== v || r.arch !== a || r.commit !== c) { console.error("RELEASE.json does not match", JSON.stringify([r.version, r.arch, r.commit])); process.exit(1) }
-' "$NEW" "$VERSION" "$ARCH" "$EXPECTED_COMMIT" || { echo "release identity mismatch; not switching" >&2; exit 1; }
-V=$($SD "$NEW/node/bin/node" -p process.version)
-[ "$V" = v24.19.0 ] || { echo "service Node is $V, not v24.19.0; not switching" >&2; exit 1; }
-# Broker: the tsx loader, and read access to its entry point.
-$SD "$NEW/node/bin/node" --import tsx -e 'require("fs").accessSync("server/main.ts", require("fs").constants.R_OK)' \
-  || { echo "broker loader or entry point is not usable under the unit sandbox; not switching" >&2; exit 1; }
-# Web: the launcher itself.
-$SD "$NEW/node/bin/node" node_modules/next/dist/bin/next --version >/dev/null \
-  || { echo "web launcher is not usable under the unit sandbox; not switching" >&2; exit 1; }
-sudo mv -T "$NEW" "$R/$VERSION"; NEW=
-sudo ln -sfn "releases/$VERSION" /opt/openpassword/current.new
-sudo mv -T /opt/openpassword/current.new /opt/openpassword/current   # atomic switch
-```
-
-Then restart the services (stop web before broker, start broker before web). The archive root is the release directory, so `server/main.ts` and `node_modules/next` sit directly under `/opt/openpassword/current`, the units' working directory. To roll back, point `current` at the previous release and restart the services.
+Deploy the private gate artifact using the archive updater below.
 
 ## CLI enrollment and live activity
 
@@ -148,37 +103,25 @@ To reproduce the gateway load checks, run `node --import tsx scripts/gateway-loa
 
 ## Upgrade a running systemd installation
 
-> **Not yet reconciled with the release archive above.** This procedure builds on the server and uses `deploy/upgrade.py` (Python). The supported production path is the gated release archive and the install procedure in *Release package*, which never builds on the host. Do not combine the two on one host until they are reconciled.
+The Linux gate uses Node v24.19.0, runs the test suite, builds the exact commit with `make package COMMIT=<full-sha>`, then runs `make checksum`. Record the approved **archive digest, commit, version and architecture** independently of the file transfer. Keep the archive in gate custody.
 
-This procedure targets the supplied Linux services, with the original installation in `/opt/openpassword` and the vault in the broker's separate state directory. It accepts release builds compatible with the current database. Take a protected backup before changes that alter the storage format. Automatic rollback switches application code and keeps the current vault, so it depends on backward-compatible migrations.
-
-Build the trusted candidate in a **new directory** on the deployment host while the current installation serves requests. Use the production value of `OPENPASSWORD_PORT` when building. From the candidate checkout:
+On the server use the trusted `deploy/upgrade.sh` delivered separately with the gate handoff. Linux, GNU tar/coreutils, util-linux flock and systemd are required. Production needs neither npm nor a checkout. For example, with the gate's values in the shell:
 
 ```sh
-set -eu
-release=$(git rev-parse HEAD)
-make setup
-make build
-sudo install -d -m 755 /opt/openpassword-releases
-target="/opt/openpassword-releases/$release"
-if ! sudo test -d "$target"; then
-  stage=$(sudo mktemp -d /opt/openpassword-releases/staging.XXXXXXXX)
-  sudo cp -a . "$stage/"
-  sudo chmod 755 "$stage"
-  sudo mv -Tn "$stage" "$target"
-fi
-sudo python3 deploy/upgrade.py --upgrade "$target"
+sudo sh deploy/upgrade.sh --install "$ARCHIVE" "$EXPECTED_SHA256" "$VERSION" "$EXPECTED_COMMIT"
 ```
 
-Use a clean build checkout with service-readable files and directories. Keep vault files, secrets and private configuration outside release directories. Stage a complete release before activation. Publish updates to clients through the installation's existing HTTPS origin.
+Set the broker unit's environment drop-in to `OPENPASSWORD_WEB_ORIGIN=https://pass.zeo.ac` for this deployment. Other installations use their own public origin. Use the existing reverse proxy. For a nondefault local console port pass `OPENPASSWORD_WEB_PORT` through sudo. The existing vault, master key, sessions and grant records remain in the broker's state directory.
 
-The updater locks activation, checks the candidate against a disposable vault, drains a supporting broker for up to 90 seconds, then restarts the two services from the selected directory. During the drain, new broker requests receive HTTP 503 and a one-second retry hint. In-flight requests have time to finish. The first upgrade from a broker predating drain support uses the existing service shutdown behavior. Expect a brief reconnect during restart. A long stream that outlasts the shutdown window can be interrupted. Check its execution record before deciding whether to retry a billable call.
+The installer hashes a private staged copy before extraction, then runs the verified release's TypeScript upgrader using its bundled Node. It checks release identity and Node digest, installs the release at `/opt/openpassword/releases/<version>`, and exercises the broker on a disposable vault and the Next launcher under a transient service identity. A previously installed version is reusable only with the same recorded archive digest. Reusing a version from a manual install without a receipt is refused; use a new version.
 
-Activation checks the broker through the live web proxy, the console page, and both service working directories. If any check fails it restarts the previous build. To switch back explicitly, run `sudo python3 deploy/upgrade.py --rollback` from the update package. Supply `--web-port PORT` if the console listens on a port other than 3000. Following an interrupted activation, rerun the updater to recover the previous release before proceeding.
+The activation lock covers preflight through readiness. A supporting broker gets up to 90 seconds to drain. Older brokers use their existing shutdown behavior. The switch captures the installed base units, stops web then broker, atomically replaces `/opt/openpassword/current`, installs the matching units, reloads systemd and restarts. Local console and broker readiness, service working directories and bundled executables must agree. Drop-ins are preserved. On first installation enable both units for boot after successful readiness.
 
-On a Mac or Linux client, set `OPENPASSWORD_BROKER` and run `sh deploy/update-client.sh` from this update package. The same script is served at `/update-client.sh` on the updated installation. It downloads the client to a temporary file beside the executable, verifies its SHA-256 against the server, runs an offline startup check, and atomically replaces the executable. CLI profiles stay on the workstation. Restart long-running MCP processes to pick up the new client. A running watch retries temporary gateway failures and continues from its event cursor.
-Then restart the services (stop web before broker, start broker before web). The archive root is the release directory, so `server/main.ts` and `node_modules/next` sit directly under `/opt/openpassword/current`, the units' working directory.
+Use the **installed version that contains this updater** as the argument to these maintenance commands, even when the active version is older:
 
-**Moving from 0.2.0 to 0.3.0.** The 0.3.0 units run `/opt/openpassword/current/node/bin/node`, which the 0.2.0 archive does not contain, so the unit files and the release change together. Before switching the symlink, keep a copy of the units now installed (`sudo mkdir -p /opt/openpassword/units-0.2.0 && sudo cp /etc/systemd/system/openpassword-*.service /opt/openpassword/units-0.2.0/`). After the symlink switch, install the new units and reload: `sudo install -m 0644 /opt/openpassword/current/deploy/systemd/openpassword-broker.service /opt/openpassword/current/deploy/systemd/openpassword-web.service /etc/systemd/system/` and `sudo systemctl daemon-reload`, then stop web, restart broker, start web. A host that has no system Node needs the new units for the services to start at all.
+```sh
+sudo sh deploy/upgrade.sh --rollback 0.3.0
+sudo sh deploy/upgrade.sh --recover 0.3.0
+```
 
-**Rolling back.** Between releases that both bundle Node (0.3.0 and later) it is the symlink alone: point `current` at the previous release and restart. Rolling back to 0.2.0 crosses the boundary: the new units cannot start without `node/bin/node`. Stop web then broker, restore the saved 0.2.0 unit files into `/etc/systemd/system/`, make sure Node v24.19.0 is installed on the system PATH (the 0.2.0 units use it), run `sudo systemctl daemon-reload`, point `current` at the 0.2.0 release, then start broker and web. The packaging gate does not exercise the systemd transition or either rollback; do them first on a host you can afford to break.
+Failed activation restores the previous symlink and exact base unit contents. An interrupted transaction is recovered before another switch. Rolling back to 0.2.0 requires the original host Node v24.19.0 on the service PATH. Keep that runtime through the rollback window. Code rollback assumes a backward-compatible database. Keep a protected vault backup for a migration that changes that assumption. Updating the workstation CLI remains a separate `sh deploy/update-client.sh` operation.

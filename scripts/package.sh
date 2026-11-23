@@ -79,7 +79,7 @@ name="openpassword-$version-linux-$arch"
   npm run build
   npm prune --omit=dev
 )
-dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(!(p.dependencies||{})[k])console.log(k)" "$build/package.json")
+dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(require(process.argv[2]).packages['node_modules/'+k]?.dev===true)console.log(k)" "$build/package.json" "$build/package-lock.json")
 for k in $dev_only; do
   [ ! -e "$build/node_modules/$k" ] || { echo "package: development dependency $k survived the prune" >&2; exit 1; }
 done

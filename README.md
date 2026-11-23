@@ -154,4 +154,4 @@ The server and console use [AGPL-3.0-only](LICENSE). The [client](packages/clien
 
 ## Update an existing installation
 
-For the supplied Linux services, stage a fresh build while the current version runs, then activate it with `deploy/upgrade.py --upgrade`. The updater checks readiness and restores the previous build on failure. On each workstation, `sh deploy/update-client.sh` updates the installed CLI using its configured broker address. [Upgrade and rollback instructions](docs/operations.md#upgrade-a-running-systemd-installation)
+For the supplied Linux services, install the exact gate-built archive using `deploy/upgrade.sh --install ARCHIVE SHA256 VERSION COMMIT`. The updater checks readiness and restores the previous build on failure. On each workstation, `sh deploy/update-client.sh` updates the installed CLI using its configured broker address. [Upgrade and rollback instructions](docs/operations.md#upgrade-a-running-systemd-installation)
