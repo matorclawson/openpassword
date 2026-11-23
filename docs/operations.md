@@ -87,12 +87,14 @@ On a Linux host with Node 24.19.0 (the release refuses any other version), check
 
 `make package` refuses to build when `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` is set in the environment, because Next.js embeds a caller-supplied key in the build output; the generated key stays random per build. It also refuses unless both per-build files exist as regular files in the staged release. The only two per-build paths are `.next/server/server-reference-manifest.json` and `.next/server/server-reference-manifest.js`; the first two-build run must confirm they are the only legitimate differences. These two files hold the key Next generated for that build, which the server needs at run time to encrypt Server Action closures. It is random, belongs to no operator, and protects no credential or vault data. Do not substitute your own key at build time. No server action exists in the source today, so the key protects none. If one is ever added, the archive must stop being public (or each install must get its own key). This is the maintainer's reading of Next.js behaviour and is unverified until the gate inspects the built archive.
 
-To install, save this as a Bash script (it stops at the first failure). Set `VERSION` and `ARCH` (for example `VERSION=0.2.0 ARCH=arm64`), `ARCHIVE` to the archive's path, and `EXPECTED_SHA256` to the archive digest recorded for the tag by the party that gated it. Do not take the digest from a sidecar next to the archive. The script copies the archive into a root-owned 0700 staging directory, verifies that staged copy, and extracts only that copy. The archive in your own directory is read once, by the copy.
+To install, save this as a Bash script (it stops at the first failure). Set `VERSION` and `ARCH` (for example `VERSION=0.2.0 ARCH=arm64`), `ARCHIVE` to the archive's path, `EXPECTED_SHA256` to the archive digest and `EXPECTED_COMMIT` to the commit recorded by the party that gated it. Archive digests differ between builds, because Next generates a per-build key, so the gate record must name the one build it published and that archive's sha256; the digest is not a property of the commit. Do not take the digest from a sidecar next to the archive. The script copies the archive into a root-owned 0700 staging directory, verifies that staged copy, and extracts only that copy. The archive in your own directory is read once, by the copy.
 
 ```bash
 set -euo pipefail
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$ARCH" =~ ^[a-z0-9_]+$ ]] && [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] \
-  || { echo "VERSION, ARCH or EXPECTED_SHA256 is malformed" >&2; exit 1; }
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$ARCH" =~ ^[a-z0-9_]+$ ]] && [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] && [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+  || { echo "VERSION, ARCH, EXPECTED_SHA256 or EXPECTED_COMMIT is malformed" >&2; exit 1; }
+case "$(uname -m)" in aarch64|arm64) HOST_ARCH=arm64 ;; x86_64) HOST_ARCH=x64 ;; *) HOST_ARCH=$(uname -m) ;; esac
+[ "$(uname -s)" = Linux ] && [ "$ARCH" = "$HOST_ARCH" ] || { echo "ARCH $ARCH is not this Linux host ($HOST_ARCH)" >&2; exit 1; }
 R=/opt/openpassword/releases
 sudo mkdir -p "$R"
 if sudo test -e "$R/$VERSION"; then echo "release $VERSION already exists" >&2; exit 1; fi   # never overlay a release
@@ -109,11 +111,22 @@ for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.
          node_modules/tsx/package.json .next/server/server-reference-manifest.json .next/server/server-reference-manifest.js; do
   sudo test -f "$NEW/$f" || { echo "missing $f in the release; not switching" >&2; exit 1; }
 done
-# Run the check as systemd would: a transient unit resolves `env node` on the manager's PATH.
-SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW"
+# The release must be the one named: RELEASE.json comes from the verified, extracted copy.
+sudo node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1] + "/RELEASE.json", "utf8"));
+const [v, a, c] = process.argv.slice(2);
+if (r.name !== "openpassword" || r.platform !== "linux" || r.version !== v || r.arch !== a || r.commit !== c) { console.error("RELEASE.json does not match", JSON.stringify([r.version, r.arch, r.commit])); process.exit(1) }
+' "$NEW" "$VERSION" "$ARCH" "$EXPECTED_COMMIT" || { echo "release identity mismatch; not switching" >&2; exit 1; }
+# Probe under the units' own sandbox (identity and restrictions), resolving `env node` on the manager's PATH.
+SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes"
 V=$($SD /usr/bin/env node -p process.version)
 [ "$V" = v24.19.0 ] || { echo "service Node is $V, not v24.19.0; not switching" >&2; exit 1; }
-$SD /usr/bin/env node --import tsx -e 'process.exit(0)' || { echo "tsx loader does not resolve; not switching" >&2; exit 1; }
+# Broker: the tsx loader, and read access to its entry point.
+$SD /usr/bin/env node --import tsx -e 'require("fs").accessSync("server/main.ts", require("fs").constants.R_OK)' \
+  || { echo "broker loader or entry point is not usable under the unit sandbox; not switching" >&2; exit 1; }
+# Web: the launcher itself.
+$SD /usr/bin/env node node_modules/next/dist/bin/next --version >/dev/null \
+  || { echo "web launcher is not usable under the unit sandbox; not switching" >&2; exit 1; }
 sudo mv -T "$NEW" "$R/$VERSION"; NEW=
 sudo ln -sfn "releases/$VERSION" /opt/openpassword/current.new
 sudo mv -T /opt/openpassword/current.new /opt/openpassword/current   # atomic switch
