@@ -31,7 +31,7 @@ export class OpenPassword {
       throw Error('Use a secure broker origin')
     this.origin = u.origin
   }
-  async request<T>(path: string, body?: unknown): Promise<T> {
+  async request<T>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
     if (!path.startsWith('/v1/') || path.includes('..') || path.includes('\\'))
       throw Error('Invalid broker path')
     const r = await fetch(this.origin + path, {
@@ -39,6 +39,7 @@ export class OpenPassword {
       redirect: 'error',
       signal: AbortSignal.timeout(90000),
       headers: {
+        ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
         'Content-Type': 'application/json',
         'OpenPassword-Protocol-Version': '1',
         'OpenPassword-Capabilities': 'expected-binding',
@@ -49,9 +50,23 @@ export class OpenPassword {
     if (
       r.headers.get('openpassword-protocol-version') !== '1'
     )
-      throw Error('Broker protocol unavailable')
+      throw Object.assign(Error('Broker protocol unavailable'), { status: r.status })
     if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
     return r.status === 204 ? (undefined as T) : ((await r.json()) as T)
+  }
+  chat(model: string, prompt: string, maxTokens: number, key: string) {
+    if (!key.trim() || !Number.isSafeInteger(maxTokens) || maxTokens < 1)
+      throw Error('Provide an idempotency key and a positive output token limit')
+    return this.request(
+      '/v1/chat/completions',
+      {
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: maxTokens,
+        stream: false,
+      },
+      key,
+    )
   }
   pair(device_name: string) {
     return this.request<DevicePair>('/v1/device/authorizations', { device_name })

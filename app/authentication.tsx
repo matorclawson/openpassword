@@ -55,6 +55,13 @@ export function ConsoleLogin({
         status && (
           <>
             <form onSubmit={submit} key={String(setup) + String(member)}>
+              {setup && (
+                <p>
+                  Enter the setup code from the server to claim this installation. After adding a
+                  provider connection, issue a separate enrollment token for each CLI in Access
+                  grants.
+                </p>
+              )}
               {(setup || member) && (
                 <label>
                   {member ? 'Workspace access token' : 'Setup code'}

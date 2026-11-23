@@ -1,3 +1,4 @@
+import { activity } from './activity.ts'
 import { consoleAuth } from './console-auth.ts'
 import { issueFiles, issueFolder, bundleOperation } from './issue-files.ts'
 import { templatePlan, writeTemplate } from './template.ts'
@@ -124,15 +125,45 @@ export function service(
     const current = auditContext.getStore()
     if (current) current.actor = id
   }
-  const event = (t: string, action: string, id: string) =>
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS cli_connected ON events(tenant,subject,at) WHERE action='CLI connected'",
+  )
+  const feed = activity(db)
+  let draining = false
+  let inFlight = 0
+  api.decorate('beginDrain', () => {
+    draining = true
+    feed.wakeAll()
+  })
+  api.addHook('onRequest', async (r, reply) => {
+    if (r.url.split('?')[0] === '/health') return
+    if (draining)
+      return reply
+        .code(503)
+        .header('Retry-After', '1')
+        .header('OpenPassword-Protocol-Version', '1')
+        .send({ detail: 'Broker is updating' })
+    inFlight++
+    const finish = () => {
+      reply.raw.off('close', finish)
+      reply.raw.off('finish', finish)
+      inFlight--
+    }
+    reply.raw.once('finish', finish)
+    reply.raw.once('close', finish)
+  })
+  const event = (t: string, action: string, id: string) => {
+    const by = auditContext.getStore()?.actor || 'system'
     run(
       'INSERT INTO events(tenant,action,subject,at,actor) VALUES(?,?,?,?,?)',
       t,
       action,
       id,
       now(),
-      auditContext.getStore()?.actor || 'system',
+      by,
     )
+    queueMicrotask(() => feed.signal(t, by))
+  }
   function tx<T>(fn: () => T) {
     db.exec('BEGIN IMMEDIATE')
     try {
@@ -327,6 +358,15 @@ export function service(
       return { ok: true }
     })
   })
+  function checkIssuer(g: Row) {
+    const issuer =
+      get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner'
+    if (
+      !available(g.connection_id, issuer) ||
+      (issuer !== 'owner' && !get('SELECT id FROM members WHERE id=? AND active=1', issuer))
+    )
+      fail(401, 'Device access revoked')
+  }
   function grant(r: FastifyRequest) {
     if (!/^Bearer [A-Za-z0-9_-]+$/.test(r.headers.authorization || ''))
       fail(401, 'Device bearer required')
@@ -337,16 +377,46 @@ export function service(
         now(),
         now(),
       ) ?? fail(401, 'Device access expired')
-    const issuer =
-      get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner'
-    if (
-      !available(g.connection_id, issuer) ||
-      (issuer !== 'owner' && !get('SELECT id FROM members WHERE id=? AND active=1', issuer))
-    )
-      fail(401, 'Device access revoked')
+    checkIssuer(g)
     actor(g.id)
     return g
   }
+  for (const path of ['/admin/activity', '/v1/activity']) {
+    api.get(path, async (r, reply) => {
+      const q = z
+        .object({
+          after: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+          wait: z.coerce.number().int().min(0).max(20000).default(20000),
+        })
+        .parse(r.query)
+      const authorize = () => {
+        if (path === '/v1/activity') {
+          const g = grant(r)
+          return { tenant: g.tenant, actor: g.id }
+        }
+        const s = session(r)
+        return { tenant: s.tenant, actor: s.role === 'owner' ? undefined : profileId(s) }
+      }
+      const stop = new AbortController()
+      const disconnect = () => stop.abort()
+      reply.raw.once('close', disconnect)
+      try {
+        return await feed.poll(authorize, q.after, stop.signal, q.wait)
+      } finally {
+        reply.raw.off('close', disconnect)
+      }
+    })
+  }
+  api.get('/v1/whoami', async (r) => {
+    const g = grant(r)
+    return {
+      device_id: g.id,
+      label: g.label,
+      workspace: g.tenant,
+      connection_id: g.connection_id,
+      expires_at: iso(g.expires),
+    }
+  })
   const id = (r: FastifyRequest) => (r.params as { id: string }).id
   const conn = (t: string, c: string) =>
     get('SELECT * FROM connections WHERE tenant=? AND id=?', t, c) ??
@@ -436,7 +506,11 @@ export function service(
     (t) => !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
   )
   delegation(api, db, origin, session, seal, open, event)
-  api.get('/health', async () => ({ status: 'ok' }))
+  api.get('/health', async () => ({
+    status: draining ? 'draining' : 'ok',
+    drain_supported: true,
+    in_flight: inFlight,
+  }))
   function startSession(reply: import('fastify').FastifyReply, member?: Row) {
     const s = opaque()
     tx(() => {
@@ -602,7 +676,9 @@ export function service(
           }
         }),
       grants: all(
-        'SELECT id,label,connection_id,ops,expires,active FROM grants WHERE tenant=? ORDER BY rowid DESC',
+        `SELECT g.id,g.label,g.connection_id,g.ops,g.expires,g.active,
+          (SELECT MAX(at) FROM events WHERE tenant=g.tenant AND subject=g.id AND action='CLI connected') AS connected_at
+         FROM grants g WHERE tenant=? ORDER BY g.rowid DESC`,
         t,
       ).filter((g) => grantManager(s, g)),
       approvals: all(
@@ -1174,6 +1250,7 @@ export function service(
           operations: z.array(name).min(1),
           hours: z.number().int().min(1).max(720),
           user_code: name.optional(),
+          enrollment: z.boolean().optional(),
           model_lease: modelLease.optional(),
           draft_limit: z.number().int().min(1).max(100).optional(),
         })
@@ -1228,6 +1305,21 @@ export function service(
         )
       }
       event(t, 'Access granted', g)
+      if (b.enrollment && !b.user_code) {
+        const ticket = opaque()
+        const until = Math.min(now() + 600000, expires)
+        run('DELETE FROM pairs WHERE expires<=?', now())
+        run(
+          'INSERT INTO pairs VALUES(?,?,?,?,?,?)',
+          randomUUID(),
+          digest(ticket),
+          digest(opaque()),
+          b.label,
+          until,
+          g,
+        )
+        return { enrollment_token: ticket, device_id: g, expires_at: iso(until) }
+      }
       if (b.user_code) {
         if (
           !run(
@@ -1256,7 +1348,10 @@ export function service(
       const g =
         get('SELECT * FROM grants WHERE id=? AND active=1 AND expires>?', p.grant_id, now()) ??
         fail(403, 'Grant unavailable')
+      checkIssuer(g)
       run('DELETE FROM pairs WHERE id=?', p.id)
+      actor(g.id)
+      event(g.tenant, 'CLI connected', g.id)
       return issue(g)
     })
   })
