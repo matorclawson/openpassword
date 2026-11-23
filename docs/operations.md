@@ -41,7 +41,7 @@ After a production build, run `npm run test:browser` with Chromium installed. Se
 
 ## Linux service identities
 
-The two systemd units in deploy/systemd run the broker and console under separate dynamic users. Place the built tree in /opt/openpassword/releases/<version>, readable by both services, and point the root-owned symlink /opt/openpassword/current at it (switch the symlink to roll back), with Node 24 on the system service PATH. Install the units in /etc/systemd/system. The broker owns its private state directory. Set OPENPASSWORD_WEB_ORIGIN in a broker unit override to the externally visible console origin before enabling the services. For an existing instance, migrate the vault and its installation key during an offline maintenance window. Set up and verify HTTPS routing for your domain before connecting remote clients.
+The two systemd units in deploy/systemd run the broker and console under separate dynamic users. Place the built tree in /opt/openpassword/releases/<version>, readable by both services, and point the root-owned symlink /opt/openpassword/current at it (switch the symlink to roll back), with no system Node needed: the release bundles Node.js under `node/bin/node`, which the units run by absolute path. Install the units in /etc/systemd/system. The broker owns its private state directory. Set OPENPASSWORD_WEB_ORIGIN in a broker unit override to the externally visible console origin before enabling the services. For an existing instance, migrate the vault and its installation key during an offline maintenance window. Set up and verify HTTPS routing for your domain before connecting remote clients.
 
 
 
@@ -83,7 +83,7 @@ Model usage is captured from JSON and streaming usage frames even without a tari
 
 ## Release package
 
-On a Linux host with Node 24.19.0 (the release refuses any other version), check out the exact commit to release and run `make package COMMIT=<sha>`, then `make checksum`. `make package` refuses a dirty tree or a different HEAD, builds that commit in a scratch directory from `git archive`, keeps only production dependencies and the runtime files, and writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256, source epoch) and a completion marker. `make checksum` writes the `.sha256` sidecar only for an archive that matches its marker and `RELEASE.json`. Two builds of the same commit and toolchain are reproducible except for the per-build files listed in `scripts/per-build-files.txt` and in `RELEASE.json` (`per_build_files`): Next.js generates a secret server-reference key on every build, which must differ per build and is never made deterministic. `make package` also writes `<name>.manifest`, the sha256 of every other file, and `scripts/compare-builds.sh <dirA> <dirB>` compares two manifests. Build diagnostics (`.next/trace`, `.next/diagnostics`, `.next/cache`) are not shipped. It includes built output and installed dependencies, so build it on the target architecture. ffmpeg and Chromium are not included.
+On a Linux host with Node 24.19.0 as the build Node (the release refuses any other version), `xz`, and network access to nodejs.org, check out the exact commit to release and run `make package COMMIT=<sha>`, then `make checksum`. `make package` refuses a dirty tree or a different HEAD, builds that commit in a scratch directory from `git archive`, keeps only production dependencies and the runtime files, and writes `dist-release/openpassword-<version>-linux-<arch>.tar.gz`, `RELEASE.json` (commit, tree, Node version and binary hash, lockfile sha256, source epoch) and a completion marker. `make checksum` writes the `.sha256` sidecar only for an archive that matches its marker and `RELEASE.json`. Two builds of the same commit and toolchain are reproducible except for the per-build files listed in `scripts/per-build-files.txt` and in `RELEASE.json` (`per_build_files`): Next.js generates a secret server-reference key on every build, which must differ per build and is never made deterministic. `make package` also writes `<name>.manifest`, the sha256 of every other file, and `scripts/compare-builds.sh <dirA> <dirB>` compares two manifests. Build diagnostics (`.next/trace`, `.next/diagnostics`, `.next/cache`) are not shipped. It includes built output and installed dependencies, so build it on the target architecture. ffmpeg and Chromium are not included.
 
 `make package` refuses to build when `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` is set in the environment, because Next.js embeds a caller-supplied key in the build output; the generated key stays random per build. It also refuses unless every per-build file exists as regular files in the staged release. The only per-build paths are `.next/server/server-reference-manifest.json` (the generated key described below; its `.js` companion showed no variance and is compared) and `.next/server/preview-props.json` and `.next/prerender-manifest.json` (Next's random preview-mode keys, diagnosed in the 4fd28b31 gate diff). `make package` builds in the fixed directory `/tmp/openpassword-release-build` and refuses if it exists, before changing anything, and holds it until the build ends; the directory and `dist-release/` are created owner-only (0700) because they hold per-build key material. It builds there because Next embeds absolute build paths and derives module ids from them, which made two builds in different checkouts differ (also diagnosed in that diff); the first two-build run must confirm they are the only legitimate differences. The server-reference files hold the key Next generated for that build, which the server needs at run time to encrypt Server Action closures. It is random, belongs to no operator, and protects no credential or vault data. Do not substitute your own key at build time. No server action exists in the source today, so that key protects none. `make package` also refuses to build if `app`, `server` or `packages` mention Server Actions or preview/draft mode (`use server`, `draftMode`, `setPreviewData`, `previewData`, `__prerender_bypass`). **The release archive is not a public download.** It also contains Next's random preview-mode values, which the locked Next.js runtime loads at run time; a public archive would disclose the same values to everyone running that build. Do not attach it to a public release. It stays in gate custody and installs are made from there, until a distribution design with per-install keys, or with the framework behaviour disabled, has been qualified. This is the maintainer's reading of Next.js behaviour and is unverified until the gate inspects the built archive.
 
@@ -108,24 +108,24 @@ NEW=$(sudo mktemp -d "$R/.new-XXXXXX")
 sudo tar -xzf "$STAGE/release.tar.gz" -C "$NEW" --no-same-owner
 sudo chmod 755 "$NEW"
 for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.js .next/BUILD_ID \
-         node_modules/tsx/package.json .next/server/server-reference-manifest.json .next/server/server-reference-manifest.js; do
+         node_modules/tsx/package.json node/bin/node .next/server/server-reference-manifest.json .next/server/server-reference-manifest.js; do
   sudo test -f "$NEW/$f" || { echo "missing $f in the release; not switching" >&2; exit 1; }
 done
-# Probe under the units' own sandbox (identity and restrictions), resolving `env node` on the manager's PATH.
+# Probe under the units' own sandbox (identity and restrictions), with the Node that ships in the release.
 SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes"
 # The release must be the one named: RELEASE.json comes from the verified, extracted copy.
-$SD /usr/bin/env node -e '
+$SD "$NEW/node/bin/node" -e '
 const r = JSON.parse(require("fs").readFileSync(process.argv[1] + "/RELEASE.json", "utf8"));
 const [v, a, c] = process.argv.slice(2);
 if (r.name !== "openpassword" || r.platform !== "linux" || r.version !== v || r.arch !== a || r.commit !== c) { console.error("RELEASE.json does not match", JSON.stringify([r.version, r.arch, r.commit])); process.exit(1) }
 ' "$NEW" "$VERSION" "$ARCH" "$EXPECTED_COMMIT" || { echo "release identity mismatch; not switching" >&2; exit 1; }
-V=$($SD /usr/bin/env node -p process.version)
+V=$($SD "$NEW/node/bin/node" -p process.version)
 [ "$V" = v24.19.0 ] || { echo "service Node is $V, not v24.19.0; not switching" >&2; exit 1; }
 # Broker: the tsx loader, and read access to its entry point.
-$SD /usr/bin/env node --import tsx -e 'require("fs").accessSync("server/main.ts", require("fs").constants.R_OK)' \
+$SD "$NEW/node/bin/node" --import tsx -e 'require("fs").accessSync("server/main.ts", require("fs").constants.R_OK)' \
   || { echo "broker loader or entry point is not usable under the unit sandbox; not switching" >&2; exit 1; }
 # Web: the launcher itself.
-$SD /usr/bin/env node node_modules/next/dist/bin/next --version >/dev/null \
+$SD "$NEW/node/bin/node" node_modules/next/dist/bin/next --version >/dev/null \
   || { echo "web launcher is not usable under the unit sandbox; not switching" >&2; exit 1; }
 sudo mv -T "$NEW" "$R/$VERSION"; NEW=
 sudo ln -sfn "releases/$VERSION" /opt/openpassword/current.new

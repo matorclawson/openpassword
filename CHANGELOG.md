@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (unreleased)
+
+- The release archive bundles the pinned Node.js v24.19.0 (`node/bin/node`, from the official tarball checked against `scripts/node-pins.txt`); the systemd units run it by absolute path, so a host needs no system Node. `RELEASE.json` records the bundled binary and tarball sha256. The build now needs `xz` and network access to nodejs.org.
 
 Breaking wire changes. Clients and integrations written against the predecessor service's names must update.
 
