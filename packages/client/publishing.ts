@@ -142,7 +142,7 @@ export class PublishingJournal {
     this.db = new DatabaseSync(path)
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
    CREATE TABLE IF NOT EXISTS posts(org TEXT,post TEXT,revision INTEGER,doc TEXT,digest TEXT,due INTEGER,approved INTEGER,cancelled INTEGER,started INTEGER,PRIMARY KEY(org,post));
-   CREATE INDEX IF NOT EXISTS due_posts ON posts(org,due);
+   CREATE INDEX IF NOT EXISTS posts_by_due ON posts(org,due);
    CREATE TABLE IF NOT EXISTS targets(org TEXT,post TEXT,id TEXT,cursor INTEGER,state TEXT,polls INTEGER,next INTEGER,claim TEXT,lease INTEGER,request TEXT,outcome TEXT,PRIMARY KEY(org,post,id));
    CREATE TABLE IF NOT EXISTS receipts(org TEXT,post TEXT,target TEXT,step TEXT,result TEXT,PRIMARY KEY(org,post,target,step));
    CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY,org TEXT,post TEXT,actor TEXT,action TEXT,at INTEGER);`)

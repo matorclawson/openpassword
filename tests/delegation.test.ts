@@ -72,7 +72,7 @@ for (const action of [false, true])
       )
       const answer = (await post('/delegate/exchange', body)).json(),
         pieces = answer.delegation.split('.')
-      const key = (await api.inject({ url: '/.well-known/zeoconnect-delegation-keys.json' })).json()
+      const key = (await api.inject({ url: '/.well-known/openpassword-delegation-keys.json' })).json()
         .keys[0]
       assert.equal(
         verify(

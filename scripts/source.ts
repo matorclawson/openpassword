@@ -1,11 +1,11 @@
 // Produce the corresponding source download from the release tree on Linux.
 import { execFileSync } from 'node:child_process'
-import { readdirSync, renameSync } from 'node:fs'
+import { readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { gzipSync } from 'node:zlib'
 import { join } from 'node:path'
 const inputs = [
   'README.md',
   'CHANGELOG.md',
-  'THIRD-PARTY-NOTICES.txt',
   'CONTRIBUTING.md',
   'PARITY.md',
   'Makefile',
@@ -26,7 +26,7 @@ function collect(dir: string) {
       if (!['dist', 'node_modules'].includes(entry.name)) collect(path)
     } else if (
       entry.isFile() &&
-      (/\.(ts|tsx|css|json|woff2|txt|md|service)$/.test(entry.name) || entry.name === 'LICENSE')
+      (/\.(ts|tsx|css|json|woff2|txt|md|service|sh)$/.test(entry.name) || entry.name === 'LICENSE')
     )
       inputs.push(path)
   }
@@ -45,5 +45,22 @@ for (const dir of [
 ])
   collect(dir)
 const tmp = 'public/openpassword-source.tar.gz.tmp'
-execFileSync('tar', ['-czf', tmp, '--', ...inputs.sort()])
+// Reproducible metadata: fixed mtime, sorted names, numeric owner 0:0, no gzip timestamp.
+// GNU tar is used when present; BSD tar (local macOS development) writes a plain archive.
+const gnu = execFileSync('tar', ['--version']).toString().includes('GNU tar')
+let epoch = process.env.SOURCE_DATE_EPOCH
+if (!epoch) {
+  try {
+    epoch = execFileSync('git', ['log', '-1', '--format=%ct']).toString().trim()
+  } catch {
+    epoch = '0'
+  }
+}
+const flags = gnu
+  ? ['--sort=name', '--mtime=@' + epoch, '--owner=0', '--group=0', '--numeric-owner', '--format=gnu']
+  : []
+const archive = execFileSync('tar', ['-cf', '-', ...flags, '--', ...inputs.sort()], {
+  maxBuffer: 1 << 30,
+})
+writeFileSync(tmp, gzipSync(archive, { level: 9 }))
 renameSync(tmp, 'public/openpassword-source.tar.gz')

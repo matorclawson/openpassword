@@ -67,7 +67,7 @@ test('OAuth state is session bound and consumed once; approved upload session is
   const op = 'youtube.video.upload_session.create',
     grant = { label: 'Video device', connection_id: c, operations: [op], hours: 1 }
   const bearer = (await post('/admin/grants', grant, h)).json().access_token,
-    auth = { 'zeoconnect-protocol-version': '1', authorization: 'Bearer ' + bearer }
+    auth = { 'openpassword-protocol-version': '1', authorization: 'Bearer ' + bearer }
   const body = {
     connection_id: c,
     operation_id: op,
@@ -89,10 +89,10 @@ test('OAuth state is session bound and consumed once; approved upload session is
   const headers = {
     ...auth,
     'content-type': 'application/octet-stream',
-    'x-zeo-connection': c,
-    'x-zeo-content-range': 'bytes 0-2/3',
-    'x-zeo-upload-link': link,
-    'x-zeo-relay-seal': result.relay_seal,
+    'openpassword-connection': c,
+    'openpassword-content-range': 'bytes 0-2/3',
+    'openpassword-upload-link': link,
+    'openpassword-relay-seal': result.relay_seal,
   }
   const relay = (headers: Record<string, string>) =>
     api.inject({
@@ -102,7 +102,7 @@ test('OAuth state is session bound and consumed once; approved upload session is
       headers,
     })
   assert.equal(
-    (await relay({ ...headers, 'x-zeo-upload-link': 'https://example.invalid' })).statusCode,
+    (await relay({ ...headers, 'openpassword-upload-link': 'https://example.invalid' })).statusCode,
     403,
   )
   assert.equal((await relay(headers)).json().status, 200)

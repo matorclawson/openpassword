@@ -45,7 +45,7 @@ test('standing draft limit is consumed once, exact replay works while paused', a
         operation_id: op,
         idempotency_key: key,
       },
-      { authorization: 'Bearer ' + g.access_token, 'zeoconnect-protocol-version': '1' },
+      { authorization: 'Bearer ' + g.access_token, 'openpassword-protocol-version': '1' },
     )
   assert.equal((await invoke('one')).json().status, 'confirmed')
   await post('/admin/dispatch', { paused: true }, h)
@@ -117,7 +117,7 @@ test('Loops created-object checks bind draft changes and suppress signed upload 
       post(
         '/v1/operations/' + prefix + op + ':invoke',
         { connection_id: c, operation_id: prefix + op, arguments: args, idempotency_key: key },
-        { authorization: 'Bearer ' + g.access_token, 'zeoconnect-protocol-version': '1' },
+        { authorization: 'Bearer ' + g.access_token, 'openpassword-protocol-version': '1' },
       )
     let result = (await call()).json()
     if (result.status === 'approval_required') {

@@ -49,7 +49,7 @@ export function batchView(db: DatabaseSync, b: Row) {
     .prepare('SELECT decided FROM batch_decisions WHERE approval=?')
     .get(b.approval)
   const view = {
-    schema: 'zeoconnect-batch-approval-view/1',
+    schema: 'openpassword-batch-approval-view/1',
     approval_id: b.approval,
     action: 'import',
     operation_id: m.operation,

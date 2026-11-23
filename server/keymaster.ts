@@ -194,7 +194,7 @@ export function keymaster(
       done(null, b),
     )
     const caps = (r: FastifyRequest) =>
-      String(r.headers['openpassword-capabilities'] ?? r.headers['zeoconnect-capabilities'] ?? '')
+      String(r.headers['openpassword-capabilities'] ?? '')
         .split(',')
         .map((x) => x.trim())
     for (const op of Object.keys(schemas))
@@ -220,7 +220,7 @@ export function keymaster(
         if (!caps(r).includes('github-keymaster'))
           return reply.code(422).send(invalid('capability_missing').body)
         try {
-          const h = String(r.headers['zeoconnect-on-behalf-of'] || ''),
+          const h = String(r.headers['openpassword-on-behalf-of'] || ''),
             raw = Buffer.from(h, 'base64url'),
             v = principal.parse(safeParse(raw.toString()))
           const canon = JSON.stringify(v, (_, x) =>

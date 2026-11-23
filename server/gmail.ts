@@ -71,7 +71,7 @@ export async function gmailPage(
     if (!r.ok) {
       await r.body?.cancel()
       if (r.status === 401)
-        throw new GmailError('CONNECTION_REPAIR_REQUIRED', 'Reconnect Google in ZEOconnect')
+        throw new GmailError('CONNECTION_REPAIR_REQUIRED', 'Reconnect Google in OpenPassword')
       if (r.status === 404)
         throw new GmailError(path ? 'REQUEST_REFUSED' : 'BUSINESS_RESOURCE_UNAVAILABLE', missing)
       if (r.status === 429) throw new GmailError('RATE_LIMITED', 'Gmail rate limit reached')

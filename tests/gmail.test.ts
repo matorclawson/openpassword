@@ -55,7 +55,7 @@ test('Gmail golden wire response, artifact headers, digest and exact bytes', asy
       h,
     )
   ).json()
-  const headers = { 'zeoconnect-protocol-version': '1', authorization: 'Bearer ' + g.access_token }
+  const headers = { 'openpassword-protocol-version': '1', authorization: 'Bearer ' + g.access_token }
   const response = await post(
     '/v1/operations/' + op + ':invoke',
     {

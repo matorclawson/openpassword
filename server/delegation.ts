@@ -218,7 +218,7 @@ export function delegation(
           },
         ],
   }))
-  api.get('/.well-known/zeoconnect-delegation-keys.json', async () => ({
+  api.get('/.well-known/openpassword-delegation-keys.json', async () => ({
     keys: get('SELECT id FROM delegation_signer WHERE id=1')
       ? [
           {
@@ -544,7 +544,7 @@ export function delegation(
       const header = JSON.parse(Buffer.from(h, 'base64url').toString())
       if (
         header.alg !== 'EdDSA' ||
-        header.typ !== 'zeoconnect-human-delegation+jwt' ||
+        header.typ !== 'openpassword-human-delegation+jwt' ||
         typeof header.kid !== 'string'
       )
         throw Error()
@@ -614,7 +614,7 @@ export function delegation(
         jti: randomUUID().replaceAll('-', ''),
       }
     const unsigned =
-      enc({ alg: 'EdDSA', kid: thumb(), typ: 'zeoconnect-human-delegation+jwt' }) +
+      enc({ alg: 'EdDSA', kid: thumb(), typ: 'openpassword-human-delegation+jwt' }) +
       '.' +
       enc(claims)
     return {
