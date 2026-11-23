@@ -26,7 +26,10 @@ test('star does not cross a slash, double star does, and case is preserved', () 
   assert.equal(ok([allow('openrouter/*')], t), false)
   assert.equal(ok([allow('openrouter/**')], t), true)
   assert.equal(ok([allow('openrouter/anthropic/*')], t), true)
-  assert.equal(ok([allow('openrouter/anthropic/claude-?able-5')], t), false)
+  // `?` is exactly one character other than `/`.
+  assert.equal(ok([allow('openrouter/anthropic/claude-?able-5')], t), true)
+  assert.equal(ok([allow('openrouter/anthropic/claude-??able-5')], t), false)
+  assert.equal(ok([allow('openrouter/anthropic?claude-fable-5')], t), false)
   assert.equal(ok([allow('openrouter/anthropic/claude-fable-?')], t), true)
   assert.equal(ok([allow('OpenRouter/**')], t), false)
   assert.equal(ok([allow('openrouter/anthropic/Claude-fable-5')], t), false)
@@ -128,7 +131,7 @@ test('equally specific rules with different tariffs are refused as ambiguous', (
 })
 
 test('patterns are validated', () => {
-  for (const bad of ['', ' a', 'a b', 'a\\b', 'family:', 'family:Bad Name', 'a%b', '*'.repeat(9), 'x'.repeat(201)])
+  for (const bad of ['', ' a', 'a b', 'a\\b', 'family:', 'family:Bad Name', 'a%b', '*'.repeat(9), '***', 'a/?'.repeat(9), 'x'.repeat(201)])
     assert.throws(() => parsePattern(bad), bad)
   assert.equal(parsePattern('openai/gpt-5').kind, 'exact')
   assert.equal(parsePattern('family:qwen').kind, 'family')

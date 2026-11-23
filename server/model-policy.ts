@@ -5,6 +5,10 @@
 // Identity: a model is `<vendor>/<native_id>`. The vendor is a slug without `/`, so the first `/`
 // splits it. The native id is kept byte for byte. Rules are glob patterns on that identifier, or
 // `family:<name>`. Deny always wins. A model matching no allow rule is refused.
+//
+// Glob syntax: `*` matches any run of characters except `/`, `**` matches any run including `/`, and
+// `?` matches exactly one character other than `/`. A pattern may hold at most 8 wildcard characters
+// (`*` and `?` each count one, so `**` counts two), and a run of three or more `*` is refused.
 
 export type Effect = 'allow' | 'deny'
 export interface Rule {
@@ -77,7 +81,8 @@ export function parsePattern(source: string): Pattern {
     return { kind: 'family', name }
   }
   const wildcards = (source.match(/\*\*|\*|\?/g) ?? []).length
-  if (wildcards > MAX_WILDCARDS) throw new PolicyError('bad_pattern')
+  if ((source.match(/[*?]/g) ?? []).length > MAX_WILDCARDS || /\*{3,}/.test(source))
+    throw new PolicyError('bad_pattern')
   if (wildcards === 0) return { kind: 'exact', text: source }
   return { kind: 'glob', text: source, literal: source.replace(/\*\*|\*|\?/g, '').length, wildcards }
 }
