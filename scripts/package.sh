@@ -102,7 +102,13 @@ while IFS= read -r f; do
   f=${f#./}
   [ "$f" = RELEASE.json ] && continue
   if grep -qxF "$f" <<<"$per_build"; then continue; fi
-  if [ -L "$out/stage/$f" ]; then printf 'link  %s -> %s\n' "$f" "$(readlink "$out/stage/$f")" >> "$out/manifest.tmp"; else printf '%s  %s\n' "$(sha "$out/stage/$f")" "$f" >> "$out/manifest.tmp"; fi
+  if [ -L "$out/stage/$f" ]; then
+    target=$(readlink "$out/stage/$f")
+    printf 'link  %s -> %s\n' "$f" "$target" >> "$out/manifest.tmp"
+  else
+    h=$(sha "$out/stage/$f")
+    printf '%s  %s\n' "$h" "$f" >> "$out/manifest.tmp"
+  fi
 done < "$out/files.list"
 manifest_sha=$(sha "$out/manifest.tmp")
 lock=$(sha "$out/build/package-lock.json")
@@ -117,7 +123,7 @@ JS
 tmp=$out/$name.tar.gz.partial
 tar -C "$out/stage" --mode=u+rwX,go+rX,go-w --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu -cf - . | gzip -n > "$tmp"
 listing=$(tar -tzf "$tmp")
-for must in ./RELEASE.json ./server/main.ts ./packages/cli/dist/index.js ./.next/BUILD_ID ./node_modules/next/dist/bin/next; do
+for must in ./RELEASE.json ./server/main.ts ./packages/cli/dist/index.js ./.next/BUILD_ID ./node_modules/next/dist/bin/next ./node_modules/tsx/package.json; do
   grep -qx "$must" <<<"$listing" || { rm -f "$tmp"; echo "package: archive lacks $must" >&2; exit 1; }
 done
 if grep -Eq '(^|/)\.env|^\./\.next/cache|^\./node_modules/(playwright|playwright-core)(/|$)' <<<"$listing"; then rm -f "$tmp"; echo "package: archive contains excluded files" >&2; exit 1; fi
