@@ -45,33 +45,38 @@ sha() { local h; h=$(sha256sum "$1" | cut -d' ' -f1); [[ "$h" =~ ^[0-9a-f]{64}$ 
 root=$PWD
 out=$root/dist-release
 rm -rf "$out"
-mkdir -p "$out/build" "$out/stage"
-trap 'rm -f "$out"/*.partial' EXIT
+# Next embeds absolute build paths in its output and derives module ids from them, so the build
+# directory must be the same on every run and every host. It is a fixed path, created atomically;
+# a second concurrent or stale build refuses rather than sharing it.
+build=/tmp/openpassword-release-build
+mkdir "$build" || { echo "package: $build exists (another build, or a stale one: remove it)" >&2; exit 1; }
+mkdir -p "$out/stage"
+trap 'rm -f "$out"/*.partial; rm -rf "$build"' EXIT
 
 # 1. Build the exact commit in a scratch directory.
-git archive "$commit" | tar -x -C "$out/build"
+git archive "$commit" | tar -x -C "$build"
 export SOURCE_DATE_EPOCH=$epoch
 # Fixed build id: Next would otherwise write a random one into .next.
 export OPENPASSWORD_BUILD_ID=$commit
 [ -n "$OPENPASSWORD_BUILD_ID" ] || { echo "package: empty build id" >&2; exit 1; }
 # Version, lockfile and Makefile are read from the exported files, not the checkout.
-version=$(node -p 'require(process.argv[1]).version' "$out/build/package.json")
+version=$(node -p 'require(process.argv[1]).version' "$build/package.json")
 machine=$(uname -m)
 case "$machine" in aarch64|arm64) arch=arm64 ;; x86_64) arch=x64 ;; *) arch=$machine ;; esac
 name="openpassword-$version-linux-$arch"
 (
-  cd "$out/build"
+  cd "$build"
   npm ci
   npm run packages
   npm run build
   npm prune --omit=dev
 )
-dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(!(p.dependencies||{})[k])console.log(k)" "$out/build/package.json")
+dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(!(p.dependencies||{})[k])console.log(k)" "$build/package.json")
 for k in $dev_only; do
-  [ ! -e "$out/build/node_modules/$k" ] || { echo "package: development dependency $k survived the prune" >&2; exit 1; }
+  [ ! -e "$build/node_modules/$k" ] || { echo "package: development dependency $k survived the prune" >&2; exit 1; }
 done
-source_listing=$(tar -tzf "$out/build/public/openpassword-source.tar.gz")
-script_refs=$(grep -o 'scripts/[a-z-]*\.sh' "$out/build/Makefile" | sort -u)
+source_listing=$(tar -tzf "$build/public/openpassword-source.tar.gz")
+script_refs=$(grep -o 'scripts/[a-z-]*\.sh' "$build/Makefile" | sort -u)
 for f in $script_refs; do
   grep -qx "$f" <<<"$source_listing" \
     || { echo "package: $f is missing from the corresponding-source archive" >&2; exit 1; }
@@ -79,8 +84,8 @@ done
 
 # 2. Stage an explicit runtime payload.
 payload=(package.json package-lock.json tsconfig.json next.config.ts next-env.d.ts LICENSE README.md CHANGELOG.md PARITY.md app deploy docs public server packages .next node_modules)
-for p in "${payload[@]}"; do [ -e "$out/build/$p" ] || { echo "package: missing $p in the build" >&2; exit 1; }; done
-tar -C "$out/build" --exclude=.next/cache --exclude=.next/trace --exclude='.next/trace-*' --exclude=.next/diagnostics --exclude='.env*' --exclude='packages/*/node_modules' -cf - "${payload[@]}" | tar -xf - -C "$out/stage"
+for p in "${payload[@]}"; do [ -e "$build/$p" ] || { echo "package: missing $p in the build" >&2; exit 1; }; done
+tar -C "$build" --exclude=.next/cache --exclude=.next/trace --exclude='.next/trace-*' --exclude=.next/diagnostics --exclude='.env*' --exclude='packages/*/node_modules' -cf - "${payload[@]}" | tar -xf - -C "$out/stage"
 rm -rf "$out/stage/.next/cache" "$out/stage/.next/diagnostics" "$out/stage/.next/trace" "$out/stage"/.next/trace-*
 stray=$(find "$out/stage" -name '.env*')
 if [ -n "$stray" ]; then echo "package: .env file in payload" >&2; exit 1; fi
@@ -88,7 +93,7 @@ if [ -n "$stray" ]; then echo "package: .env file in payload" >&2; exit 1; fi
 # 3. Provenance. Files that legitimately differ per build are listed, one exact path per line, in
 # scripts/per-build-files.txt (Next generates a secret server-reference key on every build; it must
 # not be made deterministic). The manifest lists the sha256 of every other file.
-per_build_file=$out/build/scripts/per-build-files.txt
+per_build_file=$build/scripts/per-build-files.txt
 [ -r "$per_build_file" ] || { echo "package: cannot read $per_build_file" >&2; exit 1; }
 per_build=$(grep -vE '^(#|$)' "$per_build_file" || [ $? -eq 1 ])
 [ -n "$per_build" ] || { echo "package: no per-build files are listed" >&2; exit 1; }
@@ -111,7 +116,7 @@ while IFS= read -r f; do
   fi
 done < "$out/files.list"
 manifest_sha=$(sha "$out/manifest.tmp")
-lock=$(sha "$out/build/package-lock.json")
+lock=$(sha "$build/package-lock.json")
 node_path=$(command -v node)
 node_sha=$(sha "$node_path")
 node - "$commit" "$tree" "$version" "$arch" "$node_version" "$node_sha" "$lock" "$epoch" "$manifest_sha" "$per_build" > "$out/stage/RELEASE.json" <<'JS'
@@ -131,7 +136,7 @@ mv "$tmp" "$out/$name.tar.gz"
 cp "$out/stage/RELEASE.json" "$out/RELEASE.json"
 mv "$out/manifest.tmp" "$out/$name.manifest"
 rm -f "$out/files.list"
-rm -rf "$out/build" "$out/stage"
+rm -rf "$build" "$out/stage"
 archive_sha=$(sha "$out/$name.tar.gz")
 printf '%s  %s\n' "$archive_sha" "$name.tar.gz" > "$out/$name.complete"
 echo "$out/$name.tar.gz"
