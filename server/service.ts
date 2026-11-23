@@ -361,12 +361,12 @@ export function service(
   )
   const attempts = new Map<string, { count: number; until: number }>()
   api.addHook('onRequest', async (r, reply) => {
-    reply.header('OpenPassword-Protocol-Version', '1').header('ZEOconnect-Protocol-Version', '1')
+    reply.header('OpenPassword-Protocol-Version', '1')
     if (
       r.url.startsWith('/v1/') &&
       !['/v1/chat/completions', '/v1/models', '/v1/delegation/check'].includes(r.url.split('?')[0])
     ) {
-      const names = ['openpassword-protocol-version', 'zeoconnect-protocol-version']
+      const names = ['openpassword-protocol-version']
       const values = names.flatMap(
         (key) =>
           r.raw.headersDistinct?.[key] ??
@@ -1342,7 +1342,7 @@ export function service(
     })
   })
   const fenced = (r: FastifyRequest) =>
-    String(r.headers['openpassword-capabilities'] ?? r.headers['zeoconnect-capabilities'] ?? '')
+    String(r.headers['openpassword-capabilities'] ?? '')
       .split(',')
       .map((x) => x.trim())
       .includes('expected-binding')
@@ -1573,8 +1573,8 @@ export function service(
       c = conn(g.tenant, g.connection_id)
     checkDispatch(g.tenant, c.provider)
     attribute(g, c, 'youtube.upload.relay')
-    const location = String(r.headers['x-zeo-upload-link'] || ''),
-      proof = String(r.headers['x-zeo-relay-seal'] || '')
+    const location = String(r.headers['openpassword-upload-link'] || ''),
+      proof = String(r.headers['openpassword-relay-seal'] || '')
     const u =
       get(
         'SELECT * FROM uploads WHERE proof=? AND link=? AND actor=? AND conn=? AND revision=? AND expires>?',
@@ -1585,11 +1585,11 @@ export function service(
         c.revision,
         now(),
       ) ?? fail(403, 'Upload not authorized')
-    if (!c.active || r.headers['x-zeo-connection'] !== c.id) fail(403, 'Upload connection changed')
-    const range = String(r.headers['x-zeo-content-range'] || ''),
+    if (!c.active || r.headers['openpassword-connection'] !== c.id) fail(403, 'Upload connection changed')
+    const range = String(r.headers['openpassword-content-range'] || ''),
       match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range)
     const data = r.body ?? Buffer.alloc(0),
-      mime = r.headers['x-zeo-content-type'] || u.mime
+      mime = r.headers['openpassword-content-type'] || u.mime
     const probe = range === 'bytes */' + u.size
     if (
       !Buffer.isBuffer(data) ||

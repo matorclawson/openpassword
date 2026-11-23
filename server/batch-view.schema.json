@@ -1,6 +1,6 @@
 {
   "$defs": {},
-  "$id": "zeoconnect-batch-approval-view/1",
+  "$id": "openpassword-batch-approval-view/1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "allOf": [
@@ -301,7 +301,7 @@
       "type": "integer"
     },
     "schema": {
-      "const": "zeoconnect-batch-approval-view/1"
+      "const": "openpassword-batch-approval-view/1"
     },
     "state": {
       "enum": [

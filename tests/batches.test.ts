@@ -65,7 +65,7 @@ for (const interrupt of [false, true])
       ).json()
       const headers = {
         authorization: 'Bearer ' + g.access_token,
-        'zeoconnect-protocol-version': '1',
+        'openpassword-protocol-version': '1',
       }
       const invoke = async (args: object, key: string) =>
         (
@@ -79,7 +79,7 @@ for (const interrupt of [false, true])
       const ts = (delta: number) =>
         new Date(Date.now() + delta).toISOString().replace(/\.\d{3}/, '')
       const manifest = {
-        schema: 'zeoconnect-batch-manifest/1',
+        schema: 'openpassword-batch-manifest/1',
         operation: op,
         organization: 'default',
         connection: c,

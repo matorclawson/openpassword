@@ -34,7 +34,7 @@ test('device lease, exact approval, replay, account isolation, rotation and rest
       url,
       payload,
       headers: {
-        'zeoconnect-protocol-version': '1',
+        'openpassword-protocol-version': '1',
         cookie,
         authorization: 'Bearer ' + bearer,
         ...headers,
@@ -77,7 +77,7 @@ test('device lease, exact approval, replay, account isolation, rotation and rest
   const list = (await call('GET', '/v1/connections')).json()
   assert.equal(list.length, 1)
   assert.equal(list[0].connection_revision, undefined)
-  const hdr = { 'zeoconnect-capabilities': 'expected-binding' }
+  const hdr = { 'openpassword-capabilities': 'expected-binding' }
   assert.equal(
     (await call('GET', '/v1/connections', undefined, 200, hdr)).json()[0].connection_revision,
     '1',

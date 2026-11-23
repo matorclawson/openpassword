@@ -10,7 +10,7 @@ const text = z.string().regex(/^[A-Za-z0-9._:/-]{1,200}$/),
 const utc = z.iso.datetime({ precision: 0 })
 const manifest = z
   .object({
-    schema: z.literal('zeoconnect-batch-manifest/1'),
+    schema: z.literal('openpassword-batch-manifest/1'),
     operation: z.literal('loops.contacts.import_chunk'),
     organization: text,
     connection: text,
