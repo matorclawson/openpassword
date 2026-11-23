@@ -2,9 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import type { OpenPassword } from '@openpassword/client'
+import { version } from './version.js'
 
 export async function serve(client: () => Promise<OpenPassword>) {
-  const server = new McpServer({ name: 'openpassword', version: '0.2.0' })
+  const server = new McpServer({ name: 'openpassword', version })
   const result = (data: unknown) => ({
     content: [{ type: 'text' as const, text: JSON.stringify(data) }],
   })

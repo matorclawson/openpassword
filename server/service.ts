@@ -131,6 +131,9 @@ export function service(
   const feed = activity(db)
   let draining = false
   let inFlight = 0
+  // Model calls claimed but not yet settled (usage, meter and run state written). A drain must wait for
+  // these, not only for open sockets: a client can disconnect while the upstream call is still running.
+  let unsettled = 0
   api.decorate('beginDrain', () => {
     draining = true
     feed.wakeAll()
@@ -509,7 +512,9 @@ export function service(
   api.get('/health', async () => ({
     status: draining ? 'draining' : 'ok',
     drain_supported: true,
-    in_flight: inFlight,
+    // Zero only when no request is open AND no model call is unsettled. A model call is counted by its
+    // request while the socket is open, and by `unsettled` after a disconnect, so the larger of the two.
+    in_flight: Math.max(inFlight, unsettled),
   }))
   function startSession(reply: import('fastify').FastifyReply, member?: Row) {
     const s = opaque()
@@ -1560,17 +1565,25 @@ export function service(
       )
       event(g.tenant, 'Model request claimed', ex)
     })
+    unsettled++
+    let settled = false
     const abort = new AbortController()
     const onClose = () => abort.abort()
     reply.raw.once('close', onClose)
     function finish(state: string, usage?: unknown) {
+      if (settled) return
+      settled = true
       reply.raw.removeListener('close', onClose)
-      tx(() => {
-        usageLedger.finish(ex, state, usage)
-        meter.finish(ex, usage, state === 'confirmed')
-        run('UPDATE runs SET state=? WHERE id=?', state, ex)
-        event(g.tenant, op + ' · ' + state, ex)
-      })
+      try {
+        tx(() => {
+          usageLedger.finish(ex, state, usage)
+          meter.finish(ex, usage, state === 'confirmed')
+          run('UPDATE runs SET state=? WHERE id=?', state, ex)
+          event(g.tenant, op + ' · ' + state, ex)
+        })
+      } finally {
+        unsettled--
+      }
     }
     try {
       const secret = await credential(c)

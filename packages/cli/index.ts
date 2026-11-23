@@ -6,6 +6,7 @@ import { Writable } from 'node:stream'
 import { DatabaseSync } from 'node:sqlite'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { version } from './version.js'
 
 const [cmd, ...args] = process.argv.slice(2)
 const origin = process.env.OPENPASSWORD_BROKER || 'http://127.0.0.1:4141'
@@ -73,7 +74,7 @@ async function tokens(revoke = false) {
 }
 async function main() {
   if (cmd === 'version') {
-    console.log('OpenPassword CLI 0.2.0 · protocol 1')
+    console.log('OpenPassword CLI ' + version + ' · protocol 1')
     return
   }
   const client = new OpenPassword(origin)

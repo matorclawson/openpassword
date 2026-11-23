@@ -12,6 +12,7 @@ await build({
   bundle: true,
   alias: { '@openpassword/client': resolve('packages/client/index.ts') },
   legalComments: 'eof',
+  define: { OPENPASSWORD_VERSION: JSON.stringify(JSON.parse(readFileSync('package.json', 'utf8')).version) },
 })
 
 const bundle = readFileSync('public/openpassword-cli.cjs')
