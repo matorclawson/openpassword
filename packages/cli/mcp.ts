@@ -9,6 +9,26 @@ export async function serve(client: () => Promise<OpenPassword>) {
     content: [{ type: 'text' as const, text: JSON.stringify(data) }],
   })
   server.registerTool(
+    'models',
+    { description: 'List models available under this grant.' },
+    async () => result(await (await client()).request('/v1/models')),
+  )
+  server.registerTool(
+    'chat',
+    {
+      description:
+        'Send a metered model request under this grant. Reuse the idempotency key when retrying the same request.',
+      inputSchema: {
+        model: z.string().min(1),
+        prompt: z.string().max(64000),
+        max_tokens: z.number().int().positive(),
+        idempotency_key: z.string().min(1).max(200),
+      },
+    },
+    async (b) =>
+      result(await (await client()).chat(b.model, b.prompt, b.max_tokens, b.idempotency_key)),
+  )
+  server.registerTool(
     'whoami',
     { description: 'Verify this profile against the broker and return its stable grant ID.' },
     async () => result(await (await client()).request('/v1/whoami')),

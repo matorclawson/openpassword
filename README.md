@@ -118,6 +118,8 @@ reply = api("chat/completions", {
 print(reply["choices"][0]["message"]["content"])
 ```
 
+For an enrolled CLI with a model grant, use `openpassword models` to list its models. Send a prompt with `openpassword chat MODEL MAX_TOKENS REQUEST_KEY < prompt.txt`. Use a unique key for each intended call. MCP exposes the same operations as `models` and `chat`.
+
 A successful call prints the model’s reply. Open **Consumption** to see the model, request, and reported token counts. With pricing configured, you also see estimated spend. Requests without pricing are marked **Unpriced**. For a long-running client, use the grant’s refresh token to renew access; the paired CLI handles renewal automatically.
 
 ## Deploy on a server

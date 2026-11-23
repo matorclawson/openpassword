@@ -137,12 +137,20 @@ async function main() {
     throw Error('Pairing expired')
   }
   if (
-    !['connections', 'invoke', 'revoke', 'whoami', 'activity', 'watch', 'capabilities'].includes(
-      cmd,
-    )
+    ![
+      'connections',
+      'invoke',
+      'revoke',
+      'whoami',
+      'activity',
+      'watch',
+      'capabilities',
+      'models',
+      'chat',
+    ].includes(cmd)
   )
     throw Error(
-      'Usage: openpassword connect | whoami | activity | watch | capabilities | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
+      'Usage: openpassword connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
     )
   const t = await tokens(cmd === 'revoke')
   if (cmd === 'revoke') return
@@ -174,7 +182,19 @@ async function main() {
       }
     }
   }
-  if (['whoami', 'activity', 'capabilities'].includes(cmd)) {
+  if (cmd === 'chat') {
+    if (args.length !== 3 || process.stdin.isTTY)
+      throw Error('Usage: openpassword chat MODEL MAX_TOKENS KEY < prompt.txt')
+    console.log(
+      JSON.stringify(
+        await bound.chat(args[0], readFileSync(0, 'utf8'), Number(args[1]), args[2]),
+        null,
+        2,
+      ),
+    )
+    return
+  }
+  if (['whoami', 'activity', 'capabilities', 'models'].includes(cmd)) {
     console.log(JSON.stringify(await bound.request('/v1/' + cmd), null, 2))
     return
   }

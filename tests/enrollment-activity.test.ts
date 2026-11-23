@@ -11,7 +11,12 @@ import { service } from '../server/service.ts'
 
 test('web-issued tickets bind separate CLI and MCP profiles and cannot be replayed', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'op-enroll-'))
-  const api = service(dir)
+  const api = service(dir, undefined, async () =>
+    Response.json({
+      choices: [{ message: { role: 'assistant', content: 'fixture response' } }],
+      usage: { prompt_tokens: 2, completion_tokens: 2 },
+    }),
+  )
   t.after(async () => {
     await api.close()
     rmSync(dir, { recursive: true, force: true })
@@ -106,6 +111,63 @@ test('web-issued tickets bind separate CLI and MCP profiles and cannot be replay
       }
     }),
   )
+  const modelConn = (
+    await post(
+      '/admin/connections',
+      {
+        provider: 'openai',
+        label: 'Inference',
+        external_identity: 'fixture',
+        secret: 'fixture-key',
+      },
+      cookie,
+    )
+  ).json()
+  const modelTicket = (
+    await post(
+      '/admin/grants',
+      {
+        label: 'inference',
+        connection_id: modelConn.connection_id,
+        operations: ['openai.chat'],
+        hours: 1,
+        enrollment: true,
+        model_lease: { model: 'fixture-model', max_tokens: 10, calls: 2 },
+      },
+      cookie,
+    )
+  ).json()
+  const { env } = await connect('inference', modelTicket.enrollment_token)
+  const cliChat = spawn(process.execPath, [cli, 'chat', 'fixture-model', '5', 'cli-call'], {
+    env: { ...env, NODE_ENV: 'test' },
+  })
+  let response = ''
+  cliChat.stdout.on('data', (d) => (response += d))
+  const done = new Promise((resolve) => cliChat.on('close', resolve))
+  cliChat.stdin.end('Hello')
+  assert.equal(await done, 0)
+  assert.match(response, /fixture response/)
+  const modelClient = new Client({ name: 'model-test', version: '1' })
+  try {
+    await modelClient.connect(
+      new StdioClientTransport({ command: process.execPath, args: [cli, 'mcp'], env }),
+    )
+    const models = await modelClient.callTool({ name: 'models', arguments: {} })
+    assert.match(JSON.stringify(models.content), /fixture-model/)
+    const request = {
+      name: 'chat',
+      arguments: {
+        model: 'fixture-model',
+        max_tokens: 5,
+        prompt: 'Hello',
+        idempotency_key: 'mcp-call',
+      },
+    }
+    assert.match(JSON.stringify((await modelClient.callTool(request)).content), /fixture response/)
+    assert.ok((await modelClient.callTool(request)).isError)
+  } finally {
+    await modelClient.close()
+  }
   const revoked = await make('revoked')
   await api.inject({
     method: 'DELETE',
