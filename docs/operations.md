@@ -10,6 +10,18 @@ The broker binds to loopback. Next.js also defaults to localhost. Use a TLS reve
 
 Keep the SQLite database and master.key together in a protected backup. For an offline backup stop the service, copy the complete data directory including SQLite sidecars, and preserve file permissions. The default deployment uses a local master key and process-level trust. Use a dedicated service user with a private home. Protect the operator token during initial setup. The local launch and storage layout are designed for Linux including ARM64. The service has been tested on Linux x86-64.
 
+## Installer
+
+`deploy/install.sh` performs the install procedure above as one command on the target Linux host, as root, and prints one JSON object (`state`: `ready`, `needs_human` or `failed`; `checks`, `needs_human` steps, the console URL and an `error` code). It never builds or downloads anything and never prints a secret.
+
+```sh
+sudo bash install.sh agent plan  --archive openpassword-0.3.0-linux-arm64.tar.gz --sha256 <digest> --commit <commit> --version 0.3.0 --arch arm64 --origin https://pass.example.com
+sudo bash install.sh agent apply  (same options)
+sudo bash install.sh agent status
+```
+
+`--sha256` and `--commit` come from the gate record for that release, never from the archive's own sidecar; take `install.sh` itself from the same tagged release, not from the archive you are about to verify. `plan` changes nothing. `apply` verifies the staged copy, checks `RELEASE.json` and the bundled Node under the unit sandbox, switches the `current` symlink, installs the units and an origin drop-in, restarts broker then console, and waits for both to answer. If they do not, it restores the previous release and units and reports `readiness_failed`. Rerunning the installed version changes nothing. On a fresh install it returns `needs_human` with the **path** of the setup-code file; a person reads it on the server and creates the administrator account in the console. The disposable-vault preflight and request drain are marked as skipped; they are not implemented yet. `make installer-test` runs the script against a fake host (Linux).
+
 ## Packages and verification
 
 - `packages/client` provides the typed device client.

@@ -24,3 +24,5 @@ package:
 	bash scripts/package.sh "$(COMMIT)"
 checksum:
 	bash scripts/checksum.sh
+installer-test:
+	bash scripts/installer-test.sh
