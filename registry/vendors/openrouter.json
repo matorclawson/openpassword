@@ -1,0 +1,20 @@
+{
+  "id": "openrouter",
+  "name": "OpenRouter",
+  "category": "gateway",
+  "status": "candidate",
+  "substitution": "possible",
+  "auth": {
+    "kind": "bearer"
+  },
+  "endpoints": {
+    "chat": {
+      "family": "openai-chat",
+      "base_url": "https://openrouter.ai/api/v1",
+      "path": "/chat/completions"
+    }
+  },
+  "models_path": "/models",
+  "models": [],
+  "doc_url": "https://openrouter.ai/docs"
+}
