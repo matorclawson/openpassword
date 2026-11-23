@@ -4,6 +4,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { PolicyError, policyId, type ResolvedModel } from './model-policy.ts'
+import { CLONING, type ClassifiedOperation } from './voice-policy.ts'
 
 const slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
 const header = z.string().regex(/^[A-Za-z0-9-]{1,64}$/)
@@ -36,6 +37,8 @@ const endpoint = z
     path: z.string().regex(/^\/[A-Za-z0-9/_:.-]{0,120}$/),
     headers: z.record(header, z.string().max(200)).default({}),
     max_tokens_param: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
+    /** Voice cloning, conversion or design. Required on every endpoint of a voice vendor. */
+    cloning: z.boolean().optional(),
   })
   .strict()
 
@@ -63,6 +66,14 @@ export const descriptor = z
     if (d.auth.kind === 'header' && !d.auth.header)
       ctx.addIssue({ code: 'custom', message: 'header auth needs a header name' })
     for (const [name, e] of Object.entries(d.endpoints)) {
+      // Consent is keyed on this explicit field, not on a naming convention: a voice vendor must classify
+      // every endpoint, and a cloning-looking name can never be classified as standard.
+      if (d.category === 'voice' && e.cloning === undefined)
+        ctx.addIssue({ code: 'custom', message: name + ': a voice endpoint must declare cloning true or false' })
+      if (CLONING.test(name) && e.cloning !== true)
+        ctx.addIssue({ code: 'custom', message: name + ': a cloning endpoint must declare cloning true' })
+      if (/(^|\.)voice(\.|$)/.test(name) && e.cloning === undefined)
+        ctx.addIssue({ code: 'custom', message: name + ': a voice endpoint must declare cloning true or false' })
       if (!e.base_url.startsWith('https://'))
         ctx.addIssue({ code: 'custom', message: name + ': base_url must be https' })
       const used = new Set([...e.base_url.matchAll(/\{([a-z_]+)\}/g)].map((m) => m[1]))
@@ -129,6 +140,17 @@ export function loadRegistry(dir: string): Catalogue {
     list.push(d)
   }
   return buildCatalogue(list)
+}
+
+/** The classification of one endpoint for the consent gate. An unclassified voice endpoint is refused. */
+export function classifyOperation(d: Descriptor, endpointName: string): ClassifiedOperation {
+  const e = d.endpoints[endpointName]
+  if (!e) throw new PolicyError('unknown_endpoint')
+  if (typeof e.cloning !== 'boolean') {
+    if (d.category === 'voice') throw new PolicyError('unclassified_operation')
+    return { name: d.id + '.' + endpointName, cloning: false }
+  }
+  return { name: d.id + '.' + endpointName, cloning: e.cloning }
 }
 
 /** Only verified and supported vendors may serve traffic; candidates are listed, never routed. */

@@ -2,8 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { PolicyError } from '../server/model-policy.ts'
 import {
   buildCatalogue,
+  classifyOperation,
   descriptor,
   expandBaseUrl,
   lifecycle,
@@ -126,4 +128,24 @@ test('the reported model must be the requested entry, a registered alias, or an 
   assert.equal(reportedMatches(cat, req, 'unlisted-snapshot'), false)
   assert.equal(reportedMatches(cat, req, 'unlisted-snapshot', ['unlisted-snapshot']), true)
   for (const bad of [undefined, null, '', 5, {}]) assert.equal(reportedMatches(cat, req, bad), false)
+})
+
+test('a voice vendor must classify every endpoint, and a mis-named cloning endpoint cannot pass as standard', () => {
+  const ep = base.endpoints.chat
+  const voice = (endpoints: Record<string, unknown>) => ({ category: 'voice', endpoints })
+  // Unclassified voice endpoint, or any voice-named endpoint, is refused at load.
+  assert.throws(() => make(voice({ speech: ep })))
+  assert.throws(() => make({ endpoints: { 'voice.list': ep } }))
+  // Cloning-named endpoints must say cloning true.
+  assert.throws(() => make(voice({ 'voice.clone': { ...ep, cloning: false } })))
+  assert.throws(() => make({ endpoints: { 'x.voice.design': ep } }))
+  // Classified entries load and classify as declared, whatever the name.
+  const d = make(voice({ speech: { ...ep, cloning: false }, mimic: { ...ep, cloning: true }, 'voice.clone': { ...ep, cloning: true } }))
+  assert.deepEqual(classifyOperation(d, 'speech'), { name: 'test.speech', cloning: false })
+  assert.deepEqual(classifyOperation(d, 'mimic'), { name: 'test.mimic', cloning: true })
+  assert.equal(classifyOperation(d, 'voice.clone').cloning, true)
+  assert.throws(() => classifyOperation(d, 'nope'))
+  // A descriptor whose endpoint lost its classification after load is refused at classification time.
+  const lost = { ...d, endpoints: { speech: ep } } as never
+  assert.throws(() => classifyOperation(lost, 'speech'), (e: unknown) => e instanceof PolicyError && e.code === 'unclassified_operation')
 })

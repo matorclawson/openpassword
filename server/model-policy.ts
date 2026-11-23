@@ -243,7 +243,9 @@ export type VoiceDecision =
 /**
  * Voice ids are part of what a grant authorizes. A grant that lists voice rules permits only the
  * voices its allow rules name, deny wins. A grant with no voice rules is unrestricted, so the
- * console must require an explicit choice when a grant carries speech operations.
+ * console must require an explicit choice when a grant carries speech operations (the caller passes an
+ * empty list only for that explicit unrestricted choice). Case: `foldCase` must be the vendor's
+ * `ids_case_insensitive`; a caller that passes anything else lets a deny disagree with the vendor's own ids.
  */
 export function evaluateVoice(input: {
   vendor: string
@@ -251,8 +253,9 @@ export function evaluateVoice(input: {
   rules: VoiceRule[]
   foldCase?: boolean
 }): VoiceDecision {
-  if (input.rules.length === 0) return { ok: true, restricted: false }
+  // The id is validated first, also when the grant has no voice rules.
   const id = policyId(input.vendor, input.voiceId)
+  if (input.rules.length === 0) return { ok: true, restricted: false }
   const fold = input.foldCase === true
   const parsed = input.rules.map((r) => {
     if (!r || (r.effect !== 'allow' && r.effect !== 'deny')) throw new PolicyError('bad_rule')

@@ -9,7 +9,7 @@
 // in the console for this exact operation and grant (approver identity from the owner's console session,
 // never from request data; `consent_ref` pointing at the stored consent record for the voice), and must
 // refuse a record whose operation, workspace or grant differs from the one being authorized.
-const CLONING = /(^|\.)voice\.(clone|convert|design)(\.|$)/
+export const CLONING = /(^|\.)voice\.(clone|convert|design)(\.|$)/
 
 export function isCloningOperation(op: string): boolean {
   return typeof op === 'string' && CLONING.test(op)
@@ -26,13 +26,22 @@ export type CloningDecision =
   | { ok: true; cloning: boolean }
   | { ok: false; code: 'cloning_approval_required' | 'cloning_vendor_unsupported' }
 
+/** An operation as the registry classified it. `cloning` comes from the descriptor, never from the name. */
+export interface ClassifiedOperation {
+  name: string
+  cloning: boolean
+}
+
 export function cloningDecision(input: {
-  operations: string[]
+  operations: ClassifiedOperation[]
   approval?: CloningApproval | null
   /** The vendor descriptor says the vendor documents a consent mechanism. */
   vendorConsent: boolean
 }): CloningDecision {
-  if (!input.operations.some(isCloningOperation)) return { ok: true, cloning: false }
+  // The explicit classification decides. The name pattern stays as a second check, so an operation whose
+  // name looks like cloning needs the approval even if its classification says otherwise.
+  const cloning = (o: ClassifiedOperation) => o.cloning !== false || isCloningOperation(o.name)
+  if (!input.operations.some(cloning)) return { ok: true, cloning: false }
   if (!input.vendorConsent) return { ok: false, code: 'cloning_vendor_unsupported' }
   const a = input.approval
   if (

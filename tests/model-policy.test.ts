@@ -151,6 +151,8 @@ test('voice ids are part of the authorization', () => {
   // No voice rules: unrestricted, and the result says so.
   assert.deepEqual(evaluateVoice({ vendor: 'rime', voiceId: 'anything', rules: [] }), { ok: true, restricted: false })
   assert.throws(() => evaluateVoice({ vendor: 'rime', voiceId: 'a/../b', rules }))
+  // The id is validated even when the grant has no voice rules.
+  assert.throws(() => evaluateVoice({ vendor: 'rime', voiceId: 'a/../b', rules: [] }))
 })
 
 test('one id alphabet: no line terminator or non-ASCII character is an id or matches a wildcard', () => {
