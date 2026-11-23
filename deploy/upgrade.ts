@@ -158,17 +158,15 @@ function preflight(version: string) {
     'WorkingDirectory=' + path,
     ...node,
   ]
-  ensure(
-    run('systemd-run', [...base, '-p', 'process.version']) === 'v24.19.0',
-    'Service Node mismatch',
-  )
+  const runtime = run('systemd-run', [...base, '-p', 'process.version'])
+  if (node.length === 1) ensure(runtime === 'v24.19.0', 'Bundled service Node mismatch')
   run('systemd-run', [...base, '--import', 'tsx', '--input-type=module', '-e', probeCode])
   run('systemd-run', [...base, 'node_modules/next/dist/bin/next', '--version'])
 }
 function baseUrl() {
   const port = Number(process.env.OPENPASSWORD_WEB_PORT || 3000)
   ensure(Number.isInteger(port) && port > 0 && port <= 65535, 'Invalid console port')
-  return 'http://127.0.0.1:' + port
+  return 'http://localhost:' + port
 }
 async function health() {
   const res = await fetch(baseUrl() + '/api/health', {
