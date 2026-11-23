@@ -5,7 +5,6 @@
 # comparison reports every other differing file as a failure. The paths below are the expected
 # ones and are confirmed by the first two-build run.
 .next/server/server-reference-manifest.json
-.next/server/server-reference-manifest.js
 # Diagnosed in the gate diff at 4fd28b31 (CONTENT-DIFF.txt): Next generates random preview-mode keys
 # (previewModeId, previewModeSigningKey, previewModeEncryptionKey) on every build and writes them here.
 .next/server/preview-props.json

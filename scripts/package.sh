@@ -41,17 +41,25 @@ for v in NEXT_SERVER_ACTIONS_ENCRYPTION_KEY; do
   [ -z "${!v-}" ] || { echo "package: $v is set in the environment; refusing to build" >&2; exit 1; }
 done
 
+# The generated server-reference and preview-mode values are only harmless while the source uses
+# neither Server Actions nor preview/draft mode. Refuse to build if that stops being true.
+hits=$(git grep -lIE "use server|draftMode|setPreviewData|previewData|__prerender_bypass" "$commit" -- app server packages || [ $? -eq 1 ])
+[ -z "$hits" ] || { echo "package: the source now uses Server Actions or preview mode; review the per-build key handling first:" >&2; echo "$hits" >&2; exit 1; }
+
 sha() { local h; h=$(sha256sum "$1" | cut -d' ' -f1); [[ "$h" =~ ^[0-9a-f]{64}$ ]] || { echo "package: bad digest for $1" >&2; return 1; }; printf '%s\n' "$h"; }
 root=$PWD
 out=$root/dist-release
-rm -rf "$out"
 # Next embeds absolute build paths in its output and derives module ids from them, so the build
-# directory must be the same on every run and every host. It is a fixed path, created atomically;
-# a second concurrent or stale build refuses rather than sharing it.
+# directory must be the same on every run and every host. It is a fixed path, created atomically
+# and owner-only (it holds per-build key material); a second concurrent or stale build refuses
+# rather than sharing it. Ownership is taken before anything else is changed and held until exit,
+# so a refused invocation touches nothing and a running build cannot be disturbed.
 build=/tmp/openpassword-release-build
-mkdir "$build" || { echo "package: $build exists (another build, or a stale one: remove it)" >&2; exit 1; }
-mkdir -p "$out/stage"
+mkdir -m 0700 "$build" || { echo "package: $build exists (another build, or a stale one: remove it)" >&2; exit 1; }
 trap 'rm -f "$out"/*.partial; rm -rf "$build"' EXIT
+rm -rf "$out"
+mkdir -m 0700 "$out"
+mkdir "$out/stage"
 
 # 1. Build the exact commit in a scratch directory.
 git archive "$commit" | tar -x -C "$build"
@@ -136,7 +144,7 @@ mv "$tmp" "$out/$name.tar.gz"
 cp "$out/stage/RELEASE.json" "$out/RELEASE.json"
 mv "$out/manifest.tmp" "$out/$name.manifest"
 rm -f "$out/files.list"
-rm -rf "$build" "$out/stage"
+rm -rf "$out/stage"
 archive_sha=$(sha "$out/$name.tar.gz")
 printf '%s  %s\n' "$archive_sha" "$name.tar.gz" > "$out/$name.complete"
 echo "$out/$name.tar.gz"
