@@ -24,7 +24,14 @@ cat > "$t/bin/curl" <<'S'
 #!/usr/bin/env bash
 [ "${STUB_UNHEALTHY:-}" != 1 ]
 S
+cat > "$t/bin/install" <<'S'
+#!/usr/bin/env bash
+n=$(( $(cat "$STUB_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_COUNT"
+[ "$n" = "${STUB_INSTALL_FAIL:-0}" ] && exit 1
+exec /usr/bin/install "$@"
+S
 chmod +x "$t/bin/"*
+export STUB_COUNT=$t/count
 export STUB_LOG=$t/log
 
 pin=$("$real_node" -p process.version)
@@ -48,12 +55,12 @@ mkrel 0.3.0; mkrel 0.3.1; mkrel 0.3.2
 
 printf 'CANARY-SETUP-CODE\n' > "$t/state/operator.token"
 export OPENPASSWORD_PREFIX=$t/prefix OPENPASSWORD_UNITS_DIR=$t/units OPENPASSWORD_STATE_DIR=$t/state
-export OPENPASSWORD_SYSTEMCTL=$t/bin/systemctl OPENPASSWORD_SYSTEMD_RUN=$t/bin/systemd-run OPENPASSWORD_CURL=$t/bin/curl
+export OPENPASSWORD_SYSTEMCTL=$t/bin/systemctl OPENPASSWORD_SYSTEMD_RUN=$t/bin/systemd-run OPENPASSWORD_CURL=$t/bin/curl OPENPASSWORD_INSTALL=$t/bin/install
 export OPENPASSWORD_NODE_PIN=$pin OPENPASSWORD_ALLOW_NONROOT=1 OPENPASSWORD_READY_TRIES=2 OPENPASSWORD_READY_SLEEP=0
 run() { # version [extra args]; prints JSON to $t/out, returns exit code
   local v=$1; shift
   bash deploy/install.sh agent "${MODE:-apply}" --archive "$t/openpassword-$v.tar.gz" --sha256 "${SHA:-$(cat "$t/sha-$v")}" \
-    --commit "${COMMIT:-$commit}" --version "$v" --arch "$arch" --origin https://pass.example.com "$@" > "$t/out" 2> "$t/err" || return $?
+    --commit "${COMMIT:-$commit}" --version "$v" --arch "$arch" --origin "${ORIGIN:-https://pass.example.com}" "$@" > "$t/out" 2> "$t/err" || return $?
 }
 state() { "$real_node" -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).state' "$t/out"; }
 code() { "$real_node" -p '(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).error||{}).code||""' "$t/out"; }
@@ -88,6 +95,52 @@ rc=0; STUB_UNHEALTHY=1 run 0.3.2 || rc=$?
 # With every probe failing, rollback readiness also fails: the honest answer is rollback_failed.
 [ "$rc" = 1 ] && { [ "$(code)" = readiness_failed ] || [ "$(code)" = rollback_failed ]; } || fail "readiness failure not reported: rc $rc $(code)"
 [ "$(readlink "$t/prefix/current")" = releases/0.3.1 ] || fail "current was not restored to 0.3.1"
+
+# A tree digest of everything the switch touches, for before/after comparisons.
+snap() { ( cd "$t"; { readlink prefix/current || echo none; for f in units/*.service units/openpassword-broker.service.d/* prefix/installed.json; do [ -f "$f" ] && { echo "$f"; cat "$f"; }; done; ls prefix/releases | grep -v '^\.' || true; } | sha256sum ); }
+
+# 6b. a failed readiness also restores the origin drop-in (the upgrade changes the origin).
+before=$(snap)
+rc=0; ORIGIN=https://other.example.com STUB_UNHEALTHY=1 run 0.3.2 || rc=$?
+[ "$rc" = 1 ] || fail "readiness failure rc $rc"
+grep -q 'https://pass.example.com' "$t/units/openpassword-broker.service.d/origin.conf" || fail "the origin drop-in was not restored"
+[ "$(snap)" = "$before" ] || fail "host state changed after a failed readiness"
+
+# 6c. a write failure at each step of the switch leaves the previous host unchanged and running.
+for n in 1 2 3; do
+  before=$(snap); : > "$t/log"; echo 0 > "$STUB_COUNT"
+  rc=0; STUB_INSTALL_FAIL=$n ORIGIN=https://other.example.com run 0.3.2 || rc=$?
+  [ "$rc" = 1 ] && [ "$(code)" = switch_failed ] || fail "write failure $n: rc $rc code $(code)"
+  [ "$(snap)" = "$before" ] || fail "write failure $n left a partially switched host"
+  grep -q 'https://pass.example.com' "$t/units/openpassword-broker.service.d/origin.conf" || fail "write failure $n: origin drop-in"
+done
+
+# 6d. a failed first install leaves nothing behind.
+rm -rf "$t/prefix2" "$t/units2"; mkdir -p "$t/units2"
+fresh() { OPENPASSWORD_PREFIX=$t/prefix2 OPENPASSWORD_UNITS_DIR=$t/units2 "$@"; }
+echo 0 > "$STUB_COUNT"; rc=0; STUB_INSTALL_FAIL=2 fresh run 0.3.0 || rc=$?
+[ "$rc" = 1 ] && [ "$(code)" = switch_failed ] || fail "fresh install failure: rc $rc code $(code)"
+[ ! -e "$t/prefix2/current" ] && [ ! -e "$t/prefix2/installed.json" ] && [ -z "$(ls -A "$t/units2")" ] && [ -z "$(ls "$t/prefix2/releases" | grep -v '^\.' || true)" ] || fail "a failed fresh install left files behind"
+
+# 6e. rerunning the installed version re-verifies the supplied artifact, commit and origin; it never
+# reports ready for something else.
+run 0.3.1 || fail "same-version rerun failed ($(code))"; [ "$(state)" = ready ] || fail "same-version state"
+rc=0; SHA=$(cat "$t/sha-0.3.2") run 0.3.1 || rc=$?; [ "$rc" = 1 ] && [ "$(code)" = digest_mismatch ] || fail "same version, other digest: rc $rc $(code)"
+rc=0; COMMIT=ffffffffffffffffffffffffffffffffffffffff run 0.3.1 || rc=$?; [ "$rc" = 1 ] && [ "$(state)" = failed ] || fail "same version, other commit accepted: rc $rc"
+rc=0; ORIGIN=https://other.example.com run 0.3.1 || rc=$?; [ "$rc" = 1 ] && [ "$(code)" = origin_differs ] || fail "same version, other origin: rc $rc $(code)"
+# A host whose drop-in or unit drifted from the record is not ready either.
+cp "$t/units/openpassword-broker.service.d/origin.conf" "$t/origin.keep"
+printf '[Service]\nEnvironment=OPENPASSWORD_WEB_ORIGIN=https://evil.example.com\n' > "$t/units/openpassword-broker.service.d/origin.conf"
+rc=0; run 0.3.1 || rc=$?; [ "$rc" = 1 ] && [ "$(code)" = origin_drift ] || fail "drifted drop-in: rc $rc $(code)"
+cp "$t/origin.keep" "$t/units/openpassword-broker.service.d/origin.conf"
+cp "$t/units/openpassword-web.service" "$t/web.keep"; echo '# drift' >> "$t/units/openpassword-web.service"
+rc=0; run 0.3.1 || rc=$?; [ "$rc" = 1 ] && [ "$(code)" = unit_drift ] || fail "drifted unit: rc $rc $(code)"
+cp "$t/web.keep" "$t/units/openpassword-web.service"
+# An install without a record (done by hand) cannot be confirmed.
+mv "$t/prefix/installed.json" "$t/record.keep"
+rc=0; run 0.3.1 || rc=$?; [ "$rc" = 1 ] && [ "$(code)" = unrecorded_install ] || fail "unrecorded install: rc $rc $(code)"
+mv "$t/record.keep" "$t/prefix/installed.json"
+run 0.3.1 || fail "the restored host should verify again"
 
 # 7. status.
 MODE=status run 0.3.1 || fail "status failed"; [ "$(state)" = ready ] || fail "status state"
