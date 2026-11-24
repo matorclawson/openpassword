@@ -49,6 +49,7 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 - A supporting broker drains accepted requests before restart. New requests receive HTTP 503 and a retry hint. Activity watchers reconnect across temporary gateway failures.
 - Added a Mac/Linux CLI updater that supports an independently supplied release digest, checks the downloaded bundle against the broker’s SHA-256, runs an offline startup check and replaces the executable atomically. Existing profiles are reused. Running MCP processes pick up the update on restart.
 
+- Activation copies the stopped state directory (integrity-checked, owners and modes kept) before the candidate starts, records its path, and restores it with the old release after a failed or interrupted activation, so an older release never reads a migrated store.
 - The activation controller's readiness probe dials the console at 127.0.0.1, the address its unit binds (0.3.1).
 
 ### Verification tools

@@ -3,6 +3,8 @@ import * as fs from 'node:fs'
 import { join, dirname, basename } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
+import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 
@@ -11,8 +13,11 @@ const releases = join(root, 'releases')
 const state = join(root, 'upgrade-state')
 const units = ['openpassword-broker.service', 'openpassword-web.service']
 const unitDir = '/etc/systemd/system'
+const dataLink = '/var/lib/openpassword'
 const semver = /^\d+\.\d+\.\d+$/
 type Snapshot = { version: string | null; units: (string | null)[] }
+// Pending record: the old configuration plus the vault copy taken before the candidate first started.
+type Pending = Snapshot & { store?: string | null }
 function ensure(ok: unknown, message: string): asserts ok {
   if (!ok) throw Error(message)
 }
@@ -67,6 +72,65 @@ function snapshot(): Snapshot {
       fs.existsSync(join(unitDir, u)) ? fs.readFileSync(join(unitDir, u), 'utf8') : null,
     ),
   }
+}
+const sha = (f: string) => createHash('sha256').update(fs.readFileSync(f)).digest('hex')
+// A failed activation must not leave an older release on a store that the candidate migrated.
+// Copy every file of the stopped state directory (vault, sidecars, keys) with owner and mode,
+// check the bytes, then run SQLite's integrity check on a scratch copy.
+export function snapshotStore(dataDir: string, dest: string) {
+  const names = fs.readdirSync(dataDir)
+  ensure(names.includes('vault.sqlite'), 'Vault database missing from the state directory')
+  fs.mkdirSync(dest, { mode: 0o700 })
+  for (const name of names) {
+    const src = join(dataDir, name),
+      st = fs.lstatSync(src)
+    ensure(st.isFile() && !st.isSymbolicLink(), 'Unexpected entry in the state directory: ' + name)
+    const out = join(dest, name)
+    fs.copyFileSync(src, out, fs.constants.COPYFILE_EXCL)
+    fs.chownSync(out, st.uid, st.gid)
+    fs.chmodSync(out, st.mode & 0o7777)
+    fs.utimesSync(out, st.atime, st.mtime)
+    ensure(sha(out) === sha(src), 'Snapshot copy differs from the source: ' + name)
+    const fd = fs.openSync(out, 'r')
+    try {
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+  const scratch = fs.mkdtempSync(join(tmpdir(), 'op-snap-'))
+  try {
+    for (const name of names) fs.copyFileSync(join(dest, name), join(scratch, name))
+    const db = new DatabaseSync(join(scratch, 'vault.sqlite'))
+    try {
+      const rows = db.prepare('PRAGMA integrity_check').all() as { integrity_check: string }[]
+      ensure(rows.length === 1 && rows[0].integrity_check === 'ok', 'Vault snapshot failed its integrity check')
+    } finally {
+      db.close()
+    }
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true })
+  }
+  syncDir(dest)
+}
+// Services must be stopped. Replaces the contents of the state directory with the snapshot.
+export function restoreStore(dataDir: string, snap: string) {
+  const names = fs.readdirSync(snap)
+  ensure(names.includes('vault.sqlite'), 'Vault snapshot is incomplete')
+  for (const name of fs.readdirSync(dataDir)) fs.rmSync(join(dataDir, name), { recursive: true, force: true })
+  for (const name of names) {
+    const src = join(snap, name),
+      st = fs.lstatSync(src),
+      out = join(dataDir, name)
+    fs.copyFileSync(src, out, fs.constants.COPYFILE_EXCL)
+    fs.chownSync(out, st.uid, st.gid)
+    fs.chmodSync(out, st.mode & 0o7777)
+    ensure(sha(out) === sha(src), 'Restored file differs from the snapshot: ' + name)
+  }
+  syncDir(dataDir)
+}
+function dataDir() {
+  return fs.existsSync(dataLink) ? fs.realpathSync(dataLink) : null
 }
 function point(version: string | null) {
   const link = join(root, 'current')
@@ -217,10 +281,18 @@ async function ready(v: string) {
   } while (Date.now() < end)
   throw Error('Readiness failed: ' + String(last))
 }
-async function switchTo(target: Snapshot) {
+function stop() {
   for (const unit of [...units].reverse()) {
     const loaded = run('systemctl', ['show', '-p', 'LoadState', '--value', unit])
     if (loaded !== 'not-found') run('systemctl', ['stop', unit])
+  }
+}
+async function switchTo(target: Snapshot, restoreFrom?: string | null) {
+  stop()
+  if (restoreFrom) {
+    const dir = dataDir()
+    ensure(dir, 'State directory missing for the vault restore')
+    restoreStore(dir, restoreFrom)
   }
   point(target.version)
   units.forEach((unit, i) => {
@@ -239,20 +311,28 @@ export async function activate(
   old: Snapshot,
   target: Snapshot,
   ops: {
-    save: (s: Snapshot) => void
+    save: (s: Pending) => void
     drain: () => Promise<void>
-    switchTo: (s: Snapshot) => Promise<void>
-    finish: (s: Snapshot) => void
+    stop: () => void
+    backup: () => string | null
+    switchTo: (s: Snapshot, restoreFrom?: string | null) => Promise<void>
+    finish: (s: Snapshot, store: string | null) => void
     clear: () => void
+    discard: (store: string | null) => void
   },
 ) {
   ops.save(old)
+  let store: string | null = null
   try {
     if (old.version) await ops.drain()
+    ops.stop()
+    store = old.version ? ops.backup() : null
+    if (store) ops.save({ ...old, store })
     await ops.switchTo(target)
-    ops.finish(old)
+    ops.finish(old, store)
   } catch (error) {
-    await ops.switchTo(old)
+    await ops.switchTo(old, store)
+    ops.discard(store)
     ops.clear()
     throw error
   }
@@ -264,7 +344,8 @@ async function main() {
     previous = join(state, 'previous.json')
   const [action, tree, digest, version, commit, arch] = process.argv.slice(2)
   if (fs.existsSync(pending)) {
-    await switchTo(JSON.parse(fs.readFileSync(pending, 'utf8')))
+    const p: Pending = JSON.parse(fs.readFileSync(pending, 'utf8'))
+    await switchTo(p, p.store)
     clear(pending)
     console.log('Recovered previous service configuration.')
   }
@@ -301,8 +382,21 @@ async function main() {
     return
   }
   preflight(target.version!)
+  const keep = (n: string) => n.startsWith('store-')
+  for (const n of fs.readdirSync(state).filter(keep)) {
+    const prev = fs.existsSync(previous) ? (JSON.parse(fs.readFileSync(previous, 'utf8')) as Pending).store : null
+    if (join(state, n) !== prev) fs.rmSync(join(state, n), { recursive: true, force: true })
+  }
   await activate(old, target, {
     save: (s) => atomic(pending, JSON.stringify(s)),
+    stop,
+    backup: () => {
+      const dir = dataDir()
+      if (!dir) return null
+      const made = join(state, 'store-' + randomUUID())
+      snapshotStore(dir, made)
+      return made
+    },
     drain: async () => {
       if (action !== '--rollback') return drain()
       try {
@@ -312,8 +406,12 @@ async function main() {
       }
     },
     switchTo,
-    finish: (s) => atomic(previous, JSON.stringify(s)),
+    // previous.json names the vault copy for the operator. --rollback never restores it: the new release has written since.
+    finish: (s, store) => atomic(previous, JSON.stringify({ ...s, store })),
     clear: () => clear(pending),
+    discard: (store) => {
+      if (store) fs.rmSync(store, { recursive: true, force: true })
+    },
   })
   console.log('Ready: ' + target.version)
 }
