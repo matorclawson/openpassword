@@ -1,6 +1,6 @@
 import { chromium } from 'playwright-core'
-import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { spawn, execFile } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -51,9 +51,25 @@ try {
       assert.equal(pair.status(), 200)
       assert.equal((await pair.json()).verification_url, origin + '/device')
       await p.goto(origin)
-      await p
-        .getByLabel('Setup code', { exact: true })
-        .fill(readFileSync(join(dir, 'operator.token'), 'utf8'))
+      const cli = (command: string, input = '') =>
+        new Promise<string>((resolve, reject) => {
+          const child = execFile(
+            process.execPath,
+            ['public/openpassword-cli.cjs', command],
+            {
+              env: {
+                ...process.env,
+                HOME: dir,
+                OPENPASSWORD_HOME: dir,
+                OPENPASSWORD_BROKER: origin,
+              },
+            },
+            (err, stdout) =>
+              err ? reject(Error('Test CLI failed: ' + command)) : resolve(stdout.trim()),
+          )
+          child.stdin!.end(input)
+        })
+      await p.getByLabel('Setup code', { exact: true }).fill(await cli('setup-code'))
       await p.getByLabel('Username').fill('operator')
       await p.getByLabel('Choose a password').fill('browser-only-fixture')
       await p.getByRole('button', { name: 'Create administrator' }).click()
@@ -84,6 +100,9 @@ try {
       await p.getByLabel('github.user.get', { exact: true }).check()
       await p.getByRole('dialog').getByRole('button', { name: 'Issue grant' }).click()
       await p.getByText('Agent credentials', { exact: true }).waitFor()
+      const ticket = await p.getByRole('dialog').locator('pre').last().innerText()
+      const enrolled = JSON.parse(await cli('connect', ticket + '\n'))
+      assert.deepEqual(JSON.parse(await cli('whoami')), enrolled)
       await p.getByRole('button', { name: 'Close dialog' }).click()
       assert.equal((await p.request.get(origin + '/openpassword-cli.cjs')).status(), 200)
       const challenge = await pair.json()

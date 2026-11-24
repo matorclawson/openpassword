@@ -71,14 +71,15 @@ export function ConsoleLogin({
                 <details>
                   <summary>Where do I find the setup code?</summary>
                   <p>
-                    Open a terminal on the machine running OpenPassword. For a remote server,
-                    connect through SSH or its cloud console.
+                    On your laptop, run <code>openpassword setup-code --ssh user@host</code>. Use
+                    your deployment’s trusted SSH host or alias. For a user installation, append{' '}
+                    <code>--user</code>.
                   </p>
                   <p>
-                    For a user installation, run <code>cat ~/.openpassword/operator.token</code>.
-                    For the systemd service, run{' '}
-                    <code>sudo cat /var/lib/openpassword/operator.token</code>. A custom
-                    installation prints the exact path at startup.
+                    On the deployment host itself, a user installation can run{' '}
+                    <code>openpassword setup-code</code>. Enter the ten-minute code here. After
+                    sign-in, create a CLI enrollment token under Grants, then paste it into{' '}
+                    <code>openpassword connect</code> on your laptop.
                   </p>
                 </details>
               )}

@@ -2,6 +2,8 @@
 import { OpenPassword, type DeviceTokens } from '@openpassword/client'
 import { mkdirSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
+import { createHash, createHmac, randomBytes } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { Writable } from 'node:stream'
 import { DatabaseSync } from 'node:sqlite'
 import { homedir } from 'node:os'
@@ -74,6 +76,75 @@ async function tokens(revoke = false) {
 async function main() {
   if (cmd === 'version') {
     console.log('OpenPassword CLI 0.2.0 · protocol 1')
+    return
+  }
+  if (cmd === 'setup-code') {
+    if (args[0] === '--ssh' && (args.length === 2 || (args.length === 3 && args[2] === '--user'))) {
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_.@-]*$/.test(args[1]))
+        throw Error('Use an SSH host or SSH config alias.')
+      const remote =
+        args[2] === '--user'
+          ? 'openpassword setup-code'
+          : 'sudo -n cat /var/lib/openpassword/operator.token | /opt/openpassword/current/node/bin/node /opt/openpassword/current/public/openpassword-cli.cjs setup-code --operator-stdin'
+      const ssh = spawnSync(
+        'ssh',
+        [
+          '-o',
+          'ClearAllForwardings=yes',
+          '-o',
+          'ForwardAgent=no',
+          '-o',
+          'StrictHostKeyChecking=yes',
+          '-T',
+          '--',
+          args[1],
+          remote,
+        ],
+        { stdio: 'inherit' },
+      )
+      if (ssh.error || ssh.status !== 0)
+        throw Error(
+          'Remote setup failed. Verify the SSH host key and operator access. For password-based sudo, use an interactive SSH session.',
+        )
+      return
+    }
+    if (
+      args.length &&
+      !(args.length === 1 && args[0] === '--operator-stdin' && !process.stdin.isTTY)
+    )
+      throw Error('Usage: openpassword setup-code [--ssh user@host [--user]]')
+    const token = readFileSync(
+      args.length
+        ? 0
+        : join(process.env.OPENPASSWORD_HOME || join(homedir(), '.openpassword'), 'operator.token'),
+      'utf8',
+    ).trim()
+    if (!token) throw Error('Host authorization unavailable')
+    const port = Number(process.env.OPENPASSWORD_PORT || 4141)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('Invalid broker port')
+    const code = randomBytes(32).toString('base64url')
+    const hash = createHash('sha256').update(code).digest('hex')
+    const issued = Date.now()
+    const hostKey = createHash('sha256').update(token).digest()
+    const proof = createHmac('sha256', hostKey)
+      .update('OpenPassword/setup/v1/' + issued + '/' + hash)
+      .digest('hex')
+    const response = await fetch('http://127.0.0.1:' + port + '/auth/setup-code', {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(5000),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hash, issued, proof }),
+    })
+    if (!response.ok)
+      throw Error(
+        'Broker declined setup. Check the installed version and whether an administrator already exists.',
+      )
+    const result = (await response.json()) as { origin: string }
+    console.error(
+      'Enter this code at ' + new OpenPassword(result.origin).origin + ' within 10 minutes:',
+    )
+    console.log(code)
     return
   }
   const client = new OpenPassword(origin)
@@ -154,7 +225,7 @@ async function main() {
     ].includes(cmd)
   )
     throw Error(
-      'Usage: openpassword connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
+      'Usage: openpassword setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
     )
   if (cmd === 'watch') {
     let cursor: number | undefined = args.length ? Number(args[0]) : undefined

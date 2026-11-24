@@ -17,6 +17,9 @@ node - "$stage" <<'JS'
 const {readFileSync}=require('node:fs'),{createHash}=require('node:crypto');
 const dir=process.argv[2];
 const actual=createHash('sha256').update(readFileSync(dir+'/client.cjs')).digest('hex');
+const pin=process.env.OPENPASSWORD_CLI_SHA256;
+if (pin!==undefined && (!/^[0-9a-f]{64}$/.test(pin) || pin!==actual))
+  throw Error('CLI differs from the independently supplied release digest.');
 if (readFileSync(dir+'/digest','utf8').trim()!==actual) throw Error('CLI checksum mismatch. Retry once the server update finishes.');
 JS
 node "$stage/client.cjs" version >/dev/null

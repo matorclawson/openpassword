@@ -1,17 +1,46 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  openSync,
+  closeSync,
+  constants,
+  fstatSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  fsyncSync,
+} from 'node:fs'
+import { isAbsolute, join, relative, sep } from 'node:path'
 
 export const opaque = () => randomBytes(32).toString('base64url')
 export const digest = (v: string | Uint8Array) => createHash('sha256').update(v).digest('hex')
+function readPrivate(path: string) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    const file = fstatSync(fd)
+    if (
+      !file.isFile() ||
+      file.nlink !== 1 ||
+      (file.mode & 0o077) !== 0 ||
+      (process.getuid && file.uid !== process.getuid())
+    )
+      throw Error('Vault key files must be private regular files owned by the broker')
+    return readFileSync(fd, 'utf8').trim()
+  } finally {
+    closeSync(fd)
+  }
+}
 function persistent(path: string, create: () => string) {
   try {
     writeFileSync(path, create(), { mode: 0o600, flag: 'wx' })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
   }
-  return readFileSync(path, 'utf8').trim()
+  return readPrivate(path)
 }
 function encrypt(key: Buffer, data: Buffer, aad: string) {
   const iv = randomBytes(12),
@@ -26,16 +55,66 @@ function decrypt(key: Buffer, str: string, aad: string) {
   d.setAuthTag(b.subarray(-16))
   return Buffer.concat([d.update(b.subarray(12, -16)), d.final()])
 }
-export function store(dir: string) {
+const wrapPrefix = 'openpassword-wrapped-v1:'
+const wrapContext = 'openpassword/master-key/v1'
+function hexKey(material: string) {
+  if (!/^[0-9a-f]{64}$/i.test(material)) throw Error('Expected a 256-bit hexadecimal key')
+  return Buffer.from(material, 'hex')
+}
+function wrappingKey(dir: string, path: string) {
+  if (!isAbsolute(path)) throw Error('Wrapping key path must be absolute')
+  const location = relative(realpathSync(dir), realpathSync(path))
+  if (!location.startsWith('..' + sep))
+    throw Error('Keep the wrapping key outside the vault directory')
+  return hexKey(readPrivate(path))
+}
+function unlockMaster(material: string, external?: Buffer) {
+  if (material.startsWith(wrapPrefix)) {
+    if (!external) throw Error('Wrapped vault requires OPENPASSWORD_WRAPPING_KEY_FILE')
+    const key = decrypt(external, material.slice(wrapPrefix.length), wrapContext)
+    if (key.length !== 32) throw Error('Invalid wrapped key')
+    return key
+  }
+  if (external) throw Error('Wrap the existing master key before enabling the wrapping key')
+  return hexKey(material)
+}
+// Called offline, under the broker identity. The wrapped key is durable before the rename.
+export function wrapExistingMaster(dir: string, path: string) {
+  const file = join(dir, 'master.key')
+  const external = wrappingKey(dir, path)
+  const material = readPrivate(file)
+  if (material.startsWith(wrapPrefix)) {
+    unlockMaster(material, external)
+    return
+  }
+  const wrapped = wrapPrefix + encrypt(external, hexKey(material), wrapContext)
+  const tmp = file + '.' + opaque()
+  try {
+    writeFileSync(tmp, wrapped, { mode: 0o600, flag: 'wx', flush: true })
+    renameSync(tmp, file)
+    const fd = openSync(dir, constants.O_RDONLY)
+    try {
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  } finally {
+    if (existsSync(tmp)) unlinkSync(tmp)
+  }
+}
+export function store(dir: string, wrappingFile = process.env.OPENPASSWORD_WRAPPING_KEY_FILE) {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   if (existsSync(join(dir, 'vault.sqlite')) && !existsSync(join(dir, 'master.key')))
     throw Error('Restore master.key before opening the vault')
-  const key = Buffer.from(
-    persistent(join(dir, 'master.key'), () => randomBytes(32).toString('hex')),
-    'hex',
-  )
-  if (key.length !== 32) throw Error('Invalid master key')
-  const admin = digest(persistent(join(dir, 'operator.token'), opaque))
+  const external = wrappingFile ? wrappingKey(dir, wrappingFile) : undefined
+  const material = persistent(join(dir, 'master.key'), () => {
+    const fresh = randomBytes(32)
+    return external ? wrapPrefix + encrypt(external, fresh, wrapContext) : fresh.toString('hex')
+  })
+  const key = unlockMaster(material, external)
+  const operatorToken = persistent(join(dir, 'operator.token'), opaque)
+  if (!/^[a-zA-Z0-9_-]{43}$/.test(operatorToken)) throw Error('Invalid operator token')
+  const admin = digest(operatorToken)
   const db = new DatabaseSync(join(dir, 'vault.sqlite'))
   db.exec(`
     PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;

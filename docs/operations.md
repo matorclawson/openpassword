@@ -143,3 +143,29 @@ Open a vault item and choose **Use for a provider connection**, or choose a save
 From the connection, open **Credential and agent access** and choose **Give an agent access**. Select the agent’s operations and duration. Model access also needs a model lease. The grant list shows the stored expiry, allowed operations, connection and credential source. Follow either link to inspect it. Revoking the grant removes that agent’s access. Rotating a connection changes the source used by all its grants. Deleting a referenced item requires replacing its connection sources or revoking those connections first.
 
 Workspace vault items keep their existing human reveal policy. A grant authorizes provider operations through the gateway. It conveys no permission to reveal or copy the underlying vault value. Lists show relationships visible to the signed-in profile.
+
+## Remote operator and CLI enrollment
+
+On a systemd installation, `openpassword setup-code --ssh operator@host` uses the SSH host key already verified by the operator and noninteractive sudo permission to read the service token. An SSH config alias supports custom ports and jump hosts. If sudo needs a password, log in interactively, then run this on the host:
+
+```sh
+sudo cat /var/lib/openpassword/operator.token | /opt/openpassword/current/node/bin/node /opt/openpassword/current/public/openpassword-cli.cjs setup-code --operator-stdin
+```
+
+A user installation can run `openpassword setup-code` as its service owner, with its existing OPENPASSWORD_HOME and OPENPASSWORD_PORT settings. A remote user installation can use `--ssh operator@host --user` when these settings and the executable are available to the noninteractive SSH shell. Enter the code only at your deployment's known console origin. Generating a new code invalidates the previous code. A canceled social enrollment needs a fresh code. Complete account setup, create a provider connection and use Access grants to issue a single-use CLI enrollment token. Set OPENPASSWORD_BROKER on the client and run `openpassword connect`. The grant determines the client's operations and lifetime.
+
+## Vault threat boundary
+
+The broker encrypts each sealed value with a new random 256-bit data key. AES-GCM authenticates the value and its context, and the broker wraps the data key under the installation master key. Item titles, usernames, ownership and audit metadata remain readable in SQLite. A stolen running broker or a copy of both the database and master key can expose stored values. CLI device access and refresh tokens are stored in a per-user SQLite file on the client. Restrict access to that OS account.
+
+This release uses server-side decryption for unattended gateway calls. A phishing-resistant login, a device remembered for a limited time, and a client-held vault decryption key address separate threats. The current release has no independent client-side vault unlock or 30-day trusted-device feature. A future private human vault needs device enrollment, recovery and sharing designed together, with explicit opt-in when a secret is delegated to the broker. The root key files must be regular, single-link files owned by the broker, readable only by that identity. Verify permissions after restoring backups.
+
+### Protect a database backup with a separate wrapping key
+
+Provision a random 32-byte key encoded as 64 hexadecimal characters from your secret manager. Keep a recoverable copy independent of the host and its backup destination. Mount it as a private file owned by the broker, outside OPENPASSWORD_HOME. Set OPENPASSWORD_WRAPPING_KEY_FILE to its absolute path. For systemd, an encrypted service credential can be supplied with LoadCredentialEncrypted and referenced in the environment as `OPENPASSWORD_WRAPPING_KEY_FILE=%d/vault-wrap`. The environment contains only a path. A new vault uses the wrapping key on creation.
+
+For an existing vault, verify a recoverable backup first, then stop the broker. Under its service identity with both variables set, run `node deploy/wrap-master.ts` from the candidate release. With a systemd dynamic user, a one-time ExecStartPre using the bundled Node and absolute script path runs with the correct identity and credential mount on restart. The command replaces master.key atomically, leaves the database unchanged, and verifies an already wrapped file on retry. Installations with external wrapping fail to start if given an unwrapped master key. A wrapped installation requires the correct wrapping key after restart or restore. Older releases cannot open it.
+
+Existing backup and restore scripts carry the opaque master.key file. Future snapshots contain the wrapped master key. Old backups may still contain the original unwrapped key and must retain their independent backup protection. A filesystem snapshot of the entire machine may include both credentials depending on how the external key is provisioned. A running broker still decrypts authorized values. Validate backup recovery with the separately held key before relying on this mode.
+
+For client updates, run the installer from a verified release and set OPENPASSWORD_CLI_SHA256 to the CLI bundle digest from an independently authenticated release manifest. The installer checks this digest before executing the downloaded JavaScript. A checksum downloaded alongside a bundle from the same server only detects mismatched downloads.

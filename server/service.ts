@@ -475,6 +475,7 @@ export function service(
         '/admin/login',
         '/auth/password',
         '/auth/setup',
+        '/auth/setup-code',
         '/auth/apple/start',
         '/auth/github/start',
         '/auth/google/start',
@@ -529,7 +530,7 @@ export function service(
   api.post('/admin/login', async (r, reply) => {
     const { token } = z.object({ token: name }).parse(r.body)
     const member =
-      !consoleOwner() && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
+      !consoleOwner() && !get('SELECT id FROM setup_ticket WHERE id=1') && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
         ? undefined
         : (get('SELECT * FROM members WHERE token=? AND active=1', digest(token)) ??
           fail(401, 'Invalid access token'))

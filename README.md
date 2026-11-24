@@ -23,7 +23,7 @@ make dev
 ```
 
 1. Open **http://localhost:3000**. The first visit shows **Create your administrator account**.
-2. Read the setup code on the computer running OpenPassword. The startup log prints the path. For the default installation, run `cat ~/.openpassword/operator.token` in a second terminal.
+2. Run `node public/openpassword-cli.cjs setup-code` in a second terminal. The ten-minute code is for creating the first administrator.
 3. Enter the code, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
 
 You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Choose either walkthrough below.
@@ -39,10 +39,11 @@ This walkthrough lets a coding agent read your GitHub profile. You need a GitHub
 ```sh
 export OPENPASSWORD_BROKER=https://vault.example.com
 export OPENPASSWORD_AGENT=my-codex
-mkdir -p "$HOME/.local/bin"
-curl -fsS "$OPENPASSWORD_BROKER/openpassword-cli.cjs" -o "$HOME/.local/bin/openpassword.new" &&
-  chmod 755 "$HOME/.local/bin/openpassword.new" &&
-  mv "$HOME/.local/bin/openpassword.new" "$HOME/.local/bin/openpassword"
+# From a verified release checkout, use its trusted installer and manifest.
+# Set OPENPASSWORD_CLI_SHA256 to the public/openpassword-cli.cjs digest from that release.
+: "${OPENPASSWORD_CLI_SHA256:?Set the independently verified release digest}"
+export OPENPASSWORD_CLI_SHA256
+sh deploy/update-client.sh
 export PATH="$HOME/.local/bin:$PATH"
 openpassword connect
 openpassword whoami
@@ -127,7 +128,7 @@ A successful call prints the model’s reply. Open **Consumption** to see the mo
 The web console and broker run on the server. Codex, Claude Code, or your application can run on another machine. One HTTPS domain serves the console, pairing flow, and API.
 
 1. On the server, run `make setup` and `make build`. Set `OPENPASSWORD_WEB_ORIGIN` to your public origin, such as `https://vault.example.com`, and run `make start` with that setting. For persistent Linux services, use the [systemd units](deploy/systemd/).
-2. Point your HTTPS reverse proxy at the web service on port **3000**. It forwards API calls to the broker on loopback port **4141**. Read the initial setup code on the server. With the supplied systemd units, use `sudo cat /var/lib/openpassword/operator.token`.
+2. Point your HTTPS reverse proxy at the web service on port **3000**. It forwards API calls to the broker on loopback port **4141**. From your laptop, run `openpassword setup-code --ssh user@server` using your verified SSH host alias. For a per-user install with the CLI on the remote PATH, append `--user`. Enter the code at the HTTPS address printed by the CLI.
 3. On your laptop, run `make setup` in a local copy of the project to build the agent CLI. Follow [Connect an agent](#connect-an-agent), using `https://vault.example.com` as `OPENPASSWORD_BROKER` for **both pairing and MCP registration**.
 
 For a private trial over SSH, forward the console with `ssh -N -L 3000:127.0.0.1:3000 user@server` and use the local quickstart URLs while the tunnel is open.
