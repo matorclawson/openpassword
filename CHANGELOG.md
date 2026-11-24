@@ -1,10 +1,10 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.4.0 (unreleased)
 
 ### Scope since 0.2.0
 
-The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated into main by `21ffd6f`. It includes the maintainer and council branches in the candidate history. The 0.2.0 baseline already provided account linking, organization and personal credential ownership, independent sharing expiry, consumption recording, and remote CLI/MCP integration for coding agents.
+The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated into main by `21ffd6f`. It includes the maintainer and council branches in the candidate history. Items that already shipped from main in 0.3.0 and 0.3.1 (bundled Node, verified archives, backups, the `openpassword-` header rename, the loopback console bind) are listed under those versions and not repeated here. The 0.2.0 baseline already provided account linking, organization and personal credential ownership, independent sharing expiry, consumption recording, and remote CLI/MCP integration for coding agents.
 
 ### Personal vault, approved hosts and agent grants
 
@@ -23,23 +23,6 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 - Add SSH-backed CLI setup codes for first administration. Codes expire after ten minutes and issuing another supersedes the previous one. The web console can then authorize the agent host. Reject nonprivate or malformed host key files and invalidate pre-setup administrator sessions when the first owner is created.
 
 - Replace the Python updater and production build procedure with verified archive installation. The production host uses a small shell bootstrap, the archive’s own Node v24.19.0 and a TypeScript activation controller. Failed activation restores the old release and its systemd units, including the host-Node to bundled-Node transition. Retain the previous host runtime for rollback.
-
-- The release archive bundles the pinned Node.js v24.19.0 (`node/bin/node`, from the official tarball checked against `scripts/node-pins.txt`); the systemd units run it by absolute path, so a host needs no system Node. `RELEASE.json` records the bundled binary and tarball sha256. The build now needs `xz` and network access to nodejs.org. The root package, lockfile root and MCP server version are 0.3.0; the workspace packages under `packages/` keep their own 0.2.0 versions.
-
-- Adds an encrypted off-host backup and a tested restore (`deploy/backup/`, borg with client-side encryption; daily timer unit). `master.key` and the vault travel together only inside the encrypted archive.
-
-Breaking wire changes. Clients and integrations written against the predecessor service's names must update.
-
-- Protocol, capability and on-behalf-of headers use only the `openpassword-` prefix. The legacy headers are no longer sent or accepted.
-- Relay headers are `openpassword-upload-link`, `openpassword-relay-seal`, `openpassword-connection`, `openpassword-content-type` and `openpassword-content-range`. The earlier relay headers, which used a different prefix, are no longer accepted.
-- Batch manifest and approval-view schema identifiers, and the human-delegation token type, use the `openpassword-` prefix.
-- The delegation key document is served at `/.well-known/openpassword-delegation-keys.json`.
-- Notebook conversion receipts use the schema `openpassword.notebook-semantics.v1`. Nothing reads the earlier identifier, so earlier receipts are not re-verified.
-- Adds `make package COMMIT=<sha>` and `make checksum`. The release is built from that exact commit, requires Node 24.19.0, ships only runtime files and production dependencies, and produces an archive that is reproducible except for the listed per-build secret files (`scripts/per-build-files.txt`), with `RELEASE.json`, a manifest, a completion marker and a `.sha256` sidecar. Build diagnostics are not shipped. The corresponding-source archive now includes the packaging scripts and has normalized metadata.
-- The systemd units run from `/opt/openpassword/current`, a symlink to a versioned release directory.
-- The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
-
-- The release archive is not a public download: it contains Next.js's random per-build preview-mode and server-reference values. It stays in gate custody and installs are made from there. The build runs in a fixed owner-only directory so that two builds of one commit are identical apart from those listed files.
 
 ### Vault interface
 
@@ -66,9 +49,32 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 - A supporting broker drains accepted requests before restart. New requests receive HTTP 503 and a retry hint. Activity watchers reconnect across temporary gateway failures.
 - Added a Mac/Linux CLI updater that supports an independently supplied release digest, checks the downloaded bundle against the broker’s SHA-256, runs an offline startup check and replaces the executable atomically. Existing profiles are reused. Running MCP processes pick up the update on restart.
 
+- The activation controller's readiness probe dials the console at 127.0.0.1, the address its unit binds (0.3.1).
+
 ### Verification tools
 
 - Added enrollment, profile isolation, cursor and drain regressions, a reproducible model-gateway load test, and a two-version upgrade rehearsal. The operations guide covers the benchmark, server activation, client update and rollback.
+
+## 0.3.1 · 2026-11-24
+
+- The console binds 127.0.0.1 explicitly (systemd unit, `npm start`, `npm run dev`). With `-H localhost` Node 24 can listen on `::1` only, so a proxy or probe dialing 127.0.0.1 got connection refused. A test keeps the unit, the console rewrites and the broker on the same address.
+
+## 0.3.0 · 2026-11-24
+
+- The release archive bundles the pinned Node.js v24.19.0 (`node/bin/node`, from the official tarball checked against `scripts/node-pins.txt`); the systemd units run it by absolute path, so a host needs no system Node. `RELEASE.json` records the bundled binary and tarball sha256. The build now needs `xz` and network access to nodejs.org. The root package, lockfile root and MCP server version are 0.3.0; the workspace packages under `packages/` keep their own 0.2.0 versions.
+
+- Adds an encrypted off-host backup and a tested restore (`deploy/backup/`, borg with client-side encryption; daily timer unit). `master.key` and the vault travel together only inside the encrypted archive.
+
+Breaking wire changes. Clients and integrations written against the predecessor service's names must update.
+
+- Protocol, capability and on-behalf-of headers use only the `openpassword-` prefix. The legacy headers are no longer sent or accepted.
+- Relay headers are `openpassword-upload-link`, `openpassword-relay-seal`, `openpassword-connection`, `openpassword-content-type` and `openpassword-content-range`. The earlier relay headers, which used a different prefix, are no longer accepted.
+- Batch manifest and approval-view schema identifiers, and the human-delegation token type, use the `openpassword-` prefix.
+- The delegation key document is served at `/.well-known/openpassword-delegation-keys.json`.
+- Notebook conversion receipts use the schema `openpassword.notebook-semantics.v1`. Nothing reads the earlier identifier, so earlier receipts are not re-verified.
+- Adds `make package COMMIT=<sha>` and `make checksum`. The release is built from that exact commit, requires Node 24.19.0, ships only runtime files and production dependencies, and produces an archive that is reproducible except for the listed per-build secret files (`scripts/per-build-files.txt`), with `RELEASE.json`, a manifest, a completion marker and a `.sha256` sidecar. Build diagnostics are not shipped. The corresponding-source archive now includes the packaging scripts and has normalized metadata.
+- The systemd units run from `/opt/openpassword/current`, a symlink to a versioned release directory.
+- The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
 
 ## 0.2.0 · 2026-11-22
 

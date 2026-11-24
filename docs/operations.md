@@ -6,7 +6,7 @@ Google OAuth uses authorization code, PKCE and a single-use session-bound state.
 
 ## Operations
 
-The broker binds to loopback. Next.js also defaults to localhost. Use a TLS reverse proxy for remote access and publish only the intended surfaces. `OPENPASSWORD_HOME` selects the data directory. `OPENPASSWORD_PORT` changes the broker port and the console rewrite destination. Set it consistently at build and start. `OPENPASSWORD_WEB_ORIGIN` must match the browser origin. Enable the optional YouTube chunk relay with `OPENPASSWORD_YOUTUBE_RELAY=1`. Provider keys are entered via the console, without provider environment variables.
+The broker binds to 127.0.0.1. The console unit binds to 127.0.0.1 explicitly (`next start -H 127.0.0.1 -p 3000`): `localhost` can resolve to `::1` with Node 24, and the proxy, the console rewrites and the installer all dial 127.0.0.1. Use a TLS reverse proxy for remote access and publish only the intended surfaces. `OPENPASSWORD_HOME` selects the data directory. `OPENPASSWORD_PORT` changes the broker port and the console rewrite destination. Set it consistently at build and start. `OPENPASSWORD_WEB_ORIGIN` must match the browser origin. Enable the optional YouTube chunk relay with `OPENPASSWORD_YOUTUBE_RELAY=1`. Provider keys are entered via the console, without provider environment variables.
 
 Keep the SQLite database and master.key together in a protected backup. For an offline backup stop the service, copy the complete data directory including SQLite sidecars, and preserve file permissions. The default deployment uses a local master key and process-level trust. Use a dedicated service user with a private home. Protect the operator token during initial setup. The local launch and storage layout are designed for Linux including ARM64. The service has been tested on Linux x86-64.
 
@@ -130,8 +130,8 @@ The activation lock covers preflight through readiness. A supporting broker gets
 Use the **installed version that contains this updater** as the argument to these maintenance commands, even when the active version is older:
 
 ```sh
-sudo sh deploy/upgrade.sh --rollback 0.3.0
-sudo sh deploy/upgrade.sh --recover 0.3.0
+sudo sh deploy/upgrade.sh --rollback 0.4.0
+sudo sh deploy/upgrade.sh --recover 0.4.0
 ```
 
 Failed activation restores the previous symlink and exact base unit contents. An interrupted transaction is recovered before another switch. Rolling back to 0.2.0 requires the original host Node v24.19.0 on the service PATH. Keep that runtime through the rollback window. Code rollback assumes a backward-compatible database. Keep a protected vault backup for a migration that changes that assumption. Updating the workstation CLI remains a separate `sh deploy/update-client.sh` operation.
