@@ -101,7 +101,7 @@ Deploy the private gate artifact using the archive updater below.
 
 ## CLI enrollment and live activity
 
-The installation setup code is read on the server and entered in the browser. Once signed in, create a grant in the target workspace and choose **One-time CLI enrollment token**. The server stores a digest of this ticket. Redeeming it consumes the ticket and issues the device credentials in one SQLite transaction. Existing paired devices can continue to refresh their credentials. If the client loses the response during enrollment, revoke that grant and issue a new ticket.
+The installation setup code is read on the server and entered in the browser. For a pre-existing standalone workspace, create a grant in the target workspace and choose **One-time CLI enrollment token**. The server stores a digest of this ticket. Redeeming it consumes the ticket and issues the device credentials in one SQLite transaction. Existing paired devices can continue to refresh their credentials. If the client loses the response during enrollment, revoke that grant and issue a new ticket.
 
 Use the CLI download served by the installation. Set `OPENPASSWORD_BROKER` and `OPENPASSWORD_AGENT` in the environment of both the CLI and its MCP process. Compare `openpassword whoami` with the ID under **Access grants**. The **CLI connected** timestamp records redemption. An MCP `whoami` call verifies which grant the running harness is using.
 
@@ -152,7 +152,7 @@ On a systemd installation, `openpassword setup-code --ssh operator@host` uses th
 sudo cat /var/lib/openpassword/operator.token | /opt/openpassword/current/node/bin/node /opt/openpassword/current/public/openpassword-cli.cjs setup-code --operator-stdin
 ```
 
-A user installation can run `openpassword setup-code` as its service owner, with its existing OPENPASSWORD_HOME and OPENPASSWORD_PORT settings. A remote user installation can use `--ssh operator@host --user` when these settings and the executable are available to the noninteractive SSH shell. Enter the code only at your deployment's known console origin. Generating a new code invalidates the previous code. A canceled social enrollment needs a fresh code. Complete account setup, create a provider connection and use Access grants to issue a single-use CLI enrollment token. Set OPENPASSWORD_BROKER on the client and run `openpassword connect`. The grant determines the client's operations and lifetime.
+A user installation can run `openpassword setup-code` as its service owner, with its existing OPENPASSWORD_HOME and OPENPASSWORD_PORT settings. A remote user installation can use `--ssh operator@host --user` when these settings and the executable are available to the noninteractive SSH shell. Enter the code only at your deployment's known console origin. Generating a new code invalidates the previous code. A canceled social enrollment needs a fresh code. Complete account setup, enroll the host under Workspace → CLI hosts, then approve each agent request under Access grants.
 
 ## Vault threat boundary
 
@@ -169,3 +169,42 @@ For an existing vault, verify a recoverable backup first, then stop the broker. 
 Existing backup and restore scripts carry the opaque master.key file. Future snapshots contain the wrapped master key. Old backups may still contain the original unwrapped key and must retain their independent backup protection. A filesystem snapshot of the entire machine may include both credentials depending on how the external key is provisioned. A running broker still decrypts authorized values. Validate backup recovery with the separately held key before relying on this mode.
 
 For client updates, run the installer from a verified release and set OPENPASSWORD_CLI_SHA256 to the CLI bundle digest from an independently authenticated release manifest. The installer checks this digest before executing the downloaded JavaScript. A checksum downloaded alongside a bundle from the same server only detects mismatched downloads.
+
+## Enroll an agent host and approve its agents
+
+Workspace → CLI hosts issues a ten-minute, single-use enrollment ticket for a named machine. Enrollment registers a fresh Ed25519 public key. It authorizes the host to request grants. It grants no provider operations. New workspaces in the deployed service require host-bound grants from the outset. On upgrade, workspaces with existing grant history transition on first successful host enrollment. These rules include token refresh. Existing standalone clients must re-pair. Other workspaces retain their existing policy. Revoking the final host keeps this policy enabled.
+
+Install the verified CLI and Node 24 on the agent host. Run the bridge as a dedicated service identity. The sample Linux unit in deploy/host uses a user named openpassword-host and a group named openpassword-agents. Give agent OS accounts membership in that group. Keep the identity directory owned by the service user with mode 0700. Place the verified executable at /usr/local/bin/openpassword. Put OPENPASSWORD_BROKER=https://your-console.example in /etc/openpassword/host.env. As the host administrator:
+
+```sh
+sudo install -d -m 0700 -o openpassword-host -g openpassword-agents /var/lib/openpassword-host
+sudo -u openpassword-host env OPENPASSWORD_BROKER=https://your-console.example OPENPASSWORD_HOST_HOME=/var/lib/openpassword-host /usr/local/bin/openpassword host connect
+sudo install -m 0644 deploy/host/openpassword-host.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now openpassword-host
+```
+
+Paste the web ticket at the hidden CLI prompt. The service only exposes a Unix signing socket. Its private key stays in the host service account. In each agent's own OS account:
+
+```sh
+export OPENPASSWORD_BROKER=https://your-console.example
+export OPENPASSWORD_HOST_SOCKET=/run/openpassword-host/bridge.sock
+export OPENPASSWORD_AGENT=codex-project-a
+openpassword host status
+openpassword pair
+openpassword whoami
+```
+
+While pair waits, a human opens Access grants, chooses Issue grant, matches the displayed request ID, agent and host, then selects the connection, operations and expiry. Refresh the page for new requests. Repeat for each agent. Pass the same three environment settings to the CLI's MCP process. Use separate OS accounts for mutually untrusted agents. Profile names select token records within one account. Another process running under the same UID can read them. Use openpassword forget to clear an obsolete local profile and use the web console to revoke its grant. Revoke an enrolled host before replacing a lost key or re-enrolling that machine. Host credentials identify a service installation; a copied private key can impersonate it. Hardware-backed attestation is outside this implementation.
+
+Host proofs bind the broker origin, verb, path and query, authorization header and body digest to an Ed25519 signature with a timestamp and single-use nonce. The broker checks the agent grant and current host status on authorized calls. Keep clocks synchronized. Previously accepted provider calls can finish after revocation. The CLI and its MCP server produce these proofs. Raw bearer-only model clients cannot call a host-required workspace directly.
+
+## Personal private vault
+
+Open Private vault, generate a private vault key and confirm the saved copy. This recovery key is independent of social or password sign-in. Each human profile has a separately scoped encrypted directory in each workspace. Item names and values are encrypted in the browser using Web Crypto AES-GCM with independent random 96-bit IVs, and workspace, human profile, field and item identifiers as authenticated context. The service stores ciphertext, opaque IDs, revisions and delegation relationships. The browser unlocks directory entries and decrypts secret fields for reveal, edit or confirmed delegation. The private vault locks on page hide, navigation and after five minutes without keyboard or pointer interaction. There is no persistent device unlock or server recovery for a lost key.
+
+Authorize gateway copy explicitly creates a personal provider connection. The browser decrypts only that item and seals its value to the broker's intake key. A human must separately authorize each agent. Editing the private item does not rotate an existing gateway copy. Revoke the connection in Connections before deleting the private source. Other workspace members, including its administrator, cannot list the private profile's items through the API. Existing shared vault items retain their previous server-side encryption and sharing. A malicious browser extension, modified JavaScript from the web server, or a compromised unlocked endpoint can still capture private data. No production security audit is implied.
+
+The CLI saves its full host identity before exchanging the ticket. If a successful enrollment loses its response, start the bridge and run `openpassword host status` to confirm the registered ID. For a rejected or expired ticket, revoke the unused host entry and remove its identity file under OPENPASSWORD_HOST_HOME before enrolling the replacement. Keep that directory private.
+
+Before rolling back to a broker that predates host checks, revoke every host-bound grant on the current release. An older binary cannot enforce the host signature requirement on tokens it recognizes. Private encrypted items require a compatible client to open.

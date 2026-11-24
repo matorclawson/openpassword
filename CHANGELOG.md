@@ -2,6 +2,8 @@
 
 ## 0.3.0 (unreleased)
 
+- Separate host enrollment from each agent grant. An approved host bridge signs CLI and MCP requests. Add a personal client-encrypted vault with explicit gateway delegation and independent lock and recovery.
+
 - Support an independently provisioned wrapping key for new or existing vaults. Wrapped snapshots require the separate credential to decrypt item values.
 
 - Add SSH-backed CLI setup codes for first administration. Codes expire after ten minutes and issuing another supersedes the previous one. The browser then issues an independent scoped agent enrollment token. Reject nonprivate or malformed host key files and invalidate pre-setup administrator sessions when the first owner is created.

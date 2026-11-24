@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { enroll, serveHost, proof } from './host.js'
 import { OpenPassword, type DeviceTokens } from '@openpassword/client'
 import { mkdirSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
@@ -14,6 +15,7 @@ const origin = process.env.OPENPASSWORD_BROKER || 'http://127.0.0.1:4141'
 const dir = join(homedir(), '.config/openpassword'),
   file = join(dir, Buffer.from(new URL(origin).origin).toString('base64url') + '.json')
 process.umask(0o077)
+const agentClient = (token?: string) => new OpenPassword(origin, token, proof)
 async function identity<T>(
   fn: (
     previous: DeviceTokens | undefined,
@@ -63,11 +65,11 @@ async function tokens(revoke = false) {
     if (!previous) throw Error('Pair this device first')
     let current = previous
     if (Date.parse(current.access_expires_at) <= Date.now() + 30000) {
-      current = await new OpenPassword(origin).refresh(current.refresh_token)
+      current = await agentClient().refresh(current.refresh_token)
       save(current)
     }
     if (revoke) {
-      await new OpenPassword(origin, current.access_token).request('/v1/device/revoke', {})
+      await agentClient(current.access_token).request('/v1/device/revoke', {})
       save(null)
     }
     return current
@@ -147,7 +149,17 @@ async function main() {
     console.log(code)
     return
   }
-  const client = new OpenPassword(origin)
+  const client = agentClient()
+  if (cmd === 'host' && args.length === 1 && args[0] === 'status') {
+    console.log(JSON.stringify(await client.request('/v1/hosts/self')))
+    return
+  }
+  if (cmd === 'host' && args[0] === 'serve' && args.length === 1) {
+    if (!process.env.OPENPASSWORD_HOST_SOCKET)
+      throw Error('Set OPENPASSWORD_HOST_SOCKET to a Unix socket in a service-owned directory')
+    serveHost(client.origin, process.env.OPENPASSWORD_HOST_SOCKET)
+    return
+  }
   if (cmd === 'mcp') {
     const { serve } = await import('./mcp.js')
     // Serialize refreshes in this process before acquiring the cross-process SQLite lock.
@@ -156,13 +168,17 @@ async function main() {
       pending ??= tokens().finally(() => {
         pending = undefined
       })
-      return new OpenPassword(origin, (await pending).access_token)
+      return agentClient((await pending).access_token)
     })
     return
   }
-  if (cmd === 'connect') {
-    if (args.length) throw Error('Paste the enrollment token at the prompt or provide it on stdin.')
-    if (process.stdin.isTTY) process.stderr.write('CLI enrollment token (hidden): ')
+  if (cmd === 'connect' || (cmd === 'host' && args.length === 1 && args[0] === 'connect')) {
+    if (cmd === 'connect' && args.length)
+      throw Error('Paste the enrollment token at the prompt or provide it on stdin.')
+    if (process.stdin.isTTY)
+      process.stderr.write(
+        cmd === 'host' ? 'Host enrollment token (hidden): ' : 'Agent enrollment token (hidden): ',
+      )
     const input = createInterface({
       input: process.stdin,
       terminal: !!process.stdin.isTTY,
@@ -181,6 +197,10 @@ async function main() {
       if (process.stdin.isTTY) process.stderr.write('\n')
     }
     if (!ticket) throw Error('An enrollment token is required.')
+    if (cmd === 'host') {
+      await enroll(client.origin, ticket)
+      return
+    }
     await identity(async (previous, save) => {
       if (previous)
         throw Error(
@@ -189,24 +209,39 @@ async function main() {
       save(await client.redeem(ticket))
     })
     console.log(
-      JSON.stringify(
-        await new OpenPassword(origin, (await tokens()).access_token).request('/v1/whoami'),
-      ),
+      JSON.stringify(await agentClient((await tokens()).access_token).request('/v1/whoami')),
     )
     return
   }
+  if (cmd === 'forget') {
+    await identity(async (_previous, save) => save(null))
+    console.log('Local agent profile removed. Revoke any live grant in the web console.')
+    return
+  }
   if (cmd === 'pair') {
+    if (await identity(async (existing) => !!existing, true))
+      throw Error(
+        'Agent profile already paired. Choose a different OPENPASSWORD_AGENT or revoke the existing grant first.',
+      )
     const p = await client.pair(args[0] || process.env.OPENPASSWORD_AGENT || 'CLI')
-    console.log('Open', p.verification_url, 'and approve code', p.user_code)
+    if (process.env.OPENPASSWORD_HOST_SOCKET)
+      console.log('Approve request', p.pairing_id, 'under Access grants at', client.origin)
+    else console.log('Open', p.verification_url, 'and approve code', p.user_code)
     while (Date.now() < Date.parse(p.expires_at)) {
       await new Promise((r) => setTimeout(r, p.interval_seconds * 1000))
       try {
         const pair = await client.redeem(p.device_code)
-        await identity(async (_previous, save) => save(pair))
+        await identity(async (previous, save) => {
+          if (previous) throw Error('Profile already paired; choose a dedicated OPENPASSWORD_AGENT')
+          save(pair)
+        })
         console.log('Device paired')
         return
       } catch (e) {
-        if ((e as { status?: number }).status !== 428) throw e
+        const status = (e as { status?: number }).status
+        if (status === 429)
+          await new Promise((done) => setTimeout(done, 10000 + Math.random() * 3000))
+        else if (status !== 428) throw e
       }
     }
     throw Error('Pairing expired')
@@ -225,7 +260,7 @@ async function main() {
     ].includes(cmd)
   )
     throw Error(
-      'Usage: openpassword setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
+      'Usage: openpassword host connect | host serve | host status | setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
     )
   if (cmd === 'watch') {
     let cursor: number | undefined = args.length ? Number(args[0]) : undefined
@@ -238,7 +273,7 @@ async function main() {
     let delay = 500
     while (true) {
       try {
-        const live = new OpenPassword(origin, (await tokens()).access_token)
+        const live = agentClient((await tokens()).access_token)
         const page: { events: unknown[]; cursor: number } = await live.request(
           '/v1/activity' + (cursor === undefined ? '' : '?after=' + cursor),
         )
@@ -256,7 +291,7 @@ async function main() {
   }
   const t = await tokens(cmd === 'revoke')
   if (cmd === 'revoke') return
-  const bound = new OpenPassword(origin, t.access_token)
+  const bound = agentClient(t.access_token)
   if (cmd === 'chat') {
     if (args.length !== 3 || process.stdin.isTTY)
       throw Error('Usage: openpassword chat MODEL MAX_TOKENS KEY < prompt.txt')

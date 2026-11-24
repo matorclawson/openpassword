@@ -55,7 +55,7 @@ try {
         new Promise<string>((resolve, reject) => {
           const child = execFile(
             process.execPath,
-            ['public/openpassword-cli.cjs', command],
+            ['public/openpassword-cli.cjs', ...command.split(' ')],
             {
               env: {
                 ...process.env,
@@ -156,8 +156,51 @@ try {
       await p.getByLabel('Password', { exact: true }).fill('browser-only-fixture')
       await p.getByRole('button', { name: 'Sign in', exact: true }).click()
       await p.getByRole('button', { name: 'Menu', exact: true }).waitFor()
+      await p.setViewportSize({ width: 1280, height: 900 })
+      await p.goto(origin + '/private-vault')
+      await p.getByRole('button', { name: 'Create my private vault' }).click()
+      const recovery = await p
+        .locator('label')
+        .filter({ hasText: 'Save this private vault key' })
+        .locator('code')
+        .innerText()
+      await p.getByLabel('Confirm your saved key').fill(recovery)
+      await p.getByRole('button', { name: 'Unlock private vault' }).click()
+      await p.getByRole('button', { name: 'Add private item' }).click()
+      await p.getByLabel('Item name', { exact: true }).fill('Private synthetic credential')
+      await p.getByLabel('Secret', { exact: true }).fill('synthetic-private-value')
+      await p.getByRole('button', { name: 'Save private item' }).click()
+      await p.getByRole('button', { name: 'Private synthetic credential' }).click()
+      await p.getByRole('button', { name: 'Reveal secret' }).click()
+      await p.getByText('synthetic-private-value', { exact: true }).waitFor()
+      await p.getByRole('button', { name: 'Hide secret' }).click()
+      await p.getByRole('button', { name: 'Delegate to gateway' }).click()
+      await p.getByLabel('Provider', { exact: true }).selectOption('github_read')
+      await p.getByLabel('Gateway connection name').fill('Delegated fixture')
+      await p.getByLabel('Provider account identity').fill('synthetic-account')
+      await p.getByRole('button', { name: 'Authorize gateway copy' }).click()
+      await p.getByText(/Gateway copy created/).waitFor()
+      await p.getByRole('button', { name: 'Lock private vault' }).click()
+      await p.getByLabel('Private vault key', { exact: true }).fill(recovery)
+      await p.getByRole('button', { name: 'Unlock private vault' }).click()
+      await p.getByRole('button', { name: 'Private synthetic credential' }).click()
+      await p.getByRole('link', { name: 'Delegated fixture' }).waitFor()
+      await p.goto(origin + '/workspace')
+      await p.getByLabel('Host name').fill('Synthetic build host')
+      await p.getByRole('button', { name: 'Issue host enrollment token' }).click()
+      const ticketArea = p
+        .locator('section')
+        .filter({ has: p.getByRole('button', { name: 'Hide token' }) })
+      const hostTicket = await ticketArea.locator('code').last().innerText()
+      assert.match(await cli('host connect', hostTicket + '\n'), /Host enrolled/)
+      await p.reload()
+      await p
+        .locator('article')
+        .filter({ hasText: 'Synthetic build host' })
+        .getByText('Connected', { exact: true })
+        .waitFor()
       console.log(
-        'Desktop login, sealed credential enrollment, scope selection, grant issuance, mobile search and details, source download and logout passed.',
+        'Desktop login, sealed credential enrollment, scope selection, grant issuance, mobile search and details, source download, logout, private vault recovery and delegation, and host enrollment passed.',
       )
     } finally {
       await browser.close()

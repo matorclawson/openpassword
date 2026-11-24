@@ -6,6 +6,7 @@ export type DeviceTokens = {
   refresh_expires_at: string
 }
 export type DevicePair = {
+  pairing_id: string
   device_code: string
   user_code: string
   verification_url: string
@@ -17,6 +18,13 @@ export class OpenPassword {
   constructor(
     origin: string,
     private token?: string,
+    private hostProof?: (
+      origin: string,
+      method: string,
+      path: string,
+      authorization: string,
+      body: string | Uint8Array,
+    ) => Promise<Record<string, string>>,
   ) {
     const u = new URL(origin)
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)
@@ -39,6 +47,13 @@ export class OpenPassword {
       redirect: 'error',
       signal: AbortSignal.timeout(90000),
       headers: {
+        ...(await this.hostProof?.(
+          this.origin,
+          body ? 'POST' : 'GET',
+          path,
+          this.token ? 'Bearer ' + this.token : '',
+          body ? JSON.stringify(body) : '',
+        )),
         ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
         'Content-Type': 'application/json',
         'OpenPassword-Protocol-Version': '1',
@@ -47,9 +62,7 @@ export class OpenPassword {
       },
       body: body ? JSON.stringify(body) : undefined,
     })
-    if (
-      r.headers.get('openpassword-protocol-version') !== '1'
-    )
+    if (r.headers.get('openpassword-protocol-version') !== '1')
       throw Object.assign(Error('Broker protocol unavailable'), { status: r.status })
     if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
     return r.status === 204 ? (undefined as T) : ((await r.json()) as T)
@@ -128,6 +141,13 @@ export class OpenPassword {
         redirect: 'error',
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         headers: {
+          ...(await this.hostProof?.(
+            this.origin,
+            'PUT',
+            '/v1/youtube/uploads:relay',
+            'Bearer ' + this.token,
+            chunk ? new Uint8Array(await chunk.arrayBuffer()) : '',
+          )),
           'Content-Type': 'application/octet-stream',
           'OpenPassword-Protocol-Version': '1',
           Authorization: 'Bearer ' + this.token,
@@ -139,10 +159,7 @@ export class OpenPassword {
         },
         body: chunk,
       })
-      if (
-        !r.ok ||
-        r.headers.get('openpassword-protocol-version') !== '1'
-      )
+      if (!r.ok || r.headers.get('openpassword-protocol-version') !== '1')
         throw Error('Broker relay refused transfer (' + r.status + ')')
       return (await r.json()) as {
         status: number

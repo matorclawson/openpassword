@@ -1,4 +1,6 @@
 'use client'
+import { PrivateVault } from './private-vault'
+import { HostDirectory } from './host-directory'
 import { Authentication, ConsoleLogin, Profile } from './authentication'
 import { WorkspaceSwitcher } from './workspace-switcher'
 import { ProviderDirectory } from './provider-directory'
@@ -35,6 +37,7 @@ import {
 } from 'lucide-react'
 import type { Provider } from '../packages/connectors'
 type Connection = {
+  private_source: boolean
   vault_item: { id: string; title: string } | null
   expires_at: number | null
   access_expires_at: number | null
@@ -52,6 +55,8 @@ type Connection = {
   revision: number
 }
 type Grant = {
+  host_revoked?: number
+  host?: string
   model: string | null
   id: string
   label: string
@@ -63,6 +68,9 @@ type Grant = {
 }
 type Approval = { id: string; actor: string; conn: string; op: string; preview: unknown }
 type Workspace = {
+  managed_hosts: boolean
+  hosts: { id: string; label: string; expires: number; revoked: number; enrolled: number }[]
+  requests: { id: string; label: string; host: string }[]
   version: string
   directory: { id: string; label: string }[]
   operation_stops: string[]
@@ -83,6 +91,7 @@ type Workspace = {
 }
 const tabs = [
   ['Vault items', LockKeyhole],
+  ['Private vault', LockKeyhole],
   ['Connections', Vault],
   ['Integrations', Blocks],
   ['Access grants', KeyRound],
@@ -100,6 +109,7 @@ const paths: Record<Tab, string> = {
   Consumption: '/consumption',
   Activity: '/activity',
   'Vault items': '/vault',
+  'Private vault': '/private-vault',
   Workspace: '/workspace',
 }
 const stamp = (n: number) => new Date(n).toLocaleString()
@@ -380,6 +390,7 @@ export default function Page() {
             'Enter the model, both rates, pricing date and pricing source for this budget.',
           )
         const a = await request('admin/grants', {
+          host_request: f.host_request || undefined,
           connection_id: grantId,
           operations: checked,
           label: f.label,
@@ -466,7 +477,15 @@ export default function Page() {
     </button>
   )
   const grantState = (g: Grant) =>
-    !g.active ? 'Revoked' : g.expires <= Date.now() ? 'Expired' : 'Active'
+    !g.active
+      ? 'Revoked'
+      : g.expires <= Date.now()
+        ? 'Expired'
+        : g.host_revoked
+          ? 'Host revoked'
+          : w.managed_hosts && !g.host
+            ? 'Host enrollment required'
+            : 'Active'
   const agentLinks = (c: Connection) => {
     const grants = w.grants.filter((g) => g.connection_id === c.id)
     return (
@@ -580,7 +599,9 @@ export default function Page() {
           </div>
         </header>
         <div className="canvas">
-          {tab === 'Vault items' ? (
+          {tab === 'Private vault' ? (
+            <PrivateVault key={w.tenant} providers={w.providers} request={request} />
+          ) : tab === 'Vault items' ? (
             <>
               {error && !modal && error}
               <VaultReader
@@ -663,7 +684,7 @@ export default function Page() {
                     [
                       KeyRound,
                       'Active grants',
-                      w.grants.filter((x) => x.active && x.expires > Date.now()).length,
+                      w.grants.filter((x) => grantState(x) === 'Active').length,
                     ],
                     [ShieldCheck, 'Awaiting approval', w.approvals.length],
                   ].map(([I, label, n]) => {
@@ -742,6 +763,8 @@ export default function Page() {
                             <small>Credential source</small>
                             {c.vault_item ? (
                               <a href={'/vault/' + c.vault_item.id}>{c.vault_item.title}</a>
+                            ) : c.private_source ? (
+                              <a href="/private-vault">Copy delegated from your private vault</a>
                             ) : (
                               <span>Stored on this provider connection</span>
                             )}
@@ -809,7 +832,8 @@ export default function Page() {
                           <div className="grow">
                             <strong>{g.label}</strong>
                             <small>
-                              {grantState(g)} · Expires {stamp(g.expires)}
+                              {g.host || 'Standalone grant'} · {grantState(g)} · Expires{' '}
+                              {stamp(g.expires)}
                             </small>
                             {(() => {
                               const c = w.connections.find((c) => c.id === g.connection_id)
@@ -823,6 +847,10 @@ export default function Page() {
                                     Credential source{' '}
                                     {c.vault_item ? (
                                       <a href={'/vault/' + c.vault_item.id}>{c.vault_item.title}</a>
+                                    ) : c.private_source ? (
+                                      <a href="/private-vault">
+                                        Copy delegated from your private vault
+                                      </a>
                                     ) : (
                                       'Stored on connection'
                                     )}
@@ -908,6 +936,14 @@ export default function Page() {
                 {tab === 'Workspace' && (
                   <>
                     <Profile request={request} />
+                    {w.role === 'owner' && (
+                      <HostDirectory
+                        key={w.tenant}
+                        hosts={w.hosts}
+                        request={request}
+                        reload={load}
+                      />
+                    )}
                     {w.role === 'owner' && <Authentication request={request} />}
                     {w.billing.map((b, i) => (
                       <article key={i}>
@@ -1345,6 +1381,10 @@ export default function Page() {
             {modal === 'deleteItem' && <p>Delete this vault item from the workspace?</p>}
             {modal === 'item' && (
               <>
+                <p>
+                  This item is stored in the shared workspace vault. For a credential only you can
+                  unlock, use <a href="/private-vault">your private vault</a>.
+                </p>
                 <label>
                   Item title
                   <input name="title" required />
@@ -1541,17 +1581,35 @@ export default function Page() {
                       </details>
                     </fieldset>
                   )}
-                <label>
-                  Credential delivery
-                  <select name="delivery">
-                    <option value="enroll">One-time CLI enrollment token</option>
-                    <option value="api">API access and refresh tokens</option>
-                  </select>
-                </label>
-                <label>
-                  Existing CLI pairing code (optional)
-                  <input name="user_code" />
-                </label>
+                {w.managed_hosts ? (
+                  <label>
+                    Requesting agent and approved host
+                    <select name="host_request" required defaultValue="">
+                      <option value="">Choose a pending request</option>
+                      {w.requests.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.label} on {r.host} · {r.id}
+                        </option>
+                      ))}
+                    </select>
+                    <small>Run openpassword pair on the agent, then refresh this page.</small>
+                  </label>
+                ) : (
+                  <>
+                    {' '}
+                    <label>
+                      Credential delivery
+                      <select name="delivery">
+                        <option value="enroll">One-time CLI enrollment token</option>
+                        <option value="api">API access and refresh tokens</option>
+                      </select>
+                    </label>
+                    <label>
+                      Existing CLI pairing code (optional)
+                      <input name="user_code" />
+                    </label>
+                  </>
+                )}
               </>
             )}
             {error}

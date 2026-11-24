@@ -1,3 +1,5 @@
+import { personalVault } from './personal-vault.ts'
+import { hosts } from './hosts.ts'
 import releasePackage from '../package.json' with { type: 'json' }
 import { activity } from './activity.ts'
 import { consoleAuth } from './console-auth.ts'
@@ -67,6 +69,7 @@ export function service(
   origin = 'http://localhost:3000',
   transport: typeof fetch = fetch,
   relay = process.env.OPENPASSWORD_YOUTUBE_RELAY === '1',
+  initializeHostPolicy = false,
 ) {
   const web = new URL(origin)
   if (
@@ -368,6 +371,8 @@ export function service(
     )
       fail(401, 'Device access revoked')
   }
+  personalVault(api, db, session, event)
+  const hostAccess = hosts(api, db, origin, session, event, initializeHostPolicy)
   function grant(r: FastifyRequest) {
     if (!/^Bearer [A-Za-z0-9_-]+$/.test(r.headers.authorization || ''))
       fail(401, 'Device bearer required')
@@ -378,6 +383,7 @@ export function service(
         now(),
         now(),
       ) ?? fail(401, 'Device access expired')
+    hostAccess.bound(r, g.id, g.tenant)
     checkIssuer(g)
     actor(g.id)
     return g
@@ -412,6 +418,7 @@ export function service(
     const g = grant(r)
     return {
       device_id: g.id,
+      host_id: get('SELECT host FROM host_grants WHERE grant_id=?', g.id)?.host ?? null,
       label: g.label,
       workspace: g.tenant,
       connection_id: g.connection_id,
@@ -470,6 +477,8 @@ export function service(
       !r.headers['content-type'].startsWith('application/json')
     )
       fail(415, 'Use JSON')
+  })
+  api.addHook('preHandler', async (r) => {
     if (
       [
         '/admin/login',
@@ -479,15 +488,20 @@ export function service(
         '/auth/apple/start',
         '/auth/github/start',
         '/auth/google/start',
+        '/v1/hosts/enroll',
         '/v1/device/authorizations',
         '/v1/device/token',
         '/v1/delegation/check',
       ].includes(r.url.split('?')[0])
     ) {
-      const k = r.ip + r.url.split('?')[0],
+      const trusted =
+        r.url.startsWith('/v1/device/') && r.headers['openpassword-host']
+          ? hostAccess.identity(r)
+          : null
+      const k = (trusted ? 'host/' + trusted.id : r.ip) + r.url.split('?')[0],
         row = attempts.get(k)
       if (!row || row.until <= now()) attempts.set(k, { count: 1, until: now() + 60000 })
-      else if (++row.count > 60) fail(429, 'Try again in one minute')
+      else if (++row.count > (trusted ? 2400 : 60)) fail(429, 'Try again in one minute')
     }
   })
   api.setErrorHandler((err: Error & { statusCode?: number }, _r, reply) => {
@@ -530,7 +544,9 @@ export function service(
   api.post('/admin/login', async (r, reply) => {
     const { token } = z.object({ token: name }).parse(r.body)
     const member =
-      !consoleOwner() && !get('SELECT id FROM setup_ticket WHERE id=1') && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
+      !consoleOwner() &&
+      !get('SELECT id FROM setup_ticket WHERE id=1') &&
+      timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
         ? undefined
         : (get('SELECT * FROM members WHERE token=? AND active=1', digest(token)) ??
           fail(401, 'Invalid access token'))
@@ -664,6 +680,16 @@ export function service(
     return {
       tenant: t,
       role: s.role,
+      managed_hosts: hostAccess.managed(t),
+      hosts: all(
+        'SELECT id,label,revoked,expires,pub IS NOT NULL AS enrolled FROM cli_hosts WHERE tenant=? ORDER BY rowid DESC',
+        t,
+      ),
+      requests: all(
+        'SELECT p.id,p.label,h.label AS host FROM pairs p JOIN host_pairs hp ON hp.pair=p.id JOIN cli_hosts h ON h.id=hp.host WHERE h.tenant=? AND h.revoked=0 AND p.expires>? AND p.grant_id IS NULL ORDER BY p.rowid DESC LIMIT 100',
+        t,
+        now(),
+      ),
       version: releasePackage.version,
       operation_stops: all('SELECT op FROM operation_stops WHERE tenant=? ORDER BY op', t).map(
         (x) => x.op,
@@ -709,6 +735,14 @@ export function service(
             manage = manages(s, c.id)
           return {
             ...c,
+            private_source:
+              manage &&
+              !!get(
+                'SELECT d.item FROM personal_delegations d JOIN personal_items i ON i.id=d.item WHERE d.conn=? AND i.profile=? AND i.tenant=?',
+                c.id,
+                profileId(s),
+                t,
+              ),
             vault_item:
               get(
                 'SELECT i.id,i.title FROM connection_items l JOIN items i ON i.id=l.item AND i.tenant=? WHERE l.conn=?',
@@ -749,6 +783,8 @@ export function service(
         }),
       grants: all(
         `SELECT g.id,g.label,g.connection_id,g.ops,g.expires,g.active,
+          (SELECT h.label FROM host_grants hg JOIN cli_hosts h ON h.id=hg.host WHERE hg.grant_id=g.id) AS host,
+          (SELECT h.revoked FROM host_grants hg JOIN cli_hosts h ON h.id=hg.host WHERE hg.grant_id=g.id) AS host_revoked,
           (SELECT model FROM model_leases WHERE grant_id=g.id) AS model,
           (SELECT MAX(at) FROM events WHERE tenant=g.tenant AND subject=g.id AND action='CLI connected') AS connected_at
          FROM grants g WHERE tenant=? ORDER BY g.rowid DESC`,
@@ -1250,6 +1286,23 @@ export function service(
     const principal = session(r),
       t = principal.tenant
     const input = intakeBody(r, 'secret')
+    const privateSource = input.private_source
+    if (privateSource !== undefined) {
+      z.string().uuid().parse(privateSource)
+      if (
+        input.ownership !== 'personal' ||
+        !('sealed' in (r.body as Record<string, unknown>)) ||
+        'vault_item_id' in input ||
+        !get(
+          'SELECT id FROM personal_items WHERE id=? AND tenant=? AND profile=?',
+          String(privateSource),
+          t,
+          profileId(principal),
+        )
+      )
+        fail(403, 'Private item owner required')
+      delete input.private_source
+    }
     const linked = 'vault_item_id' in input
     const b = linked
       ? connectionInput.omit({ secret: true }).extend({ vault_item_id: name }).parse(input)
@@ -1269,7 +1322,9 @@ export function service(
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
       recordOwner(session(r), c, b.ownership, b.expires_at)
-      event(t, 'Connection added', c)
+      if (privateSource)
+        run('INSERT INTO personal_delegations VALUES(?,?)', c, String(privateSource))
+      event(t, privateSource ? 'Private credential delegated' : 'Connection added', c)
     })
     return { connection_id: c }
   })
@@ -1287,6 +1342,7 @@ export function service(
       ])
       .parse(input)
     tx(() => {
+      run('DELETE FROM personal_delegations WHERE conn=?', c.id)
       if ('vault_item_id' in source) linkItem(principal, c.id, source.vault_item_id)
       else run('DELETE FROM connection_items WHERE conn=?', c.id)
       run(
@@ -1336,7 +1392,12 @@ export function service(
       u = randomBytes(5).toString('hex').toUpperCase(),
       p = randomUUID(),
       exp = now() + 600000
-    run('INSERT INTO pairs VALUES(?,?,?,?,?,NULL)', p, digest(code), digest(u), label, exp)
+    const host = hostAccess.identity(r)
+    tx(() => {
+      run('DELETE FROM pairs WHERE expires<=?', now())
+      run('INSERT INTO pairs VALUES(?,?,?,?,?,NULL)', p, digest(code), digest(u), label, exp)
+      if (host) run('INSERT INTO host_pairs VALUES(?,?)', p, String(host.id))
+    })
     return {
       pairing_id: p,
       device_code: code,
@@ -1362,6 +1423,7 @@ export function service(
           hours: z.number().int().min(1).max(720),
           user_code: name.optional(),
           enrollment: z.boolean().optional(),
+          host_request: z.string().uuid().optional(),
           model_lease: modelLease.optional(),
           draft_limit: z.number().int().min(1).max(100).optional(),
         })
@@ -1415,6 +1477,19 @@ export function service(
           b.model_lease.calls,
         )
       }
+      if (b.host_request || hostAccess.managed(t)) {
+        const pair =
+          get(
+            'SELECT p.id,p.label,h.id AS host FROM pairs p JOIN host_pairs hp ON hp.pair=p.id JOIN cli_hosts h ON h.id=hp.host WHERE p.id=? AND h.tenant=? AND h.revoked=0 AND p.grant_id IS NULL AND p.expires>?',
+            b.host_request || '',
+            t,
+            now(),
+          ) ?? fail(403, 'Choose a pending request from an approved host')
+        run('UPDATE pairs SET grant_id=? WHERE id=?', g, pair.id)
+        run('INSERT INTO host_grants VALUES(?,?)', g, pair.host)
+        event(t, 'Access granted', g)
+        return { device_id: g }
+      }
       event(t, 'Access granted', g)
       if (b.enrollment && !b.user_code) {
         const ticket = opaque()
@@ -1434,7 +1509,7 @@ export function service(
       if (b.user_code) {
         if (
           !run(
-            'UPDATE pairs SET grant_id=? WHERE user_code=? AND expires>? AND grant_id IS NULL',
+            'UPDATE pairs SET grant_id=? WHERE user_code=? AND expires>? AND grant_id IS NULL AND id NOT IN (SELECT pair FROM host_pairs)',
             g,
             digest(b.user_code.toUpperCase()),
             now(),
@@ -1452,6 +1527,9 @@ export function service(
       const p =
         get('SELECT * FROM pairs WHERE code=? AND expires>?', digest(code), now()) ??
         fail(400, 'Expired pairing')
+      const hostPair = get('SELECT host FROM host_pairs WHERE pair=?', p.id)
+      if (hostPair && hostAccess.identity(r)?.id !== hostPair.host)
+        fail(403, 'Requesting host required')
       if (!p.grant_id) {
         reply.code(428)
         return { code: 'authorization_pending' }
@@ -1459,6 +1537,7 @@ export function service(
       const g =
         get('SELECT * FROM grants WHERE id=? AND active=1 AND expires>?', p.grant_id, now()) ??
         fail(403, 'Grant unavailable')
+      hostAccess.bound(r, g.id, g.tenant)
       checkIssuer(g)
       run('DELETE FROM pairs WHERE id=?', p.id)
       actor(g.id)
@@ -1468,15 +1547,17 @@ export function service(
   })
   api.post('/v1/device/token/refresh', async (r) => {
     const b = z.object({ refresh_token: name }).parse(r.body)
-    return tx(() =>
-      issue(
+    return tx(() => {
+      const g =
         get(
           'SELECT * FROM grants WHERE refresh=? AND active=1 AND expires>?',
           digest(b.refresh_token),
           now(),
-        ) ?? fail(401, 'Refresh expired'),
-      ),
-    )
+        ) ?? fail(401, 'Refresh expired')
+      hostAccess.bound(r, g.id, g.tenant)
+      checkIssuer(g)
+      return issue(g)
+    })
   })
   api.post('/v1/device/revoke', async (r, reply) => {
     const g = grant(r)

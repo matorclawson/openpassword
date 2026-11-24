@@ -78,8 +78,9 @@ export function ConsoleLogin({
                   <p>
                     On the deployment host itself, a user installation can run{' '}
                     <code>openpassword setup-code</code>. Enter the ten-minute code here. After
-                    sign-in, create a CLI enrollment token under Grants, then paste it into{' '}
-                    <code>openpassword connect</code> on your laptop.
+                    sign-in, open Workspace → CLI hosts and issue a host enrollment token. Paste it
+                    into <code>openpassword host connect</code> on the agent machine. Each agent
+                    then requests its own grant.
                   </p>
                 </details>
               )}
