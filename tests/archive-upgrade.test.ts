@@ -4,12 +4,12 @@ import * as fs from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { activate, recoverPending, snapshotStore, restoreStore, refuseHostProofDowngrade, enforcesHostProof } from '../deploy/upgrade.ts'
+import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, refuseHostProofDowngrade, enforcesHostProof } from '../deploy/upgrade.ts'
 
 type Snap = { version: string | null; units: (string | null)[] }
 const old: Snap = { version: '0.3.1', units: ['old-broker', 'old-web'] }
 const next: Snap = { version: '0.4.0', units: ['new-broker', 'new-web'] }
-type Rec = Snap & { store?: string | null; phase?: 'forward'; target?: Snap }
+type Rec = Snap & { store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
 
 // A model of the host: the journal, the vault copy, the store schema and what is running. Every operation can
 // be interrupted before it runs (`crashAt`), and the candidate can fail at any of its boundaries.
@@ -24,12 +24,13 @@ function newHost() {
     release: old.version as string | null,
     running: 'old' as 'old' | 'private' | 'public' | 'none',
     oldServing: false, // the old release is up and may have acknowledged writes
+    previous: null as string | null | undefined, // what previous.json names; undefined until written
     calls: 0,
     log: [] as string[],
   }
 }
 function host(
-  opts: { crashAt?: number; candidate?: 'ok' | 'fail-after-migration' | 'fail-public'; backup?: 'ok' | 'fail' },
+  opts: { crashAt?: number; candidate?: 'ok' | 'fail-after-migration' | 'fail-public' | 'grant-slips-in'; backup?: 'ok' | 'fail' },
   shared?: Host,
 ) {
   const h = shared ?? newHost()
@@ -40,7 +41,10 @@ function host(
   const ops = {
     save: (s: Rec) => {
       tick('save')
-      if (s.store) assert.ok(h.snapshots.has(s.store), 'the journal must never name a missing vault copy')
+      if (s.store) {
+        assert.ok(h.snapshots.has(s.store), 'the journal must never name a missing vault copy')
+        assert.equal(s.data, '/state/openpassword', 'the journal records the state directory path with the copy')
+      }
       h.pending = JSON.parse(JSON.stringify(s))
     },
     drain: async () => tick('drain'),
@@ -48,12 +52,17 @@ function host(
       tick('stop')
       h.running = 'none'
     },
+    fence: () => {
+      tick('fence')
+      assert.equal(h.running, 'none', 'the decisive check runs with the writer stopped')
+      if (opts.candidate === 'grant-slips-in') throw Error('host-bound grant appeared during the drain')
+    },
     backup: () => {
       tick('backup')
       if (opts.backup === 'fail') throw Error('state directory missing')
       h.snapshots.add('snap')
       h.snapshotSchema.set('snap', h.schema)
-      return 'snap'
+      return { store: 'snap', data: '/state/openpassword' }
     },
     prove: async (t: Snap) => {
       tick('prove')
@@ -77,8 +86,10 @@ function host(
         h.running = 'public'
       }
     },
-    restore: (store: string) => {
+    restore: (loc: { store: string; data: string }) => {
+      const store = loc.store
       tick('restore')
+      assert.equal(loc.data, '/state/openpassword', 'the restore uses the path from the journal')
       assert.equal(h.running, 'none', 'restore only with the services stopped')
       assert.ok(!h.oldServing, 'a restore must never follow the old release accepting writes')
       assert.ok(h.snapshots.has(store), 'the vault copy must exist when it is restored')
@@ -89,7 +100,10 @@ function host(
       assert.ok(h.pending === null || h.pending.store !== store, 'the copy is deleted only after the journal stops naming it')
       h.snapshots.delete(store)
     },
-    finish: () => tick('finish'),
+    finish: (_s: Snap, store: string | null) => {
+      tick('finish')
+      h.previous = store
+    },
     clear: () => {
       tick('clear')
       h.pending = null
@@ -104,6 +118,7 @@ function consistent(h: Host) {
   assert.ok(oldSide || newSide, 'release ' + h.release + ' with schema ' + h.schema + ' after ' + h.log.join(','))
   assert.equal(h.pending, null, 'the journal is cleared')
   assert.equal(h.running, 'public')
+  if (h.release === next.version) assert.equal(h.previous, 'snap', 'previous.json exists and names the copy')
 }
 
 for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
@@ -131,6 +146,16 @@ for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
     }
   })
 
+test('a grant created during the drain refuses the move with the old release kept', async () => {
+  const { h, ops } = host({ candidate: 'grant-slips-in' })
+  await assert.rejects(activate(old, next, ops), /host-bound grant appeared/)
+  assert.ok(!h.log.includes('backup') && !h.log.includes('prove'), 'neither the copy nor the candidate ran')
+  assert.equal(h.release, old.version)
+  assert.equal(h.running, 'public')
+  assert.equal(h.schema, 1)
+  assert.equal(h.pending, null)
+})
+
 test('a vault copy that cannot be taken aborts before the candidate runs', async () => {
   const { h, ops } = host({ backup: 'fail' })
   await assert.rejects(activate(old, next, ops), /state directory missing/)
@@ -140,7 +165,7 @@ test('a vault copy that cannot be taken aborts before the candidate runs', async
 })
 
 // Interrupt the run before every operation, for each candidate outcome, then recover from the journal alone.
-for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
+for (const candidate of ['ok', 'fail-after-migration', 'fail-public', 'grant-slips-in'] as const)
   test('interruption at every boundary recovers consistently: ' + candidate, async () => {
     let interrupted = 0
     for (let crashAt = 1; crashAt <= 40; crashAt++) {
@@ -150,7 +175,7 @@ for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
         await activate(old, next, ops)
       } catch (e) {
         if (e instanceof Crash) crashed = true
-        else if (!/candidate not ready|public start failed/.test(String(e))) throw e
+        else if (!/candidate not ready|public start failed|host-bound grant appeared/.test(String(e))) throw e
       }
       if (!crashed) continue
       interrupted++
@@ -169,6 +194,7 @@ for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
         assert.equal(how, 'forward')
         assert.equal(h.release, next.version, 'a committed activation finishes forward')
         assert.ok(!h.log.slice(seen).includes('restore'), 'no restore after the point of no return')
+        assert.equal(h.previous, 'snap', 'forward recovery rewrites previous.json')
       }
     }
     assert.ok(interrupted >= 8, 'the run has many boundaries')
@@ -182,7 +208,7 @@ test('interrupting the recovery itself never replays a restore over writes the o
     h.snapshotSchema.set('snap', 1)
     h.schema = 2
     h.running = 'none'
-    h.pending = { ...old, store: 'snap' }
+    h.pending = { ...old, store: 'snap', data: '/state/openpassword' }
     let n = 0
     const crashy = Object.fromEntries(
       Object.entries(ops).map(([k, f]) => [
@@ -394,5 +420,40 @@ test('a vault from before host binding has nothing to fence', () => {
     refuseHostProofDowngrade(mk('0.4.0', true), mk('0.3.1', false), data)
   } finally {
     cleanup(dir)
+  }
+})
+
+test('the state directory resolves from the link even while the live directory is absent', () => {
+  const dir = fs.mkdtempSync(join(tmpdir(), 'op-link-'))
+  try {
+    fs.mkdirSync(join(dir, 'private', 'openpassword'), { recursive: true })
+    fs.symlinkSync('private/openpassword', join(dir, 'openpassword'))
+    const live = join(dir, 'private', 'openpassword')
+    assert.equal(resolveDataDir(join(dir, 'openpassword')), live)
+    fs.renameSync(live, live + '.replaced') // an interruption between the two renames
+    assert.equal(resolveDataDir(join(dir, 'openpassword')), live, 'the path still resolves')
+    assert.equal(resolveDataDir(join(dir, 'missing')), null)
+    fs.mkdirSync(join(dir, 'plain'))
+    assert.equal(resolveDataDir(join(dir, 'plain')), join(dir, 'plain'))
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test('recovery restores through the resolved path after an interruption between the two renames', () => {
+  const f = fixture()
+  try {
+    const link = join(f.dir, 'state-link')
+    fs.symlinkSync('data', link)
+    snapshotStore(f.data, f.snap)
+    migrate(f.data)
+    fs.renameSync(f.data, f.data + '.replaced') // live path now absent; staged copy not yet in place
+    const resolved = resolveDataDir(link)
+    assert.ok(resolved)
+    restoreStore(resolved, f.snap) // what the controller's restore does with the journaled path
+    assert.equal(schema(join(f.data, 'vault.sqlite')).version, 1)
+    assert.ok(!fs.existsSync(f.data + '.replaced'))
+  } finally {
+    cleanup(f.dir)
   }
 })

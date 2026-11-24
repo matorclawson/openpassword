@@ -1,6 +1,6 @@
 // Invoked by upgrade.sh under its exclusive flock, after verification of the staged archive.
 import * as fs from 'node:fs'
-import { join, dirname, basename } from 'node:path'
+import { join, dirname, basename, resolve } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
@@ -17,7 +17,8 @@ const dataLink = '/var/lib/openpassword'
 const semver = /^\d+\.\d+\.\d+$/
 type Snapshot = { version: string | null; units: (string | null)[] }
 // Pending record: the old configuration plus the vault copy taken before the candidate first started.
-type Pending = Snapshot & { store?: string | null; phase?: 'forward'; target?: Snapshot }
+type Pending = Snapshot & { store?: string | null; data?: string; phase?: 'forward'; target?: Snapshot }
+type Loc = { store: string; data: string }
 function ensure(ok: unknown, message: string): asserts ok {
   if (!ok) throw Error(message)
 }
@@ -169,9 +170,14 @@ export function restoreStore(dataDir: string, snap: string) {
   syncDir(dirname(dataDir))
   fs.rmSync(replaced, { recursive: true, force: true })
 }
-function dataDir() {
-  return fs.existsSync(dataLink) ? fs.realpathSync(dataLink) : null
+// The state directory path, resolved without requiring the directory to exist: a restore interrupted between its two
+// renames leaves the live path absent. DynamicUser keeps /var/lib/<name> as a link to /var/lib/private/<name>.
+export function resolveDataDir(link = dataLink) {
+  const st = fs.lstatSync(link, { throwIfNoEntry: false })
+  if (!st) return null
+  return st.isSymbolicLink() ? resolve(dirname(link), fs.readlinkSync(link)) : link
 }
+const dataDir = () => resolveDataDir()
 // A release enforces host proof when it ships server/hosts.ts. Moving to one that does not turns every host-bound
 // grant (and every unredeemed host-bound enrollment token) into a plain bearer credential: an authorization downgrade.
 export const enforcesHostProof = (releaseDir: string) => fs.existsSync(join(releaseDir, 'server/hosts.ts'))
@@ -430,55 +436,62 @@ type Ops = {
   save: (s: Pending) => void
   drain: () => Promise<void>
   stop: () => void
-  backup: () => string
+  fence: () => void
+  backup: () => Loc
   prove: (s: Snapshot) => Promise<void>
   publish: (s: Snapshot) => Promise<void>
-  restore: (store: string) => void
+  restore: (loc: Loc) => void
   discard: (store: string) => void
   finish: (s: Snapshot, store: string | null) => void
   clear: () => void
 }
+const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units })
 // Put the old release back. Order matters across a crash: the journal says "restored" before the old service can
 // accept a write, and the vault copy is deleted only after the journal no longer names it.
-export async function restoreOld(old: Snapshot, store: string | null | undefined, ops: Ops) {
+export async function restoreOld(old: Snapshot, loc: Loc | null, ops: Ops) {
   ops.stop()
-  if (store) {
-    ops.restore(store)
-    ops.save({ ...old, store: null })
+  if (loc) {
+    ops.restore(loc)
+    ops.save({ ...plain(old), store: null })
   }
-  await ops.publish(old)
+  await ops.publish(plain(old))
   ops.clear()
-  if (store) ops.discard(store)
+  if (loc) ops.discard(loc.store)
 }
-// The journal after an interruption. A committed activation is finished forward; anything else is rolled back.
+// The journal after an interruption. A committed activation is finished forward (and its metadata rewritten, which
+// is idempotent); anything else is rolled back, to the state directory path the journal recorded.
 export async function recoverPending(p: Pending, ops: Ops) {
   if (p.phase === 'forward' && p.target) {
+    ops.finish(plain(p), p.store ?? null)
     await ops.publish(p.target)
     ops.clear()
     return 'forward'
   }
-  await restoreOld(p, p.store, ops)
+  ensure(!p.store || p.data, 'The journal names a vault copy without its state directory')
+  await restoreOld(p, p.store ? { store: p.store, data: p.data! } : null, ops)
   return 'rollback'
 }
 export async function activate(old: Snapshot, target: Snapshot, ops: Ops) {
   ops.save(old)
-  let store: string | null = null
+  let loc: Loc | null = null
   try {
     if (old.version) await ops.drain()
     ops.stop()
+    ops.fence() // the decisive downgrade check, with the writer stopped
     if (old.version) {
-      store = ops.backup()
-      ops.save({ ...old, store })
+      loc = ops.backup()
+      ops.save({ ...old, store: loc.store, data: loc.data })
     }
     await ops.prove(target)
   } catch (error) {
-    await restoreOld(old, store, ops)
+    await restoreOld(old, loc, ops)
     throw error
   }
-  // Proven against the real store on a private port. Rollback is disarmed before any public traffic:
-  // from here a failure is fixed forward, and the journal says so.
-  ops.save({ ...old, store: null, phase: 'forward', target })
-  ops.finish(old, store)
+  // Proven against the real store on a private port. Rollback is disarmed before any public traffic: from here a
+  // failure is fixed forward. The record keeps the old configuration and the copy so that recovery can rewrite
+  // previous.json; it is never restored from in this phase.
+  ops.save({ ...old, store: loc?.store ?? null, data: loc?.data, phase: 'forward', target })
+  ops.finish(old, loc?.store ?? null)
   await ops.publish(target)
   ops.clear()
 }
@@ -487,6 +500,7 @@ async function main() {
   const pending = join(state, 'pending.json'),
     previous = join(state, 'previous.json')
   const [action, tree, digest, version, commit, arch] = process.argv.slice(2)
+  let decisive = () => {}
   const ops: Ops = {
     save: (s) => atomic(pending, JSON.stringify(s)),
     drain: async () => {
@@ -498,18 +512,16 @@ async function main() {
       }
     },
     stop,
+    fence: () => decisive(),
     backup: () => {
+      const data = dataDir()
       const made = join(state, 'store-' + randomUUID())
-      snapshotStore(dataDir(), made)
-      return made
+      snapshotStore(data, made)
+      return { store: made, data: data! }
     },
     prove,
     publish,
-    restore: (store) => {
-      const dir = dataDir()
-      ensure(dir, 'State directory missing for the vault restore')
-      restoreStore(dir, store)
-    },
+    restore: (loc) => restoreStore(loc.data, loc.store),
     discard: (store) => fs.rmSync(store, { recursive: true, force: true }),
     // previous.json names the vault copy for the operator. --rollback never restores it: the newer release has written since.
     finish: (s, store) => atomic(previous, JSON.stringify({ ...s, store })),
@@ -552,11 +564,14 @@ async function main() {
     console.log('Already active: ' + old.version)
     return
   }
-  refuseHostProofDowngrade(
-    old.version && releasePath(old.version),
-    target.version && releasePath(target.version),
-    dataDir(),
-  )
+  const fenceNow = () =>
+    refuseHostProofDowngrade(
+      old.version && releasePath(old.version),
+      target.version && releasePath(target.version),
+      dataDir(),
+    )
+  decisive = fenceNow
+  fenceNow() // early refusal for the operator; the decisive check repeats with the services stopped
   preflight(target.version!)
   let keep: string | null = null
   if (fs.existsSync(previous)) keep = (JSON.parse(fs.readFileSync(previous, 'utf8')) as Pending).store ?? null
