@@ -2,11 +2,25 @@
 
 ## 0.3.0 (unreleased)
 
-- Separate host enrollment from each agent grant. An approved host bridge signs CLI and MCP requests. Add a personal client-encrypted vault with explicit gateway delegation and independent lock and recovery.
+### Scope since 0.2.0
+
+The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated into main by `21ffd6f`. It includes the maintainer and council branches in the candidate history. The 0.2.0 baseline already provided account linking, organization and personal credential ownership, independent sharing expiry, consumption recording, and remote CLI/MCP integration for coding agents.
+
+### Personal vault, approved hosts and agent grants
+
+- Personal vault items have browser-encrypted names and secret values. Each profile unlocks its own vault with a separately saved recovery key. Hiding the page, navigating away or five minutes of inactivity locks it. Explicit delegation creates a personal provider connection with a gateway-readable copy. Editing the private item leaves copy rotation to its owner.
+- First administration, host enrollment and agent approval are separate. A CLI host registers an Ed25519 public key using a one-use web ticket. Its Unix socket service signs CLI and MCP requests. A human approves each agent request for a specific connection, operations and expiry. A different host cannot use the agent's token. Revoking a host blocks subsequent calls from its agents.
+- New workspaces on the deployed service require host-bound grants. Workspaces with existing grant history switch on first host enrollment. Re-pair agents at cutover and verify raw bearer-only clients have a signing integration first. Revoke host-bound grants before downgrading to a broker that predates signature enforcement.
+
+### Model and voice policy
+
+- Added standalone model and voice policy evaluation, descriptor validation, family and alias resolution, wildcard limits, and explicit voice endpoint classification. The vendor registry contains 12 candidate descriptors. The live broker's scoped model discovery and metered chat remain distinct from this policy engine. The candidate descriptors have not been qualified for live routing.
+
+### Deployment and key custody
 
 - Support an independently provisioned wrapping key for new or existing vaults. Wrapped snapshots require the separate credential to decrypt item values.
 
-- Add SSH-backed CLI setup codes for first administration. Codes expire after ten minutes and issuing another supersedes the previous one. The browser then issues an independent scoped agent enrollment token. Reject nonprivate or malformed host key files and invalidate pre-setup administrator sessions when the first owner is created.
+- Add SSH-backed CLI setup codes for first administration. Codes expire after ten minutes and issuing another supersedes the previous one. The web console can then authorize the agent host. Reject nonprivate or malformed host key files and invalidate pre-setup administrator sessions when the first owner is created.
 
 - Replace the Python updater and production build procedure with verified archive installation. The production host uses a small shell bootstrap, the archive’s own Node v24.19.0 and a TypeScript activation controller. Failed activation restores the old release and its systemd units, including the host-Node to bundled-Node transition. Retain the previous host runtime for rollback.
 
@@ -25,9 +39,11 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 - The systemd units run from `/opt/openpassword/current`, a symlink to a versioned release directory.
 - The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
 
-### Vault interface
-- Link provider connections to saved vault items and trace agent grants in both directions. Grant views show operations, model, expiry and revocation. Direct and OAuth credentials retain their existing custody.
+- The release archive is not a public download: it contains Next.js's random per-build preview-mode and server-reference values. It stays in gate custody and installs are made from there. The build runs in a fixed owner-only directory so that two builds of one commit are identical apart from those listed files.
 
+### Vault interface
+
+- Link provider connections to saved vault items and trace agent grants in both directions. Grant views show operations, model, expiry and revocation. Direct and OAuth credentials retain their existing custody.
 
 - Add matching record marks to vault rows and readers, a workspace-specific engraved directory cover, a clear-search control, and a separate access and activity section alongside desktop credential fields. Group integrations by capability and show operation counts beside each provider.
 - Rebuild the vault directory, masked item reader and first-run account screen with the shared family tokens and local fonts. Add persistent System, Light and Dark appearance, bounded server-side item search, stable item and activity URLs, and role-aware copy and reveal controls.
@@ -35,8 +51,8 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 
 ### Enrollment and agent access
 
-- The first administrator enters the installation setup code in the console. The setup screen now explains how to issue a separate enrollment token for a client after adding a provider connection.
-- Access grants can issue a single-use CLI enrollment token valid for up to ten minutes. The broker stores its digest and exchanges it for scoped device credentials in one SQLite transaction. The console displays the grant ID and CLI connection time. Existing pairing codes, API tokens and device profiles remain supported.
+- The first administrator enters the installation setup code in the console. The setup screen directs them to Workspace → CLI hosts to enroll an agent machine.
+- Access grants can issue a single-use CLI enrollment token valid for up to ten minutes. The broker stores its digest and exchanges it for scoped device credentials in one SQLite transaction. The console displays the grant ID and CLI connection time. This standalone flow remains available to upgraded standalone workspaces until they switch to host-required access.
 - Download the standalone Node.js 24+ CLI from the installation. Use `connect` to enroll with hidden input and `whoami` to verify the active grant. The CLI and MCP expose capabilities, connection and model discovery, metered chat, and scoped activity. Chat accepts an idempotency key. Normal CLI token reads use a read transaction, with serialized writes for refresh.
 
 ### Navigation and activity
@@ -48,7 +64,7 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 
 - Added staged activation and explicit rollback for the supplied Linux systemd services. The updater preflights the candidate against a disposable vault, serializes switches, records interrupted activation and restores the previous application on failed live readiness.
 - A supporting broker drains accepted requests before restart. New requests receive HTTP 503 and a retry hint. Activity watchers reconnect across temporary gateway failures.
-- Added a Mac/Linux CLI updater that checks the downloaded bundle against the broker’s SHA-256, runs an offline startup check and replaces the executable atomically. Existing profiles are reused. Running MCP processes pick up the update on restart.
+- Added a Mac/Linux CLI updater that supports an independently supplied release digest, checks the downloaded bundle against the broker’s SHA-256, runs an offline startup check and replaces the executable atomically. Existing profiles are reused. Running MCP processes pick up the update on restart.
 
 ### Verification tools
 
@@ -58,7 +74,6 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 
 Adds scoped action delegation and refresh-family revocation, retired-key status checks, monetary model leases, tool-call chat, GitHub admission, per-provider dispatch stops, Loops pacing and batch approval views, digest-verified YouTube relay transfer, Notion OAuth, Google batch builders, newsletter and template approval previews, and guarded HubSpot template publication. Adds encrypted Loops and Twilio webhook inboxes, Revolut projections, signed-off publishing journals, TikTok operations, X thread planning and notebook semantic receipts. Adds separate Linux web and broker service identities and a differential fixture runner. Adds scoped operation pauses, legacy Bluesky and Threads publishing, HubSpot issue-bundle uploads, Loops message and audience updates, upload lifecycle and scoped Supabase row mutations. See PARITY.md for remaining replacement gaps.
 
-- The release archive is not a public download: it contains Next.js's random per-build preview-mode and server-reference values. It stays in gate custody and installs are made from there. The build runs in a fixed owner-only directory so that two builds of one commit are identical apart from those listed files.
 
 ## 0.1.0 · 2026-11-22
 
