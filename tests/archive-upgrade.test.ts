@@ -4,56 +4,218 @@ import * as fs from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { activate, snapshotStore, restoreStore } from '../deploy/upgrade.ts'
-const old = { version: '0.2.0', units: ['host-node-broker', 'host-node-web'] }
-const next = { version: '0.4.0', units: ['bundled-node-broker', 'bundled-node-web'] }
-type Rec = typeof old & { store?: string | null }
-for (const failure of ['none', 'drain', 'readiness', 'restore'])
-  test('archive activation: ' + failure, async () => {
-    let current = old,
-      pending: Rec | null = null,
-      previous: typeof old | null = null
-    const result = activate(old, next, {
-      save: (s) => {
-        pending = s as Rec
-      },
-      drain: async () => {
-        if (failure === 'drain') throw Error('drain')
-      },
-      stop: () => {},
-      backup: () => null,
-      switchTo: async (s) => {
-        assert.deepEqual(pending, old)
-        current = s as typeof old
-        if (s === next && ['readiness', 'restore'].includes(failure)) throw Error('bad candidate')
-        if (s === old && failure === 'restore') throw Error('failed restore')
-      },
-      finish: (s) => {
-        previous = s as typeof old
-      },
-      clear: () => {
-        pending = null
-      },
-      discard: () => {},
-    })
-    if (failure === 'none') {
-      await result
-      assert.deepEqual(current, next)
-      assert.deepEqual(previous, old)
+import { activate, recoverPending, snapshotStore, restoreStore } from '../deploy/upgrade.ts'
+
+const old = { version: '0.3.1', units: ['old-broker', 'old-web'] }
+const next = { version: '0.4.0', units: ['new-broker', 'new-web'] }
+type Rec = typeof old & { store?: string | null; phase?: 'forward'; target?: typeof old }
+
+// A model of the host: the journal, the vault copy, the store schema and what is running. Every operation can
+// be interrupted before it runs (`crashAt`), and the candidate can fail at any of its boundaries.
+class Crash extends Error {}
+type Host = ReturnType<typeof newHost>
+function newHost() {
+  return {
+    pending: null as Rec | null,
+    snapshots: new Set<string>(),
+    snapshotSchema: new Map<string, number>(),
+    schema: 1,
+    release: old.version as string,
+    running: 'old' as 'old' | 'private' | 'public' | 'none',
+    oldServing: false, // the old release is up and may have acknowledged writes
+    calls: 0,
+    log: [] as string[],
+  }
+}
+function host(
+  opts: { crashAt?: number; candidate?: 'ok' | 'fail-after-migration' | 'fail-public'; backup?: 'ok' | 'fail' },
+  shared?: Host,
+) {
+  const h = shared ?? newHost()
+  const tick = (name: string) => {
+    h.log.push(name)
+    if (++h.calls === opts.crashAt) throw new Crash(name)
+  }
+  const ops = {
+    save: (s: Rec) => {
+      tick('save')
+      if (s.store) assert.ok(h.snapshots.has(s.store), 'the journal must never name a missing vault copy')
+      h.pending = JSON.parse(JSON.stringify(s))
+    },
+    drain: async () => tick('drain'),
+    stop: () => {
+      tick('stop')
+      h.running = 'none'
+    },
+    backup: () => {
+      tick('backup')
+      if (opts.backup === 'fail') throw Error('state directory missing')
+      h.snapshots.add('snap')
+      h.snapshotSchema.set('snap', h.schema)
+      return 'snap'
+    },
+    prove: async (t: typeof old) => {
+      tick('prove')
+      assert.equal(h.running, 'none')
+      h.release = t.version
+      h.running = 'private'
+      h.schema = 2 // the candidate migrates the real store
+      tick('prove-after-migration')
+      if (opts.candidate === 'fail-after-migration') throw Error('candidate not ready')
+      h.running = 'none'
+    },
+    publish: async (t: typeof old) => {
+      tick('publish ' + t.version)
+      assert.equal(h.running === 'private' ? 'x' : 'ok', 'ok', 'publish stops the private candidate first')
+      h.release = t.version
+      if (t.version === old.version) {
+        h.running = 'public'
+        h.oldServing = true
+      } else {
+        if (opts.candidate === 'fail-public') throw Error('public start failed')
+        h.running = 'public'
+      }
+    },
+    restore: (store: string) => {
+      tick('restore')
+      assert.equal(h.running, 'none', 'restore only with the services stopped')
+      assert.ok(!h.oldServing, 'a restore must never follow the old release accepting writes')
+      assert.ok(h.snapshots.has(store), 'the vault copy must exist when it is restored')
+      h.schema = h.snapshotSchema.get(store)!
+    },
+    discard: (store: string) => {
+      tick('discard')
+      assert.ok(h.pending === null || h.pending.store !== store, 'the copy is deleted only after the journal stops naming it')
+      h.snapshots.delete(store)
+    },
+    finish: () => tick('finish'),
+    clear: () => {
+      tick('clear')
+      h.pending = null
+    },
+  }
+  return { h, ops }
+}
+// The state the host must be in once any run, interrupted or not, has been recovered.
+function consistent(h: Host) {
+  const oldSide = h.release === old.version && h.schema === 1
+  const newSide = h.release === next.version && h.schema === 2
+  assert.ok(oldSide || newSide, 'release ' + h.release + ' with schema ' + h.schema + ' after ' + h.log.join(','))
+  assert.equal(h.pending, null, 'the journal is cleared')
+  assert.equal(h.running, 'public')
+}
+
+for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
+  test('activation without interruption: ' + candidate, async () => {
+    const { h, ops } = host({ candidate })
+    const r = activate(old, next, ops)
+    if (candidate === 'ok') {
+      await r
+      consistent(h)
+      assert.equal(h.release, next.version)
+      assert.ok(h.snapshots.has('snap'), 'the copy stays for the operator')
+    } else if (candidate === 'fail-after-migration') {
+      await assert.rejects(r, /candidate not ready/)
+      consistent(h)
+      assert.equal(h.release, old.version)
+      assert.equal(h.schema, 1, 'the old release gets the old schema back')
+      assert.ok(!h.snapshots.has('snap'))
     } else {
-      await assert.rejects(result)
-      assert.deepEqual(current, old)
+      // The candidate was proven privately, so rollback was disarmed before public traffic: fix forward only.
+      await assert.rejects(r, /public start failed/)
+      assert.equal(h.pending?.phase, 'forward')
+      assert.equal(h.release, next.version)
+      assert.equal(h.schema, 2, 'no restore after the point of no return')
+      assert.ok(!h.log.includes('restore'))
     }
-    assert.deepEqual(pending, failure === 'restore' ? old : null)
   })
 
-// A fake state directory: the "old" schema, a master key, and a WAL sidecar-free stopped database.
+test('a vault copy that cannot be taken aborts before the candidate runs', async () => {
+  const { h, ops } = host({ backup: 'fail' })
+  await assert.rejects(activate(old, next, ops), /state directory missing/)
+  assert.ok(!h.log.includes('prove'), 'the candidate never started')
+  assert.equal(h.schema, 1)
+  assert.equal(h.release, old.version)
+})
+
+// Interrupt the run before every operation, for each candidate outcome, then recover from the journal alone.
+for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
+  test('interruption at every boundary recovers consistently: ' + candidate, async () => {
+    let interrupted = 0
+    for (let crashAt = 1; crashAt <= 40; crashAt++) {
+      const { h, ops } = host({ crashAt, candidate })
+      let crashed = false
+      try {
+        await activate(old, next, ops)
+      } catch (e) {
+        if (e instanceof Crash) crashed = true
+        else if (!/candidate not ready|public start failed/.test(String(e))) throw e
+      }
+      if (!crashed) continue
+      interrupted++
+      // Power returns: nothing is running; the journal and the vault copy remain. Recovery runs without faults.
+      h.running = 'none'
+      const journal = h.pending
+      if (!journal) {
+        assert.equal(h.schema, 1, 'interrupted before the first journal write: nothing was touched')
+        continue
+      }
+      const seen = h.log.length
+      const rec = host({ candidate: 'ok' }, h)
+      const how = await recoverPending(journal, rec.ops)
+      consistent(h)
+      if (journal.phase === 'forward') {
+        assert.equal(how, 'forward')
+        assert.equal(h.release, next.version, 'a committed activation finishes forward')
+        assert.ok(!h.log.slice(seen).includes('restore'), 'no restore after the point of no return')
+      }
+    }
+    assert.ok(interrupted >= 8, 'the run has many boundaries')
+  })
+
+test('interrupting the recovery itself never replays a restore over writes the old release accepted', async () => {
+  for (let crashAt = 1; crashAt <= 12; crashAt++) {
+    const { h, ops } = host({ candidate: 'fail-after-migration' })
+    // Interrupt the rollback after the candidate has failed.
+    h.snapshots.add('snap')
+    h.snapshotSchema.set('snap', 1)
+    h.schema = 2
+    h.running = 'none'
+    h.pending = { ...old, store: 'snap' }
+    let n = 0
+    const crashy = Object.fromEntries(
+      Object.entries(ops).map(([k, f]) => [
+        k,
+        (...a: unknown[]) => {
+          if (++n === crashAt) throw new Crash(k)
+          return (f as (...x: unknown[]) => unknown)(...a)
+        },
+      ]),
+    ) as typeof ops
+    let crashed = false
+    try {
+      await recoverPending(h.pending, crashy)
+    } catch (e) {
+      if (!(e instanceof Crash)) throw e
+      crashed = true
+    }
+    if (!crashed) continue
+    h.running = 'none'
+    const journal = h.pending
+    if (journal) await recoverPending(journal, ops)
+    assert.equal(h.pending, null)
+    assert.equal(h.schema, 1)
+    assert.equal(h.release, old.version)
+  }
+})
+
+// Store helpers against real SQLite files.
 function fixture() {
   const dir = fs.mkdtempSync(join(tmpdir(), 'op-upg-'))
   const data = join(dir, 'data')
-  fs.mkdirSync(data)
+  fs.mkdirSync(data, { mode: 0o700 })
   const db = new DatabaseSync(join(data, 'vault.sqlite'))
-  db.exec('PRAGMA journal_mode=DELETE; CREATE TABLE items(id TEXT PRIMARY KEY, v TEXT); INSERT INTO items VALUES (\'a\',\'old-value\'); PRAGMA user_version=1')
+  db.exec("PRAGMA journal_mode=DELETE; CREATE TABLE items(id TEXT PRIMARY KEY, v TEXT); INSERT INTO items VALUES ('a','old-value'); PRAGMA user_version=1")
   db.close()
   fs.writeFileSync(join(data, 'master.key'), 'old-master-key\n', { mode: 0o600 })
   fs.writeFileSync(join(data, 'operator.token'), 'old-token\n', { mode: 0o600 })
@@ -72,7 +234,6 @@ const schema = (file: string) => {
     db.close()
   }
 }
-// The candidate's migration: new schema, a rewritten wrapped master key, an extra file.
 function migrate(data: string) {
   const db = new DatabaseSync(join(data, 'vault.sqlite'))
   db.exec("ALTER TABLE items ADD COLUMN owner TEXT; UPDATE items SET v='migrated'; INSERT INTO items VALUES ('b','new','x'); PRAGMA user_version=2")
@@ -80,86 +241,74 @@ function migrate(data: string) {
   fs.writeFileSync(join(data, 'master.key'), 'wrapped-master-key\n', { mode: 0o600 })
   fs.writeFileSync(join(data, 'extra.state'), 'new\n')
 }
+const cleanup = (d: string) => fs.rmSync(d, { recursive: true, force: true })
 
-test('a forced failure after migration restores the old schema, keys and data for the old release', async () => {
-  const { dir, data, snap } = fixture()
+test('a restore after migration returns the old schema, keys and data, and removes new files', () => {
+  const f = fixture()
   try {
-    const before = schema(join(data, 'vault.sqlite'))
-    let current = old,
-      pending: Rec | null = null,
-      discarded: string | null = null
-    await assert.rejects(
-      activate(old, next, {
-        save: (s) => {
-          pending = s as Rec
-        },
-        drain: async () => {},
-        stop: () => {},
-        backup: () => {
-          snapshotStore(data, snap)
-          return snap
-        },
-        switchTo: async (s, restoreFrom) => {
-          if (s === next) {
-            // The candidate started, migrated the store, then failed readiness.
-            assert.equal(pending?.store, snap, 'the snapshot path is recorded before the candidate starts')
-            migrate(data)
-            throw Error('readiness failed')
-          }
-          assert.equal(restoreFrom, snap)
-          if (restoreFrom) restoreStore(data, restoreFrom)
-          current = s as typeof old
-        },
-        finish: () => assert.fail('must not finish'),
-        clear: () => {
-          pending = null
-        },
-        discard: (store) => {
-          discarded = store
-        },
-      }),
-      /readiness failed/,
-    )
-    assert.deepEqual(current, old)
-    assert.equal(discarded, snap)
-    assert.deepEqual(schema(join(data, 'vault.sqlite')), before)
+    const before = schema(join(f.data, 'vault.sqlite'))
+    snapshotStore(f.data, f.snap)
+    migrate(f.data)
+    restoreStore(f.data, f.snap)
+    assert.deepEqual(schema(join(f.data, 'vault.sqlite')), before)
     assert.equal(before.version, 1)
     assert.ok(!before.columns.includes('owner'))
-    assert.equal(fs.readFileSync(join(data, 'master.key'), 'utf8'), 'old-master-key\n')
-    assert.ok(!fs.existsSync(join(data, 'extra.state')), 'files the candidate created are removed')
+    assert.equal(fs.readFileSync(join(f.data, 'master.key'), 'utf8'), 'old-master-key\n')
+    assert.ok(!fs.existsSync(join(f.data, 'extra.state')))
+    assert.ok(!fs.existsSync(f.data + '.restore') && !fs.existsSync(f.data + '.replaced'))
+    restoreStore(f.data, f.snap) // repeatable
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    cleanup(f.dir)
   }
 })
 
-test('an interrupted activation is recovered with the recorded vault copy', async () => {
-  const { dir, data, snap } = fixture()
+test('a damaged or altered copy is refused and the live directory is left untouched', () => {
+  const f = fixture()
   try {
-    snapshotStore(data, snap)
-    migrate(data)
-    // pending.json carried { ...old, store: snap }; recovery restores it before the old release starts.
-    restoreStore(data, snap)
-    const s = schema(join(data, 'vault.sqlite'))
-    assert.equal(s.version, 1)
-    assert.deepEqual(s.rows, [{ id: 'a', v: 'old-value' }])
+    snapshotStore(f.data, f.snap)
+    migrate(f.data)
+    const live = fs.readFileSync(join(f.data, 'master.key'), 'utf8')
+    fs.appendFileSync(join(f.snap, 'master.key'), 'tampered')
+    assert.throws(() => restoreStore(f.data, f.snap), /altered/)
+    assert.equal(fs.readFileSync(join(f.data, 'master.key'), 'utf8'), live)
+    fs.writeFileSync(join(f.snap, 'master.key'), 'old-master-key\n')
+    fs.rmSync(join(f.snap, 'operator.token'))
+    assert.throws(() => restoreStore(f.data, f.snap), /manifest/)
+    assert.equal(fs.readFileSync(join(f.data, 'master.key'), 'utf8'), live)
+    assert.equal(schema(join(f.data, 'vault.sqlite')).version, 2)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    cleanup(f.dir)
   }
 })
 
-test('the snapshot is refused when the vault is corrupt or the directory holds a link', () => {
+test('a restore interrupted between the two renames completes on retry', () => {
+  const f = fixture()
+  try {
+    snapshotStore(f.data, f.snap)
+    migrate(f.data)
+    fs.renameSync(f.data, f.data + '.replaced') // the live directory moved aside, the staged one not yet in place
+    restoreStore(f.data, f.snap)
+    assert.equal(schema(join(f.data, 'vault.sqlite')).version, 1)
+    assert.ok(!fs.existsSync(f.data + '.replaced'))
+  } finally {
+    cleanup(f.dir)
+  }
+})
+
+test('the snapshot is refused for a missing directory, a corrupt vault or a linked entry', () => {
+  assert.throws(() => snapshotStore(null, join(tmpdir(), 'op-never')), /state directory is missing/)
   const a = fixture()
   try {
     fs.writeFileSync(join(a.data, 'vault.sqlite'), 'not a database'.repeat(100))
     assert.throws(() => snapshotStore(a.data, a.snap), /integrity|database/i)
   } finally {
-    fs.rmSync(a.dir, { recursive: true, force: true })
+    cleanup(a.dir)
   }
   const b = fixture()
   try {
     fs.symlinkSync('/etc/hostname', join(b.data, 'link'))
     assert.throws(() => snapshotStore(b.data, b.snap), /Unexpected entry/)
   } finally {
-    fs.rmSync(b.dir, { recursive: true, force: true })
+    cleanup(b.dir)
   }
 })
