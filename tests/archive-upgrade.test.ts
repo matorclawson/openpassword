@@ -167,8 +167,13 @@ test('a vault copy that cannot be taken aborts before the candidate runs', async
 // Interrupt the run before every operation, for each candidate outcome, then recover from the journal alone.
 for (const candidate of ['ok', 'fail-after-migration', 'fail-public', 'grant-slips-in'] as const)
   test('interruption at every boundary recovers consistently: ' + candidate, async () => {
+    // The boundaries this outcome crosses: every operation of an uninterrupted run is one place to interrupt.
+    const clean = host({ candidate })
+    await activate(old, next, clean.ops).catch(() => undefined)
+    const total = clean.h.calls
+    assert.ok(total >= 5, 'the outcome crosses several boundaries')
     let interrupted = 0
-    for (let crashAt = 1; crashAt <= 40; crashAt++) {
+    for (let crashAt = 1; crashAt <= total + 5; crashAt++) {
       const { h, ops } = host({ crashAt, candidate })
       let crashed = false
       try {
@@ -197,7 +202,7 @@ for (const candidate of ['ok', 'fail-after-migration', 'fail-public', 'grant-sli
         assert.equal(h.previous, 'snap', 'forward recovery rewrites previous.json')
       }
     }
-    assert.ok(interrupted >= 8, 'the run has many boundaries')
+    assert.equal(interrupted, total, 'every boundary of this outcome was interrupted')
   })
 
 test('interrupting the recovery itself never replays a restore over writes the old release accepted', async () => {
