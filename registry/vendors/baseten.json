@@ -1,0 +1,20 @@
+{
+  "id": "baseten",
+  "name": "Baseten Model APIs",
+  "category": "hoster",
+  "status": "candidate",
+  "substitution": "unknown",
+  "auth": {
+    "kind": "bearer"
+  },
+  "endpoints": {
+    "chat": {
+      "family": "openai-chat",
+      "base_url": "https://inference.baseten.co/v1",
+      "path": "/chat/completions"
+    }
+  },
+  "models_path": "/models",
+  "models": [],
+  "doc_url": "https://docs.baseten.co/"
+}

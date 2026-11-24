@@ -1,0 +1,20 @@
+{
+  "id": "deepinfra",
+  "name": "DeepInfra",
+  "category": "hoster",
+  "status": "candidate",
+  "substitution": "unknown",
+  "auth": {
+    "kind": "bearer"
+  },
+  "endpoints": {
+    "chat": {
+      "family": "openai-chat",
+      "base_url": "https://api.deepinfra.com/v1/openai",
+      "path": "/chat/completions"
+    }
+  },
+  "models_path": "/models",
+  "models": [],
+  "doc_url": "https://deepinfra.com/docs"
+}
