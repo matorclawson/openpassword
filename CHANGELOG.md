@@ -20,6 +20,8 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 - The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
 
 ### Vault interface
+- Link provider connections to saved vault items and trace agent grants in both directions. Grant views show operations, model, expiry and revocation. Direct and OAuth credentials retain their existing custody.
+
 
 - Add matching record marks to vault rows and readers, a workspace-specific engraved directory cover, a clear-search control, and a separate access and activity section alongside desktop credential fields. Group integrations by capability and show operation counts beside each provider.
 - Rebuild the vault directory, masked item reader and first-run account screen with the shared family tokens and local fonts. Add persistent System, Light and Dark appearance, bounded server-side item search, stable item and activity URLs, and role-aware copy and reveal controls.

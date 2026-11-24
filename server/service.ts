@@ -560,6 +560,9 @@ export function service(
     'CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, tenant TEXT, title TEXT, username TEXT, envelope TEXT, updated INTEGER)',
   )
   db.exec('CREATE INDEX IF NOT EXISTS items_directory ON items(tenant,title COLLATE NOCASE,id)')
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS connection_items(conn TEXT PRIMARY KEY,item TEXT NOT NULL); CREATE INDEX IF NOT EXISTS connection_items_by_item ON connection_items(item)',
+  )
   api.get('/admin/items', async (r) => {
     const s = session(r)
     const { q, page } = z
@@ -637,6 +640,17 @@ export function service(
   api.delete('/admin/items/:id', async (r) => {
     const s = session(r)
     return tx(() => {
+      if (
+        get(
+          'SELECT 1 FROM connection_items l JOIN connections c ON c.id=l.conn WHERE c.tenant=? AND l.item=?',
+          s.tenant,
+          id(r),
+        )
+      )
+        fail(
+          409,
+          'A connection uses this item. Rotate its credential or revoke the connection before deleting the item.',
+        )
       if (!run('DELETE FROM items WHERE id=? AND tenant=?', id(r), s.tenant).changes)
         fail(404, 'Item unavailable')
       event(s.tenant, 'Vault item deleted', id(r))
@@ -694,6 +708,12 @@ export function service(
             manage = manages(s, c.id)
           return {
             ...c,
+            vault_item:
+              get(
+                'SELECT i.id,i.title FROM connection_items l JOIN items i ON i.id=l.item AND i.tenant=? WHERE l.conn=?',
+                t,
+                c.id,
+              ) ?? null,
             expires_at: deadline(c.id, 'credential'),
             access_expires_at: Number.isFinite(accessDeadline(c.id, profileId(s)))
               ? accessDeadline(c.id, profileId(s))
@@ -728,6 +748,7 @@ export function service(
         }),
       grants: all(
         `SELECT g.id,g.label,g.connection_id,g.ops,g.expires,g.active,
+          (SELECT model FROM model_leases WHERE grant_id=g.id) AS model,
           (SELECT MAX(at) FROM events WHERE tenant=g.tenant AND subject=g.id AND action='CLI connected') AS connected_at
          FROM grants g WHERE tenant=? ORDER BY g.rowid DESC`,
         t,
@@ -1109,9 +1130,19 @@ export function service(
     return reply.redirect(origin + '/')
   })
   const refreshes = new Map<string, Promise<string>>()
+  function storedCredential(c: Row) {
+    if (c.secret) return open(c.secret, c.id)
+    const item = get(
+      'SELECT i.id,i.envelope FROM connection_items l JOIN items i ON i.id=l.item AND i.tenant=? WHERE l.conn=?',
+      c.tenant,
+      c.id,
+    )
+    if (!c.active || !item) return fail(409, 'Credential unavailable')
+    return open(item.envelope, item.id)
+  }
   async function credential(c: Row, force = false): Promise<string> {
     if ((deadline(c.id, 'credential') ?? Infinity) <= now()) fail(403, 'Credential expired')
-    const value = open(c.secret, c.id)
+    const value = storedCredential(c)
     if (typeof value === 'string')
       return scopedToken(
         c.provider,
@@ -1171,7 +1202,7 @@ export function service(
     const s = session(r),
       c = conn(s.tenant, id(r))
     own(r, c.id)
-    if (!c.active || typeof open(c.secret, c.id) === 'string')
+    if (!c.active || typeof storedCredential(c) === 'string')
       fail(409, 'Select an active OAuth connection')
     await credential(c, true)
     event(s.tenant, 'OAuth credential refreshed', c.id)
@@ -1202,12 +1233,30 @@ export function service(
       .header('Content-Disposition', 'attachment; filename="gmail-page.json"')
       .send(Buffer.from(value))
   })
+  function linkItem(principal: Principal, connection: string, itemId: string) {
+    if (principal.role === 'viewer') fail(403, 'Workspace editor required to use a stored value')
+    const item =
+      get('SELECT id,envelope FROM items WHERE id=? AND tenant=?', itemId, principal.tenant) ??
+      fail(404, 'Item unavailable')
+    connectionInput.shape.secret.parse(open(item.envelope, item.id))
+    run(
+      'INSERT INTO connection_items(conn,item) VALUES(?,?) ON CONFLICT(conn) DO UPDATE SET item=excluded.item',
+      connection,
+      item.id,
+    )
+  }
   api.post('/admin/connections', async (r) => {
-    const t = session(r).tenant,
-      b = connectionInput.parse(intakeBody(r, 'secret'))
+    const principal = session(r),
+      t = principal.tenant
+    const input = intakeBody(r, 'secret')
+    const linked = 'vault_item_id' in input
+    const b = linked
+      ? connectionInput.omit({ secret: true }).extend({ vault_item_id: name }).parse(input)
+      : connectionInput.parse(input)
     if (!Object.hasOwn(providers, b.provider)) fail(422, 'Unknown provider')
     const c = 'con_' + randomUUID()
     tx(() => {
+      if ('vault_item_id' in b) linkItem(principal, c, b.vault_item_id)
       run(
         'INSERT INTO connections VALUES(?,?,?,?,?,1,?,1)',
         c,
@@ -1215,7 +1264,7 @@ export function service(
         b.provider,
         b.label,
         b.external_identity,
-        seal(b.secret, c),
+        'secret' in b ? seal(b.secret, c) : '',
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
       recordOwner(session(r), c, b.ownership, b.expires_at)
@@ -1224,15 +1273,24 @@ export function service(
     return { connection_id: c }
   })
   api.post('/admin/connections/:id/rotate', async (r) => {
-    const t = session(r).tenant,
-      c = conn(t, id(r)),
-      { secret } = z.object({ secret: z.string().min(1).max(32768) }).parse(intakeBody(r, 'secret'))
+    const principal = session(r),
+      t = principal.tenant,
+      c = conn(t, id(r))
     own(r, c.id)
     if (!c.active) fail(409, 'Connection revoked')
+    const input = intakeBody(r, 'secret')
+    const source = z
+      .union([
+        z.object({ secret: connectionInput.shape.secret }).strict(),
+        z.object({ vault_item_id: name }).strict(),
+      ])
+      .parse(input)
     tx(() => {
+      if ('vault_item_id' in source) linkItem(principal, c.id, source.vault_item_id)
+      else run('DELETE FROM connection_items WHERE conn=?', c.id)
       run(
         'UPDATE connections SET secret=?,revision=revision+1 WHERE id=?',
-        seal(secret, c.id),
+        'secret' in source ? seal(source.secret, c.id) : '',
         c.id,
       )
       event(t, 'Credential rotated', c.id)
@@ -1244,6 +1302,7 @@ export function service(
       c = conn(t, id(r))
     own(r, c.id)
     tx(() => {
+      run('DELETE FROM connection_items WHERE conn=?', c.id)
       run("UPDATE connections SET active=0,secret='',revision=revision+1 WHERE id=?", c.id)
       run('UPDATE grants SET active=0 WHERE connection_id=?', c.id)
       run("UPDATE runs SET state='denied' WHERE conn=? AND state IN ('approved','pending')", c.id)
@@ -1917,7 +1976,7 @@ export function service(
     const ex = old?.id ?? 'exec_' + randomUUID(),
       effect = a.method !== 'GET' && !['tiktok.status', 'tiktok.creator_info'].includes(a.id)
     if (old?.state === 'denied') return { status: 'refused', execution_id: ex }
-    const stored = open(c.secret, c.id)
+    const stored = storedCredential(c)
     let secret = typeof stored === 'string' ? stored : stored.access_token
     let request: ReturnType<typeof buildRequest>
     try {

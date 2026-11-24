@@ -135,3 +135,11 @@ sudo sh deploy/upgrade.sh --recover 0.3.0
 ```
 
 Failed activation restores the previous symlink and exact base unit contents. An interrupted transaction is recovered before another switch. Rolling back to 0.2.0 requires the original host Node v24.19.0 on the service PATH. Keep that runtime through the rollback window. Code rollback assumes a backward-compatible database. Keep a protected vault backup for a migration that changes that assumption. Updating the workstation CLI remains a separate `sh deploy/update-client.sh` operation.
+
+### Trace a grant to its credential
+
+Open a vault item and choose **Use for a provider connection**, or choose a saved item while adding or rotating a connection. This creates an explicit reference. Existing connections using directly entered credentials or OAuth keep their existing credential. OpenPassword never infers links from a matching name or secret.
+
+From the connection, open **Credential and agent access** and choose **Give an agent access**. Select the agent’s operations and duration. Model access also needs a model lease. The grant list shows the stored expiry, allowed operations, connection and credential source. Follow either link to inspect it. Revoking the grant removes that agent’s access. Rotating a connection changes the source used by all its grants. Deleting a referenced item requires replacing its connection sources or revoking those connections first.
+
+Workspace vault items keep their existing human reveal policy. A grant authorizes provider operations through the gateway. It conveys no permission to reveal or copy the underlying vault value. Lists show relationships visible to the signed-in profile.

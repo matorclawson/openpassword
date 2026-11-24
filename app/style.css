@@ -1851,3 +1851,71 @@ html[data-palette='dark'] .recordMark {
     padding-inline: 0;
   }
 }
+
+.accessMap {
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.accessMap > div {
+  margin: 12px 0;
+}
+.accessMap button {
+  margin-top: 10px;
+}
+.accessMap p {
+  margin: 8px 0;
+}
+.grantPath {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+.grantPath a,
+.accessMap a,
+.connectionAccess a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--focus);
+  text-underline-offset: 3px;
+}
+.connectionAccess {
+  margin-top: 8px;
+}
+.connectionAccess summary {
+  cursor: pointer;
+}
+.connectionAccess > small {
+  margin-top: 8px;
+}
+.agentLinks {
+  margin: 10px 0;
+}
+.agentLinks > strong {
+  font-size: 14px;
+}
+.agentLinks ul {
+  margin: 0;
+}
+.agentLinks li {
+  display: grid;
+  gap: 2px;
+}
+.panel article:target {
+  box-shadow: inset 3px 0 var(--focus);
+  background: var(--color-card);
+}
+.itemPicker {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.itemPicker p {
+  margin: 0;
+}
+.itemPicker button {
+  justify-self: start;
+}

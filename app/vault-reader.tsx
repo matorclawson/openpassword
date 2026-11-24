@@ -24,6 +24,7 @@ type Listing = { rows: Item[]; page: number; total: number }
 type Audit = { id: number; action: string; at: number }
 type Request = (path: string, body?: unknown) => Promise<any>
 type Props = {
+  relationships: (item: Item) => React.ReactNode
   path: string
   workspace: string
   role: string
@@ -75,7 +76,15 @@ function Notice({ message, retry }: { message: string; retry?: () => void }) {
     </div>
   )
 }
-export function VaultReader({ path, workspace, role, revision, request, open }: Props) {
+export function VaultReader({
+  path,
+  workspace,
+  role,
+  revision,
+  request,
+  open,
+  relationships,
+}: Props) {
   const [, , id, section] = path.split('/')
   const [q, Q] = useState(''),
     [page, P] = useState(1),
@@ -133,7 +142,7 @@ export function VaultReader({ path, workspace, role, revision, request, open }: 
     return (
       <Detail
         key={id + '/' + section}
-        {...{ id, workspace, writable, request, open }}
+        {...{ id, workspace, writable, request, open, relationships }}
         audit={section === 'history'}
       />
     )
@@ -304,7 +313,9 @@ function Detail({
   request,
   open,
   audit,
+  relationships,
 }: {
+  relationships: Props['relationships']
   id: string
   workspace: string
   writable: boolean
@@ -495,6 +506,7 @@ function Detail({
                   </div>
                 </section>
                 <section className="recordContext">
+                  {relationships(item)}
                   <div className="readerMeta">
                     <div>
                       <span>Last changed</span>

@@ -3,6 +3,7 @@ import { Authentication, ConsoleLogin, Profile } from './authentication'
 import { WorkspaceSwitcher } from './workspace-switcher'
 import { ProviderDirectory } from './provider-directory'
 import { Appearance } from './appearance'
+import { ItemPicker } from './item-picker'
 import { VaultReader } from './vault-reader'
 import { ActivityFeed } from './activity-feed'
 import { usePathname } from 'next/navigation'
@@ -34,6 +35,7 @@ import {
 } from 'lucide-react'
 import type { Provider } from '../packages/connectors'
 type Connection = {
+  vault_item: { id: string; title: string } | null
   expires_at: number | null
   access_expires_at: number | null
   organization_expires_at?: number | null
@@ -50,6 +52,7 @@ type Connection = {
   revision: number
 }
 type Grant = {
+  model: string | null
   id: string
   label: string
   connection_id: string
@@ -177,6 +180,7 @@ export default function Page() {
     [tokens, K] = useState(''),
     [checked, C] = useState<string[]>([]),
     [copied, CP] = useState(false)
+  const [sourceItem, setSourceItem] = useState<{ id: string; title: string } | null>(null)
   const dialog = useRef<HTMLDialogElement>(null),
     search = useRef<HTMLInputElement>(null)
   const [revision, R] = useState(0)
@@ -196,6 +200,13 @@ export default function Page() {
         E('Social sign-in failed. Check the callback URL and try linking again.')
     }
   }, [])
+  useEffect(() => {
+    if (w && location.hash) {
+      const target = document.getElementById(location.hash.slice(1))
+      target?.focus()
+      target?.scrollIntoView({ block: 'center' })
+    }
+  }, [w, pathname])
   useEffect(() => {
     if (modal) dialog.current?.showModal()
     else dialog.current?.close()
@@ -245,6 +256,7 @@ export default function Page() {
     E('')
   }
   function show(m: string, id = '') {
+    setSourceItem(null)
     S(id)
     E('')
     K('')
@@ -264,7 +276,7 @@ export default function Page() {
     await work(async () => {
       if (!w) return
       let sealed: Awaited<ReturnType<typeof sealInput>> | undefined
-      if (['oauth', 'connection', 'rotate'].includes(modal)) {
+      if (['oauth', 'connection', 'rotate'].includes(modal) && !(modal !== 'oauth' && sourceItem)) {
         const field = modal === 'oauth' ? 'client_secret' : 'secret'
         sealed = await sealInput(String(f[field]), await request('admin/intake', {}))
         delete f[field]
@@ -284,7 +296,7 @@ export default function Page() {
         const data = await request('admin/oauth/google', {
           ...f,
           expires_at: expiry('expires_at'),
-          sealed,
+          ...(sourceItem ? { vault_item_id: sourceItem.id } : { sealed }),
           resources: String(f.resources || '')
             .split(',')
             .map((s) => s.trim())
@@ -323,7 +335,7 @@ export default function Page() {
         await request('admin/connections', {
           ...f,
           expires_at: expiry('expires_at'),
-          sealed,
+          ...(sourceItem ? { vault_item_id: sourceItem.id } : { sealed }),
           resources: String(f.resources || '')
             .split(',')
             .map((s) => s.trim())
@@ -341,7 +353,11 @@ export default function Page() {
             form.getAll('recipients').map((id) => [id, expiry('expires/' + id)]),
           ),
         })
-      if (modal === 'rotate') await request('admin/connections/' + selected + '/rotate', { sealed })
+      if (modal === 'rotate')
+        await request(
+          'admin/connections/' + selected + '/rotate',
+          sourceItem ? { vault_item_id: sourceItem.id } : { sealed },
+        )
       if (modal === 'revoke')
         await request(
           'admin/' +
@@ -393,6 +409,7 @@ export default function Page() {
             : {}),
         })
         if (a.enrollment_token || a.access_token) {
+          S(a.device_id)
           K(a.enrollment_token || JSON.stringify(a, null, 2))
           await load()
           return
@@ -448,6 +465,34 @@ export default function Page() {
       {text}
     </button>
   )
+  const grantState = (g: Grant) =>
+    !g.active ? 'Revoked' : g.expires <= Date.now() ? 'Expired' : 'Active'
+  const agentLinks = (c: Connection) => {
+    const grants = w.grants.filter((g) => g.connection_id === c.id)
+    return (
+      <div className="agentLinks">
+        <strong>Agent grants visible to you</strong>
+        {grants.length ? (
+          <ul>
+            {grants.map((g) => (
+              <li key={g.id}>
+                <a href={'/grants#' + g.id}>{g.label}</a>
+                <small>
+                  {grantState(g)} · expires {stamp(g.expires)}
+                </small>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <small>No visible grants.</small>
+        )}
+      </div>
+    )
+  }
+  const startGrant = (c: Connection) => {
+    show('grant')
+    G(c.id)
+  }
   const creation =
     w.role === 'viewer' && tab === 'Vault items'
       ? null
@@ -546,6 +591,35 @@ export default function Page() {
                 revision={revision}
                 request={request}
                 open={show}
+                relationships={(item) => {
+                  const linked = w.connections.filter((c) => c.vault_item?.id === item.id)
+                  return (
+                    <div className="accessMap">
+                      <h2>Agent access</h2>
+                      {linked.length ? (
+                        linked.map((c) => (
+                          <div key={c.id}>
+                            <a href={'/connections#' + c.id}>{c.label}</a>
+                            <small>{w.providers[c.provider].name} connection</small>
+                            {agentLinks(c)}
+                          </div>
+                        ))
+                      ) : (
+                        <p>No visible provider connections use this item.</p>
+                      )}
+                      {w.role !== 'viewer' && (
+                        <button
+                          onClick={() => {
+                            show('connection', Object.keys(w.providers)[0])
+                            setSourceItem(item)
+                          }}
+                        >
+                          Use for a provider connection
+                        </button>
+                      )}
+                    </div>
+                  )
+                }}
               />
             </>
           ) : (
@@ -639,7 +713,7 @@ export default function Page() {
                 {tab === 'Connections' &&
                   (list.length ? (
                     list.map((c) => (
-                      <article key={c.id}>
+                      <article key={c.id} id={c.id} tabIndex={-1}>
                         <div className="mark">
                           <Layers />
                         </div>
@@ -657,6 +731,25 @@ export default function Page() {
                                   organization: 'Whole organization',
                                 }[c.visibility]}
                           </small>
+                          <details
+                            className="connectionAccess"
+                            open={
+                              (typeof window !== 'undefined' && location.hash === '#' + c.id) ||
+                              undefined
+                            }
+                          >
+                            <summary>Credential and agent access</summary>
+                            <small>Credential source</small>
+                            {c.vault_item ? (
+                              <a href={'/vault/' + c.vault_item.id}>{c.vault_item.title}</a>
+                            ) : (
+                              <span>Stored on this provider connection</span>
+                            )}
+                            {agentLinks(c)}
+                            {active.some((x) => x.id === c.id) && (
+                              <button onClick={() => startGrant(c)}>Give an agent access</button>
+                            )}
+                          </details>
                         </div>
                         <span className={'pill ' + (c.active ? 'ok' : '')}>
                           {!c.active
@@ -701,26 +794,46 @@ export default function Page() {
                     w.grants
                       .filter((g) => includes(g.label, g.id))
                       .map((g) => (
-                        <article key={g.id}>
+                        <article key={g.id} id={g.id} tabIndex={-1}>
                           <KeyRound />
                           <div className="grow">
                             <strong>{g.label}</strong>
+                            <small>
+                              {grantState(g)} · Expires {stamp(g.expires)}
+                            </small>
+                            {(() => {
+                              const c = w.connections.find((c) => c.id === g.connection_id)
+                              return c ? (
+                                <div className="grantPath">
+                                  <span>
+                                    Provider connection{' '}
+                                    <a href={'/connections#' + c.id}>{c.label}</a>
+                                  </span>
+                                  <span>
+                                    Credential source{' '}
+                                    {c.vault_item ? (
+                                      <a href={'/vault/' + c.vault_item.id}>{c.vault_item.title}</a>
+                                    ) : (
+                                      'Stored on connection'
+                                    )}
+                                  </span>
+                                </div>
+                              ) : (
+                                <small>Connection unavailable</small>
+                              )
+                            })()}
+                            <small>
+                              Allowed operations · {JSON.parse(g.ops).join(', ')}
+                              {g.model && ' · Model ' + g.model}
+                            </small>
                             {g.connected_at && <small>CLI connected {stamp(g.connected_at)}</small>}
                             <small>
-                              Grant ID: <code>{g.id}</code>
-                            </small>
-                            <small>
-                              {w.connections.find((c) => c.id === g.connection_id)?.label} ·{' '}
-                              {JSON.parse(g.ops).length} operations · Expires {stamp(g.expires)}
+                              Grant ID · <code>{g.id}</code>
                             </small>
                           </div>
-                          {g.active && g.expires > Date.now() ? (
-                            btn('Revoke', () => show('revoke', g.id))
-                          ) : (
-                            <span className="pill">
-                              {g.active && g.expires > Date.now() ? 'Active' : 'Inactive'}
-                            </span>
-                          )}
+                          {g.active && g.expires > Date.now()
+                            ? btn('Revoke', () => show('revoke', g.id))
+                            : null}
                         </article>
                       ))
                   ) : (
@@ -963,6 +1076,27 @@ export default function Page() {
           </>
         ) : tokens ? (
           <>
+            {modal === 'grant' &&
+              (() => {
+                const issued = w.grants.find((g) => g.id === selected)
+                if (!issued) return null
+                const connection = w.connections.find((c) => c.id === issued.connection_id)
+                return (
+                  <section className="itemPicker">
+                    <strong>
+                      {issued.label} can use {connection?.label || 'the provider connection'}
+                    </strong>
+                    <span>
+                      {JSON.parse(issued.ops).join(', ')}
+                      {issued.model && ' · ' + issued.model}
+                    </span>
+                    <span>Grant expires {stamp(issued.expires)}</span>
+                    <a href={'/grants#' + issued.id} onClick={close}>
+                      View or revoke grant
+                    </a>
+                  </section>
+                )
+              })()}
             <p>
               {modal === 'member'
                 ? 'Give this token to the member through a private channel.'
@@ -1043,9 +1177,11 @@ export default function Page() {
                 </label>
               )}
             {modal === 'connection' &&
+              !sourceItem &&
               selected === 'google_workspace' &&
               btn('Sign in with Google instead', () => M('oauth'))}
             {modal === 'connection' &&
+              !sourceItem &&
               selected === 'notion' &&
               btn('Authorize with Notion', () => M('oauth'))}
             {modal === 'oauth' && (
@@ -1171,7 +1307,11 @@ export default function Page() {
                   </>
                 )
               })()}
-            {['connection', 'rotate'].includes(modal) && (
+            {['connection', 'rotate'].includes(modal) && w.role !== 'viewer' && (
+              <ItemPicker request={request} selected={sourceItem} select={setSourceItem} />
+            )}
+            {modal === 'rotate' && <p>Existing grants will use the replacement credential.</p>}
+            {['connection', 'rotate'].includes(modal) && !sourceItem && (
               <label>
                 {selected === 'supabase_data'
                   ? 'Credential JSON with project and key'
@@ -1289,6 +1429,10 @@ export default function Page() {
                 </label>
                 <fieldset>
                   <legend>Allowed operations</legend>
+                  <p>
+                    The agent can run the selected operations through OpenPassword. The provider
+                    credential stays in the vault.
+                  </p>
                   {selectedConnection &&
                     w.providers[selectedConnection.provider].actions.map((a) => (
                       <label className="check" key={a.id}>
@@ -1324,6 +1468,22 @@ export default function Page() {
                   Grant duration (hours)
                   <input type="number" min="1" max="720" defaultValue="24" name="hours" required />
                 </label>{' '}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    const field = e.currentTarget.form?.elements.namedItem(
+                      'hours',
+                    ) as HTMLInputElement
+                    field.value = '168'
+                  }}
+                >
+                  Set to 7 days
+                </button>
+                {selectedConnection?.access_expires_at && (
+                  <small>
+                    Access ends no later than {stamp(selectedConnection.access_expires_at)}.
+                  </small>
+                )}
                 {!!selectedConnection &&
                   checked.includes(selectedConnection.provider + '.chat') && (
                     <fieldset>
