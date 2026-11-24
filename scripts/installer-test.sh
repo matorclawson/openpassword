@@ -35,6 +35,7 @@ exec "$@"
 S
 cat > "$t/bin/curl" <<'S'
 #!/usr/bin/env bash
+echo "$*" >> "$STUB_DIR/curl-urls"
 [ "${STUB_UNHEALTHY:-}" != 1 ] || exit 1
 [ -z "${STUB_UNHEALTHY_AT:-}" ] || [[ "$(readlink "$OPENPASSWORD_PREFIX/current")" != *"$STUB_UNHEALTHY_AT" ]]
 S
@@ -65,12 +66,14 @@ mkrel() { # build a fake release with the given version
   echo 'console.log("fake next")' > "$d/node_modules/next/dist/bin/next"
   printf '#!/usr/bin/env bash\nargs=()\nwhile [ $# -gt 0 ]; do if [ "$1" = --import ]; then shift 2; else args+=("$1"); shift; fi; done\nexec "%s" "${args[@]}"\n' "$real_node" > "$d/node/bin/node"; chmod +x "$d/node/bin/node"
   printf '[Service]\nExecStart=/x %s\n' "$v" > "$d/deploy/systemd/openpassword-broker.service"
-  printf '[Service]\nExecStart=/y %s\n' "$v" > "$d/deploy/systemd/openpassword-web.service"
+  printf '[Service]\nExecStart=/opt/openpassword/current/node/bin/node node_modules/next/dist/bin/next start -H %s -p %s # %s\n' "${BINDHOST:-127.0.0.1}" "${BINDPORT:-3000}" "$v" > "$d/deploy/systemd/openpassword-web.service"
   printf '{"name":"openpassword","platform":"linux","version":"%s","arch":"%s","commit":"%s"}\n' "$v" "$arch" "$commit" > "$d/RELEASE.json"
   tar -czf "$t/openpassword-$v.tar.gz" -C "$d" .
   sha256sum "$t/openpassword-$v.tar.gz" | cut -d' ' -f1 > "$t/sha-$v"
 }
 mkrel 0.3.0; mkrel 0.3.1; mkrel 0.3.2
+BINDHOST=localhost mkrel 0.3.3   # a release whose console would bind ::1 only
+BINDPORT=3100 mkrel 0.3.4
 
 printf 'CANARY-SETUP-CODE\n' > "$t/state/operator.token"
 export OPENPASSWORD_PREFIX=$t/prefix OPENPASSWORD_UNITS_DIR=$t/units OPENPASSWORD_STATE_DIR=$t/state OPENPASSWORD_PROC=$t/proc
@@ -118,10 +121,26 @@ grep -q 'OPENPASSWORD_WEB_ORIGIN=https://pass.example.com' "$t/units/openpasswor
 : > "$t/log"; run 0.3.0 || fail "rerun failed ($(code))"; [ "$(state)" = ready ] || fail "rerun state"
 grep -q 'stop' "$t/log" && fail "rerun restarted services"
 
+# 3b. the readiness probe dials the address the console unit listens on (127.0.0.1:3000), never "localhost".
+grep -q 'http://127.0.0.1:3000/' "$t/curl-urls" || fail "the console was not probed at 127.0.0.1:3000"
+grep -q 'localhost' "$t/curl-urls" && fail "a probe used localhost"
+
 # 5. upgrade to 0.3.1 works and keeps the previous release.
 run 0.3.1 || fail "upgrade failed ($(code))"; [ "$(state)" = ready ] || fail "upgrade state"
 [ "$(readlink "$t/prefix/current")" = releases/0.3.1 ] && [ -d "$t/prefix/releases/0.3.0" ] || fail "upgrade layout"
 [ "$(serving_release openpassword-web)" = "$(readlink -f "$t/prefix/releases/0.3.1")" ] || fail "the console does not serve 0.3.1"
+
+# 5b. a release whose console binds localhost (which can be ::1 only) is refused before anything changes.
+before=$(snap)
+rc=0; run 0.3.3 || rc=$?; [ "$rc" = 1 ] && [ "$(code)" = web_bind ] || fail "a localhost bind was accepted: rc $rc code $(code)"
+[ "$(snap)" = "$before" ] || fail "a refused release changed the host"
+# 5c. a release on another port is probed on that port (fresh host, so the main host is untouched), so a
+# mismatch between the unit and the probe cannot pass.
+rm -rf "${t:?}/prefix3" "${t:?}/units3"; mkdir -p "$t/units3"; : > "$t/curl-urls"
+rc=0; OPENPASSWORD_PREFIX=$t/prefix3 OPENPASSWORD_UNITS_DIR=$t/units3 run 0.3.4 || rc=$?
+[ "$rc" = 10 ] || fail "port release failed: rc $rc ($(code))"
+grep -q 'http://127.0.0.1:3100/' "$t/curl-urls" || fail "the probe did not follow the unit's port"
+restart_stubs
 
 # 6a. a release that never becomes ready is rolled back: previous symlink, units, drop-in and record are
 # back, the previous release is running again and the failure is reported as readiness_failed.

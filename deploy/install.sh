@@ -28,7 +28,7 @@ LN=${OPENPASSWORD_LN:-ln}
 PROC=${OPENPASSWORD_PROC:-/proc}
 NODE_PIN=${OPENPASSWORD_NODE_PIN:-v24.19.0}
 BROKER_URL=${OPENPASSWORD_BROKER_URL:-http://127.0.0.1:4141}
-WEB_URL=${OPENPASSWORD_WEB_URL:-http://127.0.0.1:3000}
+WEB_URL=${OPENPASSWORD_WEB_URL:-}   # normally read from the release's own web unit, see web_url
 READY_TRIES=${OPENPASSWORD_READY_TRIES:-30}
 SERVICES=(openpassword-broker openpassword-web)
 
@@ -110,6 +110,10 @@ step_verify() { # dir: a release directory, identity checked against the request
   for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.js .next/BUILD_ID node_modules/tsx/package.json node/bin/node RELEASE.json deploy/systemd/openpassword-broker.service deploy/systemd/openpassword-web.service; do
     [ -f "$d/$f" ] || fail release missing_file "the release lacks $f"
   done
+  # The proxy, the console rewrites and the probes dial 127.0.0.1, so the console must listen exactly there
+  # ("localhost" can resolve to ::1 only).
+  local bind; bind=$(web_unit_bind "$d/deploy/systemd/openpassword-web.service")
+  [ "${bind%% *}" = 127.0.0.1 ] || fail release web_bind "the console unit must run next start -H 127.0.0.1 (found: ${bind:-no bind})"
   SD=("$SYSTEMD_RUN" --quiet --pipe --wait --property=WorkingDirectory="$d" -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes)
   local id
   id=$("${SD[@]}" "$d/node/bin/node" -e '
@@ -179,10 +183,19 @@ serving() { # service: the running main process belongs to the release `current`
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   [ "$(readlink -f "$PROC/$pid/cwd" 2>/dev/null)" = "$(readlink -f "$PREFIX/current")" ]
 }
+web_unit_bind() { # unit file: prints "host port" from its `next start -H host -p port`, nothing if absent
+  sed -n 's/.*next start .*-H[ ]\{1,\}\([^ ]\{1,\}\).*-p[ ]\{1,\}\([0-9]\{1,\}\).*/\1 \2/p' "$1" | head -n 1
+}
+web_url() { # the address the console really listens on, read from the release's unit (never a guess)
+  if [ -n "$WEB_URL" ]; then printf '%s/\n' "${WEB_URL%/}"; return; fi
+  local b host port; b=$(web_unit_bind "$PREFIX/current/deploy/systemd/openpassword-web.service")
+  host=${b%% *}; port=${b##* }
+  printf 'http://%s:%s/\n' "${host:-127.0.0.1}" "${port:-3000}"
+}
 ready() { # both services answer
   local i
   for ((i = 0; i < READY_TRIES; i++)); do
-    if "$CURL" -fsS --max-time 5 "$BROKER_URL/health" >/dev/null 2>&1 && "$CURL" -fsS --max-time 5 "$WEB_URL/" >/dev/null 2>&1; then return 0; fi
+    if "$CURL" -fsS --max-time 5 "$BROKER_URL/health" >/dev/null 2>&1 && "$CURL" -fsS --max-time 5 "$(web_url)" >/dev/null 2>&1; then return 0; fi
     sleep "${OPENPASSWORD_READY_SLEEP:-1}"
   done
   return 1
