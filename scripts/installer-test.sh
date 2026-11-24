@@ -16,7 +16,11 @@ cat > "$t/bin/systemctl" <<'S'
 #!/usr/bin/env bash
 echo "$*" >> "$STUB_LOG"
 case "$1" in
-  is-active) [ "${STUB_INACTIVE:-}" != 1 ] ;;
+  is-active) [ "${STUB_INACTIVE:-}" != 1 ] && [ -f "$STUB_PIDS/${*: -1}" ] ;;
+  is-enabled) [ -f "$STUB_PIDS/.enabled-${*: -1}" ] ;;
+  enable) for s in "${@:2}"; do case "$s" in -*) ;; *) : > "$STUB_PIDS/.enabled-$s" ;; esac; done ;;
+  disable) [ "${STUB_DISABLE_FAIL:-}" != 1 ] || exit 1
+           for s in "${@:2}"; do rm -f "${STUB_PIDS:?}/.enabled-${s:?}"; done ;;
   daemon-reload) [ "${STUB_RELOAD_FAIL:-}" != 1 ] ;;
   stop) [ "${STUB_STOP_FAIL:-}" != 1 ] || exit 1
         [ "${STUB_STALE:-}" = 1 ] || for s in "${@:2}"; do rm -f "${STUB_PIDS:?}/${s:?}"; done ;;
@@ -66,7 +70,8 @@ mkrel() { # build a fake release with the given version
   echo 'console.log("fake next")' > "$d/node_modules/next/dist/bin/next"
   printf '#!/usr/bin/env bash\nargs=()\nwhile [ $# -gt 0 ]; do if [ "$1" = --import ]; then shift 2; else args+=("$1"); shift; fi; done\nexec "%s" "${args[@]}"\n' "$real_node" > "$d/node/bin/node"; chmod +x "$d/node/bin/node"
   printf '[Service]\nExecStart=/x %s\n' "$v" > "$d/deploy/systemd/openpassword-broker.service"
-  printf '[Service]\nExecStart=/opt/openpassword/current/node/bin/node node_modules/next/dist/bin/next start -H %s -p %s # %s\n' "${BINDHOST:-127.0.0.1}" "${BINDPORT:-3000}" "$v" > "$d/deploy/systemd/openpassword-web.service"
+  if [ -n "${WEBUNIT:-}" ]; then printf '%s\n' "$WEBUNIT" > "$d/deploy/systemd/openpassword-web.service"
+  else printf '[Service]\nExecStart=/opt/openpassword/current/node/bin/node node_modules/next/dist/bin/next start -H %s -p %s # %s\n' "${BINDHOST:-127.0.0.1}" "${BINDPORT:-3000}" "$v" > "$d/deploy/systemd/openpassword-web.service"; fi
   printf '{"name":"openpassword","platform":"linux","version":"%s","arch":"%s","commit":"%s"}\n' "$v" "$arch" "$commit" > "$d/RELEASE.json"
   tar -czf "$t/openpassword-$v.tar.gz" -C "$d" .
   sha256sum "$t/openpassword-$v.tar.gz" | cut -d' ' -f1 > "$t/sha-$v"
@@ -74,6 +79,10 @@ mkrel() { # build a fake release with the given version
 mkrel 0.3.0; mkrel 0.3.1; mkrel 0.3.2
 BINDHOST=localhost mkrel 0.3.3   # a release whose console would bind ::1 only
 BINDPORT=3100 mkrel 0.3.4
+# Units whose bind is not in the ExecStart line that runs next start (a comment, another key) or lacks a port.
+WEBUNIT=$'[Service]\n# next start -H 127.0.0.1 -p 3000\nExecStart=/opt/openpassword/current/node/bin/node node_modules/next/dist/bin/next start -H 127.0.0.1' mkrel 0.3.5
+WEBUNIT=$'[Service]\nEnvironment=X=next start -H 127.0.0.1 -p 3000\nExecStart=/opt/openpassword/current/node/bin/node node_modules/next/dist/bin/next start -p 3000' mkrel 0.3.6
+WEBUNIT=$'[Service]\nDescription=next start -H 127.0.0.1 -p 3000\nExecStart=/opt/openpassword/current/node/bin/node server.js' mkrel 0.3.7
 
 printf 'CANARY-SETUP-CODE\n' > "$t/state/operator.token"
 export OPENPASSWORD_PREFIX=$t/prefix OPENPASSWORD_UNITS_DIR=$t/units OPENPASSWORD_STATE_DIR=$t/state OPENPASSWORD_PROC=$t/proc
@@ -134,6 +143,11 @@ run 0.3.1 || fail "upgrade failed ($(code))"; [ "$(state)" = ready ] || fail "up
 before=$(snap)
 rc=0; run 0.3.3 || rc=$?; [ "$rc" = 1 ] && [ "$(code)" = web_bind ] || fail "a localhost bind was accepted: rc $rc code $(code)"
 [ "$(snap)" = "$before" ] || fail "a refused release changed the host"
+for v in 0.3.5 0.3.6 0.3.7; do
+  before=$(snap); rc=0; run "$v" || rc=$?
+  [ "$rc" = 1 ] && [ "$(code)" = web_bind ] || fail "$v: a unit without a bind in its ExecStart was accepted: rc $rc code $(code)"
+  [ "$(snap)" = "$before" ] || fail "$v: a refused release changed the host"
+done
 # 5c. a release on another port is probed on that port (fresh host, so the main host is untouched), so a
 # mismatch between the unit and the probe cannot pass.
 rm -rf "${t:?}/prefix3" "${t:?}/units3"; mkdir -p "$t/units3"; : > "$t/curl-urls"
@@ -202,6 +216,18 @@ fresh() { OPENPASSWORD_PREFIX=$t/prefix2 OPENPASSWORD_UNITS_DIR=$t/units2 "$@"; 
 resetcount; rc=0; STUB_INSTALL_FAIL=2 fresh run 0.3.0 || rc=$?
 [ "$rc" = 1 ] && [ "$(code)" = switch_failed ] || fail "fresh install failure: rc $rc code $(code)"
 [ ! -e "$t/prefix2/current" ] && [ ! -e "$t/prefix2/installed.json" ] && [ -z "$(ls -A "$t/units2")" ] && [ -z "$(ls "$t/prefix2/releases" | grep -v '^\.' || true)" ] || fail "a failed fresh install left files behind"
+restart_stubs   # the shared stub host was stopped by the fresh rollback
+
+# 6f2. a failed first install reports failure when the services cannot be stopped or disabled.
+rm -rf "${t:?}/prefix2" "${t:?}/units2"; mkdir -p "$t/units2"
+echo 999 > "$t/pids/openpassword-web"
+resetcount; rc=0; STUB_STOP_FAIL=1 STUB_INSTALL_FAIL=2 fresh run 0.3.0 || rc=$?
+[ "$rc" = 1 ] && [ "$(code)" = rollback_failed ] || fail "failed stop on a fresh rollback: rc $rc code $(code)"
+rm -rf "${t:?}/prefix2" "${t:?}/units2"; mkdir -p "$t/units2"; restart_stubs
+: > "$t/pids/.enabled-openpassword-broker"
+resetcount; rc=0; STUB_DISABLE_FAIL=1 STUB_INSTALL_FAIL=2 fresh run 0.3.0 || rc=$?
+[ "$rc" = 1 ] && [ "$(code)" = rollback_failed ] || fail "failed disable on a fresh rollback: rc $rc code $(code)"
+rm -f "${t:?}/pids/.enabled-openpassword-broker"; rm -rf "${t:?}/prefix2" "${t:?}/units2"; restart_stubs
 
 # 6g. only one apply runs at a time.
 rc=0; ( flock -n 8 || exit 9; run 0.3.2 ) 8> "$t/prefix/.apply.lock" || rc=$?

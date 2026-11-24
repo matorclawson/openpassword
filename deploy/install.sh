@@ -113,7 +113,7 @@ step_verify() { # dir: a release directory, identity checked against the request
   # The proxy, the console rewrites and the probes dial 127.0.0.1, so the console must listen exactly there
   # ("localhost" can resolve to ::1 only).
   local bind; bind=$(web_unit_bind "$d/deploy/systemd/openpassword-web.service")
-  [ "${bind%% *}" = 127.0.0.1 ] || fail release web_bind "the console unit must run next start -H 127.0.0.1 (found: ${bind:-no bind})"
+  [ -n "$bind" ] && [ "${bind%% *}" = 127.0.0.1 ] || fail release web_bind "the console unit's ExecStart must run next start with -H 127.0.0.1 and a -p port (found: ${bind:-no bind})"
   SD=("$SYSTEMD_RUN" --quiet --pipe --wait --property=WorkingDirectory="$d" -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes)
   local id
   id=$("${SD[@]}" "$d/node/bin/node" -e '
@@ -183,19 +183,22 @@ serving() { # service: the running main process belongs to the release `current`
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   [ "$(readlink -f "$PROC/$pid/cwd" 2>/dev/null)" = "$(readlink -f "$PREFIX/current")" ]
 }
-web_unit_bind() { # unit file: prints "host port" from its `next start -H host -p port`, nothing if absent
-  sed -n 's/.*next start .*-H[ ]\{1,\}\([^ ]\{1,\}\).*-p[ ]\{1,\}\([0-9]\{1,\}\).*/\1 \2/p' "$1" | head -n 1
+web_unit_bind() { # unit file: prints "host port" from the ExecStart line that runs `next start`; nothing unless both are there
+  awk '/^ExecStart=/ && /next start/ { h = ""; p = ""
+         for (i = 1; i <= NF; i++) { if ($i == "-H") h = $(i + 1); if ($i == "-p") p = $(i + 1) }
+         if (h != "" && p ~ /^[0-9]+$/) { print h " " p; exit } }' "$1"
 }
-web_url() { # the address the console really listens on, read from the release's unit (never a guess)
+web_url() { # the address the console really listens on, read from the release's ExecStart; no default, no guess
   if [ -n "$WEB_URL" ]; then printf '%s/\n' "${WEB_URL%/}"; return; fi
-  local b host port; b=$(web_unit_bind "$PREFIX/current/deploy/systemd/openpassword-web.service")
-  host=${b%% *}; port=${b##* }
-  printf 'http://%s:%s/\n' "${host:-127.0.0.1}" "${port:-3000}"
+  local b; b=$(web_unit_bind "$PREFIX/current/deploy/systemd/openpassword-web.service")
+  [ -n "$b" ] || return 1
+  printf 'http://%s:%s/\n' "${b%% *}" "${b##* }"
 }
 ready() { # both services answer
-  local i
+  local i url
+  url=$(web_url) || return 1   # a unit without a readable bind is never ready
   for ((i = 0; i < READY_TRIES; i++)); do
-    if "$CURL" -fsS --max-time 5 "$BROKER_URL/health" >/dev/null 2>&1 && "$CURL" -fsS --max-time 5 "$(web_url)" >/dev/null 2>&1; then return 0; fi
+    if "$CURL" -fsS --max-time 5 "$BROKER_URL/health" >/dev/null 2>&1 && "$CURL" -fsS --max-time 5 "$url" >/dev/null 2>&1; then return 0; fi
     sleep "${OPENPASSWORD_READY_SLEEP:-1}"
   done
   return 1
@@ -245,9 +248,17 @@ step_rollback() {
   restore_files || return 1
   "$SYSTEMCTL" daemon-reload || return 1
   if [ -n "$(cat "$SNAP/prev")" ]; then activate; return; fi
-  # A fresh install that failed leaves no release: stop and disable what the attempt started.
-  "$SYSTEMCTL" stop openpassword-web openpassword-broker 2>/dev/null || true
+  # A fresh install that failed leaves no release: stop and disable what the attempt started, and report
+  # failure unless both services are really stopped and not enabled afterwards. A unit that was never
+  # loaded may make stop or disable exit non-zero; the end state is what decides.
+  local s rc=0
+  "$SYSTEMCTL" stop openpassword-web openpassword-broker >/dev/null 2>&1 || true
   "$SYSTEMCTL" disable "${SERVICES[@]}" >/dev/null 2>&1 || true
+  for s in "${SERVICES[@]}"; do
+    if "$SYSTEMCTL" is-active --quiet "$s"; then rc=1; fi
+    if "$SYSTEMCTL" is-enabled --quiet "$s" 2>/dev/null; then rc=1; fi
+  done
+  return $rc
 }
 human_steps() {
   human admin_account "$STATE/operator.token" "Read the setup code from this file on the server (do not paste it anywhere else) and enter it in the console at $ORIGIN to create the administrator account."
