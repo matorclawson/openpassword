@@ -7,9 +7,11 @@
 # needs_human[], urls, error. Exit codes: 0 ready, 10 needs_human, 1 failed, 2 bad usage.
 # The installer never builds, never downloads and never prints a secret: for the administrator
 # account it returns the PATH of the setup-code file, not its content. apply is transactional: it
-# stages and verifies first, then switches; on any failure it restores the previous symlink, units,
-# origin drop-in and install record. Rerunning the installed version re-verifies it: the supplied digest,
-# commit and origin must match the install record and the host. The upgrade sequence the external council is porting
+# stages and verifies, captures a complete baseline (symlink, units, origin drop-in, install record) before
+# any live change, then switches and activates; on any failure it restores the baseline. Activation must
+# succeed on every service operation and the serving processes must be the new release's. Rerunning the
+# installed version re-verifies it against the install record, the host and the running processes. One
+# apply runs at a time. The upgrade sequence the external council is porting
 # (disposable-vault preflight, drain, interrupted-activation recovery) plugs into the marked seams.
 set -euo pipefail
 umask 022
@@ -21,6 +23,9 @@ SYSTEMCTL=${OPENPASSWORD_SYSTEMCTL:-systemctl}
 SYSTEMD_RUN=${OPENPASSWORD_SYSTEMD_RUN:-systemd-run}
 CURL=${OPENPASSWORD_CURL:-curl}
 INSTALL=${OPENPASSWORD_INSTALL:-install}
+SNAPCP=${OPENPASSWORD_SNAPSHOT_CP:-cp}
+LN=${OPENPASSWORD_LN:-ln}
+PROC=${OPENPASSWORD_PROC:-/proc}
 NODE_PIN=${OPENPASSWORD_NODE_PIN:-v24.19.0}
 BROKER_URL=${OPENPASSWORD_BROKER_URL:-http://127.0.0.1:4141}
 WEB_URL=${OPENPASSWORD_WEB_URL:-http://127.0.0.1:3000}
@@ -82,7 +87,6 @@ current_version() {
 }
 DROPDIR=$UNITS/openpassword-broker.service.d
 DROP=$DROPDIR/origin.conf
-UP=$PREFIX/units-prev
 RECORD=$PREFIX/installed.json
 drop_in_text() { printf '[Service]\nEnvironment=OPENPASSWORD_WEB_ORIGIN=%s\n' "$ORIGIN"; }
 record_text() { printf '{"version":"%s","arch":"%s","commit":"%s","sha256":"%s","origin":"%s"}\n' "$VERSION" "$ARCH" "$COMMIT" "$SHA256" "$ORIGIN"; }
@@ -125,23 +129,40 @@ console.log(r.name === "openpassword" && r.platform === "linux" && r.version ===
 step_preflight() { check preflight skipped "disposable-vault preflight is not implemented yet (seam for the council's port)"; }
 step_drain() { check drain skipped "request drain is not implemented yet (seam for the council's port)"; }
 
-# Everything the switch changes is recorded first, so restore_files can undo it: the current symlink, both
-# unit files, the origin drop-in and the install record. "absent" is recorded too.
-snapshot() {
+# The baseline: everything the switch changes is captured and verified BEFORE any live change and before
+# the transaction is armed. Each item records whether it was present or absent. If a capture fails, apply
+# stops here and nothing live was touched; rollback only ever restores a complete, verified baseline.
+capture() { # name path: present files are copied and compared, absent ones recorded, anything else refuses
+  local name=$1 path=$2
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    "$SNAPCP" -p "$path" "$SNAP/$name" && cmp -s "$path" "$SNAP/$name" || return 1
+    echo present > "$SNAP/$name.state" || return 1
+  else
+    echo absent > "$SNAP/$name.state" || return 1
+  fi
+}
+step_snapshot() {
   local s
-  PREV=$(readlink "$PREFIX/current" 2>/dev/null || true)
-  rm -rf "${UP:?}" && mkdir -p "$UP" || return 1
-  for s in "${SERVICES[@]}"; do
-    if [ -f "$UNITS/$s.service" ]; then cp -p "$UNITS/$s.service" "$UP/$s.service" || return 1; else : > "$UP/$s.absent" || return 1; fi
-  done
-  if [ -f "$DROP" ]; then cp -p "$DROP" "$UP/origin.conf" || return 1; else : > "$UP/origin.absent" || return 1; fi
-  if [ -f "$RECORD" ]; then cp -p "$RECORD" "$UP/installed.json" || return 1; else : > "$UP/installed.absent" || return 1; fi
+  SNAP=$(mktemp -d "$PREFIX/.snap-XXXXXX") || return 1
+  chmod 700 "$SNAP" || return 1
+  if [ -e "$PREFIX/current" ] || [ -L "$PREFIX/current" ]; then
+    [ -L "$PREFIX/current" ] || return 1
+    PREV=$(readlink "$PREFIX/current") || return 1
+    [ -n "$PREV" ] || return 1
+  else
+    PREV=
+  fi
+  printf '%s\n' "$PREV" > "$SNAP/prev" || return 1
+  for s in "${SERVICES[@]}"; do capture "$s.service" "$UNITS/$s.service" || return 1; done
+  capture origin.conf "$DROP" || return 1
+  capture installed.json "$RECORD" || return 1
+  : > "$SNAP/COMPLETE" || return 1
 }
 step_switch() { # every command is checked: a failure returns, and the caller restores
   local s
-  snapshot || return 1
   mv -T "$NEW" "$PREFIX/releases/$VERSION" || return 1; NEW=; CREATED=1
-  ln -sfn "releases/$VERSION" "$PREFIX/current.new" || return 1
+  "$LN" -sfn "releases/$VERSION" "$PREFIX/current.new" || return 1
   mv -T "$PREFIX/current.new" "$PREFIX/current" || return 1
   for s in "${SERVICES[@]}"; do "$INSTALL" -m 0644 "$PREFIX/current/deploy/systemd/$s.service" "$UNITS/$s.service" || return 1; done
   mkdir -p "$DROPDIR" || return 1
@@ -149,11 +170,14 @@ step_switch() { # every command is checked: a failure returns, and the caller re
   "$INSTALL" -m 0644 "$STAGE/origin.conf" "$DROP" || return 1
   check switch ok "release $VERSION is current; units and origin drop-in installed"
 }
-restart_all() {
-  "$SYSTEMCTL" daemon-reload
-  "$SYSTEMCTL" stop openpassword-web openpassword-broker 2>/dev/null || true
-  "$SYSTEMCTL" enable "${SERVICES[@]}" >/dev/null 2>&1 || true
-  "$SYSTEMCTL" start openpassword-broker && "$SYSTEMCTL" start openpassword-web
+
+# Activation: every service operation must succeed, and the process that serves must be the new one: its
+# main PID differs from the one before the restart and its working directory is the release current points to.
+pid_of() { "$SYSTEMCTL" show -p MainPID --value "$1" 2>/dev/null || echo 0; }
+serving() { # service: the running main process belongs to the release `current` points to
+  local pid; pid=$(pid_of "$1")
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [ "$(readlink -f "$PROC/$pid/cwd" 2>/dev/null)" = "$(readlink -f "$PREFIX/current")" ]
 }
 ready() { # both services answer
   local i
@@ -163,29 +187,51 @@ ready() { # both services answer
   done
   return 1
 }
-step_readiness() {
-  restart_all || return 1
-  ready
+activate() {
+  local s old_b old_w
+  old_b=$(pid_of openpassword-broker); old_w=$(pid_of openpassword-web)
+  "$SYSTEMCTL" daemon-reload || return 1
+  "$SYSTEMCTL" stop openpassword-web openpassword-broker || return 1
+  "$SYSTEMCTL" enable "${SERVICES[@]}" >/dev/null 2>&1 || return 1
+  "$SYSTEMCTL" start openpassword-broker || return 1
+  "$SYSTEMCTL" start openpassword-web || return 1
+  ready || return 1
+  for s in "${SERVICES[@]}"; do serving "$s" || return 1; done
+  [ "$(pid_of openpassword-broker)" != "$old_b" ] || return 1
+  [ "$(pid_of openpassword-web)" != "$old_w" ] || return 1
 }
+step_readiness() { activate; }
 record_install() {
   record_text > "$RECORD.new" && mv -T "$RECORD.new" "$RECORD"
 }
-restore_files() { # undo the switch from the snapshot; keeps going after an error and reports it
-  local s rc=0
-  [ -d "$UP" ] || return 1
-  if [ -n "${PREV:-}" ]; then ln -sfn "$PREV" "$PREFIX/current.new" && mv -T "$PREFIX/current.new" "$PREFIX/current" || rc=1; else rm -f "${PREFIX:?}/current" || rc=1; fi
-  for s in "${SERVICES[@]}"; do
-    if [ -f "$UP/$s.service" ]; then "$INSTALL" -m 0644 "$UP/$s.service" "$UNITS/$s.service" || rc=1; else rm -f "${UNITS:?}/${s:?}.service" || rc=1; fi
-  done
-  if [ -f "$UP/origin.conf" ]; then mkdir -p "$DROPDIR" && "$INSTALL" -m 0644 "$UP/origin.conf" "$DROP" || rc=1; else rm -f "${DROP:?}" || rc=1; rmdir "$DROPDIR" 2>/dev/null || true; fi
-  if [ -f "$UP/installed.json" ]; then "$INSTALL" -m 0644 "$UP/installed.json" "$RECORD" || rc=1; else rm -f "${RECORD:?}" || rc=1; fi
-  if [ -n "${CREATED:-}" ]; then rm -rf "${PREFIX:?}/releases/${VERSION:?}" || rc=1; fi
+restore_item() { # name path
+  local name=$1 path=$2
+  case $(cat "$SNAP/$name.state" 2>/dev/null) in
+    present) "$INSTALL" -m 0644 "$SNAP/$name" "$path" ;;
+    absent) rm -f "${path:?}" ;;
+    *) return 1 ;;
+  esac
+}
+restore_files() { # undo the switch from the verified baseline; keeps going after an error and reports it
+  local s rc=0 link_ok=1
+  [ -n "${SNAP:-}" ] && [ -f "$SNAP/COMPLETE" ] || return 1
+  if [ -n "$(cat "$SNAP/prev")" ]; then
+    "$LN" -sfn "$(cat "$SNAP/prev")" "$PREFIX/current.new" && mv -T "$PREFIX/current.new" "$PREFIX/current" || { rc=1; link_ok=0; }
+  else
+    rm -f "${PREFIX:?}/current" || { rc=1; link_ok=0; }
+  fi
+  for s in "${SERVICES[@]}"; do restore_item "$s.service" "$UNITS/$s.service" || rc=1; done
+  restore_item origin.conf "$DROP" || rc=1
+  if [ "$(cat "$SNAP/origin.conf.state")" = absent ]; then rmdir "$DROPDIR" 2>/dev/null || true; fi
+  restore_item installed.json "$RECORD" || rc=1
+  # The new release directory is removed only when the previous link is back; otherwise it may be in use.
+  if [ -n "${CREATED:-}" ] && [ $link_ok = 1 ]; then rm -rf "${PREFIX:?}/releases/${VERSION:?}" || rc=1; fi
   return $rc
 }
 step_rollback() {
   restore_files || return 1
   "$SYSTEMCTL" daemon-reload || return 1
-  if [ -n "${PREV:-}" ]; then restart_all && ready; return; fi
+  if [ -n "$(cat "$SNAP/prev")" ]; then activate; return; fi
   # A fresh install that failed leaves no release: stop and disable what the attempt started.
   "$SYSTEMCTL" stop openpassword-web openpassword-broker 2>/dev/null || true
   "$SYSTEMCTL" disable "${SERVICES[@]}" >/dev/null 2>&1 || true
@@ -202,7 +248,8 @@ status_cmd() {
   local s
   for s in "${SERVICES[@]}"; do "$SYSTEMCTL" is-active --quiet "$s" && check "$s" ok active || fail "$s" inactive "$s is not active"; done
   ready || fail health unhealthy "the broker or console did not answer"
-  check health ok "broker and console answer"
+  for s in "${SERVICES[@]}"; do serving "$s" || fail "$s" not_serving_current "$s is not running from the current release"; done
+  check health ok "broker and console answer from the current release"
   finish ready
 }
 plan_cmd() {
@@ -212,7 +259,8 @@ plan_cmd() {
   finish ready
 }
 # The installed release is the requested one only if the supplied artifact, commit and origin all match
-# what was recorded at install time and what is on the host now. Anything else is a refusal, never "ready".
+# what was recorded at install time and what is on the host now, and the running processes belong to it.
+# Anything else is a refusal, never "ready".
 verify_installed() {
   local s
   step_copy
@@ -226,30 +274,37 @@ verify_installed() {
     cmp -s "$PREFIX/current/deploy/systemd/$s.service" "$UNITS/$s.service" || fail installed unit_drift "$s.service on the host differs from the release"
   done
   step_verify "$PREFIX/releases/$VERSION"
-  check installed ok "digest, commit, origin, units and release identity match"
+  ready || fail health unhealthy "release $VERSION is installed but the services do not answer"
+  for s in "${SERVICES[@]}"; do serving "$s" || fail installed not_serving_release "$s is not running from release $VERSION"; done
+  check installed ok "digest, commit, origin, units, release identity and running processes match"
 }
 cleanup() { # temporary files always; an interrupted switch is restored too
+  if [ "${TXN:-0}" = 1 ]; then TXN=0; restore_files >/dev/null 2>&1 || KEEP_SNAP=1; fi
   [ -n "${STAGE:-}" ] && rm -rf "${STAGE:?}"
   [ -n "${NEW:-}" ] && rm -rf "${NEW:?}"
-  if [ "${TXN:-0}" = 1 ]; then TXN=0; restore_files >/dev/null 2>&1 || true; fi
+  [ -n "${SNAP:-}" ] && [ -z "${KEEP_SNAP:-}" ] && rm -rf "${SNAP:?}"
   return 0
 }
 apply_cmd() {
   validate_inputs; check_host
-  STAGE= NEW= PREV= CREATED=
+  STAGE= NEW= PREV= CREATED= SNAP= KEEP_SNAP=
   TXN=0
   mkdir -p "$PREFIX/releases"; chmod 755 "$PREFIX"
   trap cleanup EXIT
+  # One apply at a time: staging, baseline and the switch share the prefix.
+  command -v flock >/dev/null || fail host no_flock "flock is required to serialize apply"
+  exec 9> "$PREFIX/.apply.lock"
+  flock -n 9 || fail lock lock_busy "another apply is running"
   local cur; cur=$(current_version || true)
   if [ "$cur" = "$VERSION" ]; then
     verify_installed
-    ready || fail health unhealthy "release $VERSION is installed but the services do not answer"
-    check health ok "broker and console answer"
     finish ready
   fi
   step_stage; step_verify "$NEW"
   [ ! -e "$PREFIX/releases/$VERSION" ] || fail switch exists "releases/$VERSION already exists but is not the active release"
   step_preflight; step_drain
+  step_snapshot || fail snapshot snapshot_failed "the current configuration could not be captured completely; nothing was changed"
+  check snapshot ok "baseline captured and verified"
   TXN=1
   local rc=0
   step_switch || rc=1
@@ -257,14 +312,14 @@ apply_cmd() {
   if [ $rc = 0 ]; then record_install || rc=3; fi
   if [ $rc = 0 ]; then
     TXN=0
-    check readiness ok "broker and console answer"
+    check readiness ok "broker and console answer from the new release"
     if [ -z "$PREV" ]; then human_steps; finish needs_human; fi
     finish ready
   fi
   local code msg
   case $rc in
     1) code=switch_failed; msg="release $VERSION could not be switched in" ;;
-    2) code=readiness_failed; msg="release $VERSION failed readiness" ;;
+    2) code=readiness_failed; msg="release $VERSION did not start as the serving release" ;;
     *) code=record_failed; msg="release $VERSION could not be recorded" ;;
   esac
   check switch fail "$msg"
@@ -273,7 +328,8 @@ apply_cmd() {
     check rollback ok "the previous state is restored${PREV:+ and running again}"
     finish failed "$code" "$msg; rolled back"
   fi
-  check rollback fail "rollback did not complete"
+  KEEP_SNAP=1
+  check rollback fail "rollback did not complete; the baseline is kept in $SNAP"
   finish failed rollback_failed "$msg and the rollback failed; inspect the host"
 }
 "${sub}_cmd"
