@@ -57,9 +57,8 @@ export function ConsoleLogin({
             <form onSubmit={submit} key={String(setup) + String(member)}>
               {setup && (
                 <p>
-                  Enter the setup code from the server to claim this installation. After adding a
-                  provider connection, issue a separate enrollment token for each CLI in Access
-                  grants.
+                  Use the setup code from the machine running OpenPassword. This account will manage
+                  your workspace.
                 </p>
               )}
               {(setup || member) && (

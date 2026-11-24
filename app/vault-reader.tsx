@@ -31,6 +31,26 @@ type Props = {
   request: Request
   open: (modal: string, id?: string) => void
 }
+// A visual bookmark derived solely from the public record ID.
+function ItemMark({ id }: { id: string }) {
+  let hash = 0
+  for (const char of id) hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0
+  return (
+    <span
+      aria-hidden="true"
+      className={'recordMark tone' + (hash % 4)}
+      data-shape={(hash >>> 3) % 3}
+    >
+      {[0, 1, 2, 3].map((n) => (
+        <i
+          key={n}
+          style={{ transform: 'rotate(' + ((hash % 60) + n * (18 + ((hash >>> 8) % 14))) + 'deg)' }}
+        />
+      ))}
+      <b />
+    </span>
+  )
+}
 function when(at: number) {
   const d = new Date(at),
     now = new Date()
@@ -119,13 +139,20 @@ export function VaultReader({ path, workspace, role, revision, request, open }: 
     )
   return (
     <div className="vaultContent">
-      <div className="vaultIntro">
+      <div className="vaultIntro directoryCover">
         <div>
           <div className="vaultTab">
-            <FolderKey size={16} /> Workspace vault
+            <FolderKey size={16} /> {workspace}
           </div>
           <h1>Vault items</h1>
           <p>Shared passwords and secure notes.</p>
+          <div className="coverEngraving" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
+            <i />
+          </div>
         </div>
         {writable && (
           <button className="primary" onClick={() => open('item')}>
@@ -155,7 +182,21 @@ export function VaultReader({ path, workspace, role, revision, request, open }: 
                 }
               }}
             />
-            <kbd>⌘ / Ctrl K</kbd>
+            {q ? (
+              <button
+                className="clearFilter"
+                aria-label="Clear vault search"
+                onClick={() => {
+                  Q('')
+                  P(1)
+                  search.current?.focus()
+                }}
+              >
+                ×
+              </button>
+            ) : (
+              <kbd>Ctrl / ⌘ K</kbd>
+            )}
           </label>
           <span aria-live="polite">
             {list && list.total.toLocaleString() + ' ' + (list.total === 1 ? 'item' : 'items')}
@@ -220,9 +261,7 @@ export function VaultReader({ path, workspace, role, revision, request, open }: 
                   window.scrollTo(0, 0)
                 }}
               >
-                <span className="itemSigil">
-                  <KeyRound size={21} />
-                </span>
+                <ItemMark id={i.id} />
                 <span className="rowText">
                   <strong>{i.title}</strong>
                   <small>{i.username || workspace}</small>
@@ -373,7 +412,8 @@ function Detail({
         <p role="status">Loading item…</p>
       ) : (
         <>
-          <div className="vaultIntro">
+          <div className="vaultIntro recordHeader">
+            <ItemMark id={id} />
             <div>
               <div className="vaultTab">
                 <KeyRound size={16} />
@@ -407,76 +447,80 @@ function Detail({
             </section>
           ) : (
             <>
-              <section className="readerCard">
-                <div className="cardTitle">
-                  <h2>Credential fields</h2>
-                  <LockKeyhole size={19} />
-                </div>
-                <div className="field">
-                  <label>
-                    <UserRound size={15} /> Account
-                  </label>
-                  <code>{item.username || 'No account specified'}</code>
-                </div>
-                <div className="field">
-                  <label>
-                    <KeyRound size={15} /> Stored value
-                  </label>
-                  <code
-                    aria-label={value === null ? 'Value hidden' : 'Revealed value'}
-                    className={value === null ? 'masked' : ''}
-                  >
-                    {value ?? '••••  ••••  ••••'}
-                  </code>
-                  {writable ? (
-                    <div className="fieldActions">
-                      <button
-                        disabled={busy}
-                        aria-label={value === null ? 'Reveal stored value' : 'Hide stored value'}
-                        onClick={() => (value === null ? access(false) : V(null))}
-                      >
-                        {value === null ? <Eye size={16} /> : <EyeOff size={16} />}{' '}
-                        {value === null ? 'Reveal' : 'Hide'}
-                      </button>
-                      <button
-                        disabled={busy}
-                        aria-label="Copy stored value"
-                        onClick={() => access(true)}
-                      >
-                        <Copy size={16} />
-                        Copy
-                      </button>
+              <div className="recordLayout">
+                <section className="readerCard">
+                  <div className="cardTitle">
+                    <h2>Credential fields</h2>
+                    <LockKeyhole size={19} />
+                  </div>
+                  <div className="field">
+                    <label>
+                      <UserRound size={15} /> Account
+                    </label>
+                    <code>{item.username || 'No account specified'}</code>
+                  </div>
+                  <div className="field">
+                    <label>
+                      <KeyRound size={15} /> Stored value
+                    </label>
+                    <code
+                      aria-label={value === null ? 'Value hidden' : 'Revealed value'}
+                      className={value === null ? 'masked' : ''}
+                    >
+                      {value ?? '••••  ••••  ••••'}
+                    </code>
+                    {writable ? (
+                      <div className="fieldActions">
+                        <button
+                          disabled={busy}
+                          aria-label={value === null ? 'Reveal stored value' : 'Hide stored value'}
+                          onClick={() => (value === null ? access(false) : V(null))}
+                        >
+                          {value === null ? <Eye size={16} /> : <EyeOff size={16} />}{' '}
+                          {value === null ? 'Reveal' : 'Hide'}
+                        </button>
+                        <button
+                          disabled={busy}
+                          aria-label="Copy stored value"
+                          onClick={() => access(true)}
+                        >
+                          <Copy size={16} />
+                          Copy
+                        </button>
+                      </div>
+                    ) : (
+                      <small>Your viewer role permits access to item metadata.</small>
+                    )}
+                    <span role="status">{msg}</span>
+                  </div>
+                </section>
+                <section className="recordContext">
+                  <div className="readerMeta">
+                    <div>
+                      <span>Last changed</span>
+                      <Time at={item.updated} />
                     </div>
-                  ) : (
-                    <small>Your viewer role permits access to item metadata.</small>
+                    <div>
+                      <span>Your access</span>
+                      <strong>{writable ? 'Reveal and manage' : 'Metadata only'}</strong>
+                    </div>
+                  </div>
+                  <a className="auditLink" href={'/vault/' + id + '/history'}>
+                    <History size={17} />
+                    Item activity
+                    <ArrowRight size={17} />
+                  </a>
+                  {writable && (
+                    <details className="itemMenu">
+                      <summary>
+                        <MoreHorizontal size={16} />
+                        More actions
+                      </summary>
+                      <button onClick={() => open('deleteItem', id)}>Delete item</button>
+                    </details>
                   )}
-                  <span role="status">{msg}</span>
-                </div>
-              </section>
-              <div className="readerMeta">
-                <div>
-                  <span>Last changed</span>
-                  <Time at={item.updated} />
-                </div>
-                <div>
-                  <span>Your access</span>
-                  <strong>{writable ? 'Reveal and manage' : 'Metadata only'}</strong>
-                </div>
+                </section>
               </div>
-              <a className="auditLink" href={'/vault/' + id + '/history'}>
-                <History size={17} />
-                Item activity
-                <ArrowRight size={17} />
-              </a>
-              {writable && (
-                <details className="itemMenu">
-                  <summary>
-                    <MoreHorizontal size={16} />
-                    More actions
-                  </summary>
-                  <button onClick={() => open('deleteItem', id)}>Delete item</button>
-                </details>
-              )}
             </>
           )}
         </>

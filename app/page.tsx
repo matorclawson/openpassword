@@ -1,6 +1,7 @@
 'use client'
 import { Authentication, ConsoleLogin, Profile } from './authentication'
 import { WorkspaceSwitcher } from './workspace-switcher'
+import { ProviderDirectory } from './provider-directory'
 import { Appearance } from './appearance'
 import { VaultReader } from './vault-reader'
 import { ActivityFeed } from './activity-feed'
@@ -689,20 +690,11 @@ export default function Page() {
                     </div>
                   ))}
                 {tab === 'Integrations' && (
-                  <div className="cards">
-                    {Object.entries(w.providers)
-                      .filter(([, p]) => includes(p.name, p.group, ...p.actions.map((a) => a.id)))
-                      .map(([id, p]) => (
-                        <button key={id} className="card" onClick={() => show('provider', id)}>
-                          <div className="mark">{p.name.slice(0, 2)}</div>
-                          <small>{p.group}</small>
-                          <strong>{p.name}</strong>
-                          <span>
-                            {p.actions.length} operations <ArrowUpRight size={14} />
-                          </span>
-                        </button>
-                      ))}
-                  </div>
+                  <ProviderDirectory
+                    providers={w.providers}
+                    query={q}
+                    open={(id) => show('provider', id)}
+                  />
                 )}
                 {tab === 'Access grants' &&
                   (w.grants.length ? (

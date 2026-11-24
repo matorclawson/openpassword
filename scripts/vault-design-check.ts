@@ -145,12 +145,20 @@ try {
   }
   writeFileSync(join(out, 'contrast.json'), JSON.stringify(contrast, null, 2))
   await p.keyboard.press('Control+k')
+  await p.keyboard.type('missing-filter')
+  await p.getByRole('button', { name: 'Clear vault search' }).click()
+  assert.equal(await p.getByLabel('Search vault items').inputValue(), '')
   await p.keyboard.type('Release')
   await p.waitForFunction(() => document.querySelectorAll('.vaultRow').length === 1)
   await p.keyboard.press('ArrowDown')
+  const listMark = await p.locator('.vaultRow .recordMark').evaluate((el) => el.outerHTML)
   await p.keyboard.press('Enter')
   await p.getByRole('heading', { name: 'Release registry' }).waitFor()
   assert.equal(new URL(p.url()).pathname, '/vault/' + target)
+  assert.equal(
+    await p.locator('.recordHeader .recordMark').evaluate((el) => el.outerHTML),
+    listMark,
+  )
   await pair('reader')
   const reveal = p.getByRole('button', { name: 'Reveal stored value' })
   await reveal.click()

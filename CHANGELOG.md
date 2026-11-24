@@ -20,6 +20,8 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 - The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
 
 ### Vault interface
+
+- Add matching record marks to vault rows and readers, a workspace-specific engraved directory cover, a clear-search control, and a separate access and activity section alongside desktop credential fields. Group integrations by capability and show operation counts beside each provider.
 - Rebuild the vault directory, masked item reader and first-run account screen with the shared family tokens and local fonts. Add persistent System, Light and Dark appearance, bounded server-side item search, stable item and activity URLs, and role-aware copy and reveal controls.
 - Apply the palette to connections, integrations, grants, approvals, usage, activity and settings. Collapse mobile navigation and add a searchable workspace switcher.
 
