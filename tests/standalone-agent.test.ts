@@ -69,9 +69,13 @@ test(
     )
     t.after(() => client.close())
     assert.deepEqual((await client.listTools()).tools.map((x) => x.name).sort(), [
+      'activity',
       'capabilities',
+      'chat',
       'connections',
       'invoke',
+      'models',
+      'whoami',
     ])
     const caps = await client.callTool({ name: 'capabilities', arguments: {} })
     assert.ok(JSON.stringify(caps).includes('github.user.get'))

@@ -79,7 +79,7 @@ name="openpassword-$version-linux-$arch"
   npm run build
   npm prune --omit=dev
 )
-dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(!(p.dependencies||{})[k])console.log(k)" "$build/package.json")
+dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(require(process.argv[2]).packages['node_modules/'+k]?.dev===true)console.log(k)" "$build/package.json" "$build/package-lock.json")
 for k in $dev_only; do
   [ ! -e "$build/node_modules/$k" ] || { echo "package: development dependency $k survived the prune" >&2; exit 1; }
 done
@@ -91,7 +91,7 @@ for f in $script_refs; do
 done
 
 # 2. Stage an explicit runtime payload.
-payload=(package.json package-lock.json tsconfig.json next.config.ts next-env.d.ts LICENSE README.md CHANGELOG.md PARITY.md app deploy docs public server packages .next node_modules)
+payload=(package.json package-lock.json tsconfig.json next.config.ts next-env.d.ts LICENSE README.md CHANGELOG.md PARITY.md app brand registry deploy docs public server packages .next node_modules)
 for p in "${payload[@]}"; do [ -e "$build/$p" ] || { echo "package: missing $p in the build" >&2; exit 1; }; done
 tar -C "$build" --exclude=.next/cache --exclude=.next/trace --exclude='.next/trace-*' --exclude=.next/diagnostics --exclude='.env*' --exclude='packages/*/node_modules' -cf - "${payload[@]}" | tar -xf - -C "$out/stage"
 rm -rf "$out/stage/.next/cache" "$out/stage/.next/diagnostics" "$out/stage/.next/trace" "$out/stage"/.next/trace-*

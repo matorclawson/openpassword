@@ -4,6 +4,7 @@ import { readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { join } from 'node:path'
 const inputs = [
+  'public/appearance.js',
   'README.md',
   'CHANGELOG.md',
   'CONTRIBUTING.md',
@@ -26,7 +27,8 @@ function collect(dir: string) {
       if (!['dist', 'node_modules'].includes(entry.name)) collect(path)
     } else if (
       entry.isFile() &&
-      (/\.(ts|tsx|css|json|woff2|txt|md|service|sh)$/.test(entry.name) || entry.name === 'LICENSE')
+      (/\.(ts|tsx|css|json|woff2|mjs|webp|png|txt|md|service|sh)$/.test(entry.name) ||
+        entry.name === 'LICENSE')
     )
       inputs.push(path)
   }
@@ -42,6 +44,8 @@ for (const dir of [
   'docs',
   'registry',
   'public/fonts',
+  'public/brand',
+  'brand',
 ])
   collect(dir)
 const tmp = 'public/openpassword-source.tar.gz.tmp'
@@ -57,7 +61,14 @@ if (!epoch) {
   }
 }
 const flags = gnu
-  ? ['--sort=name', '--mtime=@' + epoch, '--owner=0', '--group=0', '--numeric-owner', '--format=gnu']
+  ? [
+      '--sort=name',
+      '--mtime=@' + epoch,
+      '--owner=0',
+      '--group=0',
+      '--numeric-owner',
+      '--format=gnu',
+    ]
   : []
 const archive = execFileSync('tar', ['-cf', '-', ...flags, '--', ...inputs.sort()], {
   maxBuffer: 1 << 30,

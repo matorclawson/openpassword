@@ -12,7 +12,7 @@ Keep the SQLite database and master.key together in a protected backup. For an o
 
 ## Backups
 
-The data directory holds `vault.sqlite` (encrypted provider credentials, grants, history), `master.key` (the key for those credentials) and `operator.token`. A copy of the database without `master.key` cannot be read, and a copy of both together must never be stored unencrypted off the host. `deploy/backup/backup.sh` therefore writes both into one **borg** archive, encrypted on the host before upload; only the encrypted archive leaves it.
+The data directory holds `vault.sqlite` (encrypted provider credentials, grants, history), `master.key` (the key for those credentials) and `operator.token`. A database copy alone retains readable metadata but cannot decrypt broker-sealed values without the associated master key, and a copy of both together must never be stored unencrypted off the host. `deploy/backup/backup.sh` therefore writes both into one **borg** archive, encrypted on the host before upload; only the encrypted archive leaves it.
 
 Setup, once, as root. Create `/etc/openpassword/backup.env` (owner root, mode 0600) with `BORG_REPO` (for example an `ssh://` repository on your storage), `BORG_PASSCOMMAND` (a command that prints the passphrase, such as `cat /etc/openpassword/backup.pass` with that file at mode 0600) and optionally `BORG_RSH` for the SSH key and port. `BORG_PASSPHRASE` in the file is refused. Initialise the repository with `borg init --encryption=repokey-blake2` using the same settings. Keep the passphrase and a copy of the repository key somewhere other than the backed-up host: without them an archive cannot be opened.
 
@@ -97,53 +97,120 @@ On a Linux host with Node 24.19.0 as the build Node (the release refuses any oth
 
 `make package` refuses to build when `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` is set in the environment, because Next.js embeds a caller-supplied key in the build output; the generated key stays random per build. It also refuses unless every per-build file exists as regular files in the staged release. The only per-build paths are `.next/server/server-reference-manifest.json` (the generated key described below; its `.js` companion showed no variance and is compared) and `.next/server/preview-props.json` and `.next/prerender-manifest.json` (Next's random preview-mode keys, diagnosed in the 4fd28b31 gate diff). `make package` builds in the fixed directory `/tmp/openpassword-release-build` and refuses if it exists, before changing anything, and holds it until the build ends; the directory and `dist-release/` are created owner-only (0700) because they hold per-build key material. It builds there because Next embeds absolute build paths and derives module ids from them, which made two builds in different checkouts differ (also diagnosed in that diff); the first two-build run must confirm they are the only legitimate differences. The server-reference files hold the key Next generated for that build, which the server needs at run time to encrypt Server Action closures. It is random, belongs to no operator, and protects no credential or vault data. Do not substitute your own key at build time. No server action exists in the source today, so that key protects none. `make package` also refuses to build if `app`, `server` or `packages` mention Server Actions or preview/draft mode (`use server`, `draftMode`, `setPreviewData`, `previewData`, `__prerender_bypass`). **The release archive is not a public download.** It also contains Next's random preview-mode values, which the locked Next.js runtime loads at run time; a public archive would disclose the same values to everyone running that build. Do not attach it to a public release. It stays in gate custody and installs are made from there, until a distribution design with per-install keys, or with the framework behaviour disabled, has been qualified. This is the maintainer's reading of Next.js behaviour and is unverified until the gate inspects the built archive.
 
-To install, save this as a Bash script (it stops at the first failure). Set `VERSION` and `ARCH` (for example `VERSION=0.3.0 ARCH=arm64`), `ARCHIVE` to the archive's path, `EXPECTED_SHA256` to the archive digest and `EXPECTED_COMMIT` to the commit recorded by the party that gated it. Archive digests differ between builds, because Next generates a per-build key, so the gate record must name the one build it published and that archive's sha256; the digest is not a property of the commit. Do not take the digest from a sidecar next to the archive. The script copies the archive into a root-owned 0700 staging directory, verifies that staged copy, and extracts only that copy. The archive in your own directory is read once, by the copy.
+Deploy the private gate artifact using the archive updater below.
 
-```bash
-set -euo pipefail
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$ARCH" =~ ^[a-z0-9_]+$ ]] && [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] && [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
-  || { echo "VERSION, ARCH, EXPECTED_SHA256 or EXPECTED_COMMIT is malformed" >&2; exit 1; }
-case "$(uname -m)" in aarch64|arm64) HOST_ARCH=arm64 ;; x86_64) HOST_ARCH=x64 ;; *) HOST_ARCH=$(uname -m) ;; esac
-[ "$(uname -s)" = Linux ] && [ "$ARCH" = "$HOST_ARCH" ] || { echo "ARCH $ARCH is not this Linux host ($HOST_ARCH)" >&2; exit 1; }
-R=/opt/openpassword/releases
-sudo mkdir -p "$R"
-if sudo test -e "$R/$VERSION"; then echo "release $VERSION already exists" >&2; exit 1; fi   # never overlay a release
-STAGE=$(sudo mktemp -d /opt/openpassword/.stage-XXXXXX)   # root-owned, mode 0700
-NEW=
-trap 'sudo rm -rf "$STAGE" ${NEW:+"$NEW"}' EXIT
-sudo cp -- "$ARCHIVE" "$STAGE/release.tar.gz"
-GOT=$(sudo sha256sum "$STAGE/release.tar.gz" | cut -d' ' -f1)
-[ "$GOT" = "$EXPECTED_SHA256" ] || { echo "digest mismatch: $GOT" >&2; exit 1; }
-NEW=$(sudo mktemp -d "$R/.new-XXXXXX")
-sudo tar -xzf "$STAGE/release.tar.gz" -C "$NEW" --no-same-owner
-sudo chmod 755 "$NEW"
-for f in server/main.ts node_modules/next/dist/bin/next packages/cli/dist/index.js .next/BUILD_ID \
-         node_modules/tsx/package.json node/bin/node .next/server/server-reference-manifest.json .next/server/server-reference-manifest.js; do
-  sudo test -f "$NEW/$f" || { echo "missing $f in the release; not switching" >&2; exit 1; }
-done
-# Probe under the units' own sandbox (identity and restrictions), with the Node that ships in the release.
-SD="sudo systemd-run --quiet --pipe --wait --property=WorkingDirectory=$NEW -p DynamicUser=yes -p NoNewPrivileges=yes -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes"
-# The release must be the one named: RELEASE.json comes from the verified, extracted copy.
-$SD "$NEW/node/bin/node" -e '
-const r = JSON.parse(require("fs").readFileSync(process.argv[1] + "/RELEASE.json", "utf8"));
-const [v, a, c] = process.argv.slice(2);
-if (r.name !== "openpassword" || r.platform !== "linux" || r.version !== v || r.arch !== a || r.commit !== c) { console.error("RELEASE.json does not match", JSON.stringify([r.version, r.arch, r.commit])); process.exit(1) }
-' "$NEW" "$VERSION" "$ARCH" "$EXPECTED_COMMIT" || { echo "release identity mismatch; not switching" >&2; exit 1; }
-V=$($SD "$NEW/node/bin/node" -p process.version)
-[ "$V" = v24.19.0 ] || { echo "service Node is $V, not v24.19.0; not switching" >&2; exit 1; }
-# Broker: the tsx loader, and read access to its entry point.
-$SD "$NEW/node/bin/node" --import tsx -e 'require("fs").accessSync("server/main.ts", require("fs").constants.R_OK)' \
-  || { echo "broker loader or entry point is not usable under the unit sandbox; not switching" >&2; exit 1; }
-# Web: the launcher itself.
-$SD "$NEW/node/bin/node" node_modules/next/dist/bin/next --version >/dev/null \
-  || { echo "web launcher is not usable under the unit sandbox; not switching" >&2; exit 1; }
-sudo mv -T "$NEW" "$R/$VERSION"; NEW=
-sudo ln -sfn "releases/$VERSION" /opt/openpassword/current.new
-sudo mv -T /opt/openpassword/current.new /opt/openpassword/current   # atomic switch
+## CLI enrollment and live activity
+
+The installation setup code is read on the server and entered in the browser. For a pre-existing standalone workspace, create a grant in the target workspace and choose **One-time CLI enrollment token**. The server stores a digest of this ticket. Redeeming it consumes the ticket and issues the device credentials in one SQLite transaction. Existing paired devices can continue to refresh their credentials. If the client loses the response during enrollment, revoke that grant and issue a new ticket.
+
+Use the CLI download served by the installation. Set `OPENPASSWORD_BROKER` and `OPENPASSWORD_AGENT` in the environment of both the CLI and its MCP process. Compare `openpassword whoami` with the ID under **Access grants**. The **CLI connected** timestamp records redemption. An MCP `whoami` call verifies which grant the running harness is using.
+
+The browser long-polls `/api/admin/activity` with its authenticated session. Owners see the selected workspace; members see their own audit actions. The agent endpoint `/v1/activity` returns only events attributed to the authenticated grant. Both return the latest 100 visible events in chronological order on first contact. Pass `after=<last-id>` to read subsequent pages. An idle request waits up to 20 seconds. A timeout returns an empty page and preserves the cursor. To resume a CLI stream, run `openpassword watch LAST_EVENT_ID`.
+
+Keep the reverse proxy's response timeout above 20 seconds. Each broker process caps pending polls at 4,096 total and 512 per audience. A full group returns HTTP 429. SQLite retains the audit events across disconnects and restarts. Wake notifications are local to one broker process. The separate consumption ledger tracks provider requests and usage.
+
+To reproduce the gateway load checks, run `node --import tsx scripts/gateway-load.ts --minute` for 3,000 scheduled chat requests over one minute or omit `--minute` for a 40-client burst. Both use loopback HTTP, a disposable SQLite vault and a simulated upstream. The check verifies dispatches, saved requests, consumption records and the grant's activity cursor.
+
+## Upgrade a running systemd installation
+
+The Linux gate uses Node v24.19.0, runs the test suite, builds the exact commit with `make package COMMIT=<full-sha>`, then runs `make checksum`. Record the approved **archive digest, commit, version and architecture** independently of the file transfer. Keep the archive in gate custody.
+
+On the server use the trusted `deploy/upgrade.sh` delivered separately with the gate handoff. Linux, GNU tar/coreutils, util-linux flock and systemd are required. Production needs neither npm nor a checkout. For example, with the gate's values in the shell:
+
+```sh
+sudo sh deploy/upgrade.sh --install "$ARCHIVE" "$EXPECTED_SHA256" "$VERSION" "$EXPECTED_COMMIT"
 ```
 
-Then restart the services (stop web before broker, start broker before web). The archive root is the release directory, so `server/main.ts` and `node_modules/next` sit directly under `/opt/openpassword/current`, the units' working directory.
+Set the broker unit's environment drop-in to `OPENPASSWORD_WEB_ORIGIN=https://pass.zeo.ac` for this deployment. Other installations use their own public origin. Use the existing reverse proxy. For a nondefault local console port pass `OPENPASSWORD_WEB_PORT` through sudo. The existing vault, master key, sessions and grant records remain in the broker's state directory.
 
-**Moving from 0.2.0 to 0.3.0.** The 0.3.0 units run `/opt/openpassword/current/node/bin/node`, which the 0.2.0 archive does not contain, so the unit files and the release change together. Before switching the symlink, keep a copy of the units now installed (`sudo mkdir -p /opt/openpassword/units-0.2.0 && sudo cp /etc/systemd/system/openpassword-*.service /opt/openpassword/units-0.2.0/`). After the symlink switch, install the new units and reload: `sudo install -m 0644 /opt/openpassword/current/deploy/systemd/openpassword-broker.service /opt/openpassword/current/deploy/systemd/openpassword-web.service /etc/systemd/system/` and `sudo systemctl daemon-reload`, then stop web, restart broker, start web. A host that has no system Node needs the new units for the services to start at all.
+The installer hashes a private staged copy before extraction, then runs the verified release's TypeScript upgrader using its bundled Node. It checks release identity and Node digest, installs the release at `/opt/openpassword/releases/<version>`, and exercises the broker on a disposable vault and the Next launcher under a transient service identity. A previously installed version is reusable only with the same recorded archive digest. Reusing a version from a manual install without a receipt is refused; use a new version.
 
-**Rolling back.** Between releases that both bundle Node (0.3.0 and later) it is the symlink alone: point `current` at the previous release and restart. Rolling back to 0.2.0 crosses the boundary: the new units cannot start without `node/bin/node`. Stop web then broker, restore the saved 0.2.0 unit files into `/etc/systemd/system/`, make sure Node v24.19.0 is installed on the system PATH (the 0.2.0 units use it), run `sudo systemctl daemon-reload`, point `current` at the 0.2.0 release, then start broker and web. The packaging gate does not exercise the systemd transition or either rollback; do them first on a host you can afford to break.
+The activation lock covers preflight through readiness. A supporting broker gets up to 90 seconds to drain. Older brokers use their existing shutdown behavior. Both services stop, and the updater then takes a copy of the state directory (see below). The candidate is proven before it is public: it replaces the `current` symlink and base units, the broker alone starts on private port 4151 through a runtime drop-in under `/run` (gone after a reboot), against the real store, which it may migrate, while the console stays stopped. Its health and release identity must agree. It then stops, and rollback is disarmed: the journal is marked committed before the normal-port start, because from then on the broker can accept writes. The public start runs both units with local console and broker readiness, service working directories and bundled executables. A failure there is fixed forward; `--recover` repeats the public start. Drop-ins are preserved. On first installation enable both units for boot after successful readiness.
+
+Use the **installed version that contains this updater** as the argument to these maintenance commands, even when the active version is older:
+
+```sh
+sudo sh deploy/upgrade.sh --rollback 0.4.0
+sudo sh deploy/upgrade.sh --recover 0.4.0
+```
+
+The state copy is `/opt/openpassword/upgrade-state/store-<id>`: the vault with its sidecars, `master.key` and `operator.token`, with owners and modes, a manifest of verified hashes and SQLite's integrity check. A missing state directory, a linked entry or a failed check aborts before the candidate starts. The path of the copy and of the state directory are journaled before the candidate runs, so recovery works even when the live directory is momentarily absent. The committed record keeps them too, so an interrupted forward recovery rewrites `previous.json`. Before the point of no return, a failed activation restores the previous symlink, the exact base unit contents and that copy. The restore stages and verifies a replacement against the manifest beside the live directory, then swaps it in, so a damaged copy leaves the live directory alone and an interruption can be repeated. The journal records the restore as done before the old release starts, and the copy is deleted only after the journal is cleared, so recovery never restores over writes the old release has accepted. An interrupted transaction is recovered the same way before another switch. Moving to a release that does not enforce host proof (one without `server/hosts.ts`, such as 0.3.1) is refused, for `--rollback` and `--install` alike, while any active host-bound grant or unredeemed host-bound enrollment token exists, because those would become plain bearer credentials. The message gives the counts. The check runs once up front for a quick refusal and again after the services have drained and stopped, so a grant created during the drain is still caught; the old release is then restarted unchanged. Revoke them in the console (Workspace → access grants), then retry. The updater does not revoke them itself. The last successful activation keeps its copy and `previous.json` names it. `--rollback` does not restore it, because the newer release has written since; restoring it discards that data, so do so only by hand and knowingly. The copy holds the same secrets as the vault: it stays root-only and needs the same custody as a backup. The previous release must honor `OPENPASSWORD_PORT`, which every release since 0.1.0 does, for a manual `--rollback` to prove it privately. A manual `--rollback` after a successful activation assumes a backward-compatible database. Keep a protected vault backup for a migration that changes that assumption. Updating the workstation CLI remains a separate `sh deploy/update-client.sh` operation.
+
+### Trace a grant to its credential
+
+Open a vault item and choose **Use for a provider connection**, or choose a saved item while adding or rotating a connection. This creates an explicit reference. Existing connections using directly entered credentials or OAuth keep their existing credential. OpenPassword never infers links from a matching name or secret.
+
+From the connection, open **Credential and agent access** and choose **Give an agent access**. Select the agent’s operations and duration. Model access also needs a model lease. The grant list shows the stored expiry, allowed operations, connection and credential source. Follow either link to inspect it. Revoking the grant removes that agent’s access. Rotating a connection changes the source used by all its grants. Deleting a referenced item requires replacing its connection sources or revoking those connections first.
+
+Workspace vault items keep their existing human reveal policy. A grant authorizes provider operations through the gateway. It conveys no permission to reveal or copy the underlying vault value. Lists show relationships visible to the signed-in profile.
+
+## Remote operator and CLI enrollment
+
+On a systemd installation, `openpassword setup-code --ssh operator@host` uses the SSH host key already verified by the operator and noninteractive sudo permission to read the service token. An SSH config alias supports custom ports and jump hosts. If sudo needs a password, log in interactively, then run this on the host:
+
+```sh
+sudo cat /var/lib/openpassword/operator.token | /opt/openpassword/current/node/bin/node /opt/openpassword/current/public/openpassword-cli.cjs setup-code --operator-stdin
+```
+
+A user installation can run `openpassword setup-code` as its service owner, with its existing OPENPASSWORD_HOME and OPENPASSWORD_PORT settings. A remote user installation can use `--ssh operator@host --user` when these settings and the executable are available to the noninteractive SSH shell. Enter the code only at your deployment's known console origin. Generating a new code invalidates the previous code. A canceled social enrollment needs a fresh code. Complete account setup, enroll the host under Workspace → CLI hosts, then approve each agent request under Access grants.
+
+## Vault threat boundary
+
+The broker encrypts each sealed value with a new random 256-bit data key. AES-GCM authenticates the value and its context, and the broker wraps the data key under the installation master key. Item titles, usernames, ownership and audit metadata remain readable in SQLite. A stolen running broker or a copy of both the database and master key can expose stored values. CLI device access and refresh tokens are stored in a per-user SQLite file on the client. Restrict access to that OS account.
+
+This release uses server-side decryption for unattended gateway calls. A phishing-resistant login, a device remembered for a limited time, and a client-held vault decryption key address separate threats. The personal Private vault has an independent client-held key. Its owner can explicitly delegate a credential copy to the gateway. Device enrollment with passkeys and persistent 30-day unlock remain future work. The root key files must be regular, single-link files owned by the broker, readable only by that identity. Verify permissions after restoring backups.
+
+### Protect a database backup with a separate wrapping key
+
+Provision a random 32-byte key encoded as 64 hexadecimal characters from your secret manager. Keep a recoverable copy independent of the host and its backup destination. Mount it as a private file owned by the broker, outside OPENPASSWORD_HOME. Set OPENPASSWORD_WRAPPING_KEY_FILE to its absolute path. For systemd, an encrypted service credential can be supplied with LoadCredentialEncrypted and referenced in the environment as `OPENPASSWORD_WRAPPING_KEY_FILE=%d/vault-wrap`. The environment contains only a path. A new vault uses the wrapping key on creation.
+
+For an existing vault, verify a recoverable backup first, then stop the broker. Under its service identity with both variables set, run `node deploy/wrap-master.ts` from the candidate release. With a systemd dynamic user, a one-time ExecStartPre using the bundled Node and absolute script path runs with the correct identity and credential mount on restart. The command replaces master.key atomically, leaves the database unchanged, and verifies an already wrapped file on retry. Installations with external wrapping fail to start if given an unwrapped master key. A wrapped installation requires the correct wrapping key after restart or restore. Older releases cannot open it.
+
+Existing backup and restore scripts carry the opaque master.key file. Future snapshots contain the wrapped master key. Old backups may still contain the original unwrapped key and must retain their independent backup protection. A filesystem snapshot of the entire machine may include both credentials depending on how the external key is provisioned. A running broker still decrypts authorized values. Validate backup recovery with the separately held key before relying on this mode.
+
+For client updates, run the installer from a verified release and set OPENPASSWORD_CLI_SHA256 to the CLI bundle digest from an independently authenticated release manifest. The installer checks this digest before executing the downloaded JavaScript. A checksum downloaded alongside a bundle from the same server only detects mismatched downloads.
+
+## Enroll an agent host and approve its agents
+
+Workspace → CLI hosts issues a ten-minute, single-use enrollment ticket for a named machine. Enrollment registers a fresh Ed25519 public key. It authorizes the host to request grants. It grants no provider operations. New workspaces in the deployed service require host-bound grants from the outset. On upgrade, workspaces with existing grant history transition on first successful host enrollment. These rules include token refresh. Existing standalone clients must re-pair. Other workspaces retain their existing policy. Revoking the final host keeps this policy enabled.
+
+Install the verified CLI and Node 24 on the agent host. Run the bridge as a dedicated service identity. The sample Linux unit in deploy/host uses a user named openpassword-host and a group named openpassword-agents. Give agent OS accounts membership in that group. Keep the identity directory owned by the service user with mode 0700. Place the verified executable at /usr/local/bin/openpassword. Put OPENPASSWORD_BROKER=https://your-console.example in /etc/openpassword/host.env. As the host administrator:
+
+```sh
+sudo install -d -m 0700 -o openpassword-host -g openpassword-agents /var/lib/openpassword-host
+sudo -u openpassword-host env OPENPASSWORD_BROKER=https://your-console.example OPENPASSWORD_HOST_HOME=/var/lib/openpassword-host /usr/local/bin/openpassword host connect
+sudo install -m 0644 deploy/host/openpassword-host.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now openpassword-host
+```
+
+Paste the web ticket at the hidden CLI prompt. The service only exposes a Unix signing socket. Its private key stays in the host service account. In each agent's own OS account:
+
+```sh
+export OPENPASSWORD_BROKER=https://your-console.example
+export OPENPASSWORD_HOST_SOCKET=/run/openpassword-host/bridge.sock
+export OPENPASSWORD_AGENT=codex-project-a
+openpassword host status
+openpassword pair
+openpassword whoami
+```
+
+While pair waits, a human opens Access grants, chooses Issue grant, matches the displayed request ID, agent and host, then selects the connection, operations and expiry. Refresh the page for new requests. Repeat for each agent. Pass the same three environment settings to the CLI's MCP process. Use separate OS accounts for mutually untrusted agents. Profile names select token records within one account. Another process running under the same UID can read them. Use openpassword forget to clear an obsolete local profile and use the web console to revoke its grant. Revoke an enrolled host before replacing a lost key or re-enrolling that machine. Host credentials identify a service installation; a copied private key can impersonate it. Hardware-backed attestation is outside this implementation.
+
+Host proofs bind the broker origin, verb, path and query, authorization header and body digest to an Ed25519 signature with a timestamp and single-use nonce. The broker checks the agent grant and current host status on authorized calls. Keep clocks synchronized. Previously accepted provider calls can finish after revocation. The CLI and its MCP server produce these proofs. Raw bearer-only model clients cannot call a host-required workspace directly.
+
+## Personal private vault
+
+Open Private vault, generate a private vault key and confirm the saved copy. This recovery key is independent of social or password sign-in. Each human profile has a separately scoped encrypted directory in each workspace. Item names and values are encrypted in the browser using Web Crypto AES-GCM with independent random 96-bit IVs, and workspace, human profile, field and item identifiers as authenticated context. The service stores ciphertext, opaque IDs, revisions and delegation relationships. The browser unlocks directory entries and decrypts secret fields for reveal, edit or confirmed delegation. The private vault locks on page hide, navigation and after five minutes without keyboard or pointer interaction. There is no persistent device unlock or server recovery for a lost key.
+
+Authorize gateway copy explicitly creates a personal provider connection. The browser decrypts only that item and seals its value to the broker's intake key. A human must separately authorize each agent. Editing the private item does not rotate an existing gateway copy. Revoke the connection in Connections before deleting the private source. Other workspace members, including its administrator, cannot list the private profile's items through the API. Existing shared vault items retain their previous server-side encryption and sharing. A malicious browser extension, modified JavaScript from the web server, or a compromised unlocked endpoint can still capture private data. No production security audit is implied.
+
+The CLI saves its full host identity before exchanging the ticket. If a successful enrollment loses its response, start the bridge and run `openpassword host status` to confirm the registered ID. For a rejected or expired ticket, revoke the unused host entry and remove its identity file under OPENPASSWORD_HOST_HOME before enrolling the replacement. Keep that directory private.
+
+Before rolling back to a broker that predates host checks, revoke every host-bound grant on the current release. An older binary cannot enforce the host signature requirement on tokens it recognizes. Private encrypted items require a compatible client to open.
+
+### Boundaries of the first-administrator code, the private vault and local agent accounts
+
+- **First-administrator bootstrap.** Until the first setup ticket exists, the host operator token (`operator.token`, readable only by the broker identity and root) also redeems as the setup code and at the legacy sign-in. Once a ticket is issued, only the ticket works there, it expires after ten minutes, and a new one replaces it; after the first administrator exists neither path opens. Keep the token private and issue a ticket with the SSH setup command before exposing a new installation.
+- **Private item freshness.** A private item's encryption binds its content to the tenant, profile and item, which gives confidentiality and authenticity. It does not let a client detect that the server returned an earlier valid version of the same item. The revision supplied with a write only prevents concurrent overwrites. A guarantee against rollback would need a version record the server cannot rewrite, which this release does not have.
+- **Local agent attribution.** The host bridge signs requests for the enrolled host with a socket that is group-accessible, so any account in that group can obtain a signature. The signature attests to the host and the request fields, not to the OS account that asked. The broker's audit therefore attributes a call to the host and the grant, not to a local account. Use separate hosts, or socket directories with separate groups, for agents that must be told apart, and verify the key-file and socket permissions on each.

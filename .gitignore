@@ -172,3 +172,7 @@ public/openpassword-source.tar.gz*
 
 # release packaging
 dist-release/
+public/openpassword-cli.cjs
+public/openpassword-cli.sha256
+public/update-client.sh
+__pycache__/

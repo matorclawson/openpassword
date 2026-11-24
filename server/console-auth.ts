@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { DatabaseSync } from 'node:sqlite'
-import { randomBytes, scrypt, timingSafeEqual, createHash } from 'node:crypto'
+import { randomBytes, scrypt, createHmac, timingSafeEqual, createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { digest, opaque } from './store.ts'
@@ -79,8 +79,49 @@ export function consoleAuth(
       throw e
     }
   }
-  function setupCode(token: string) {
-    if (owner() || digest(token) !== admin) refuse(403, 'Setup unavailable')
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS setup_ticket(id INTEGER PRIMARY KEY CHECK(id=1), hash TEXT NOT NULL, issued INTEGER NOT NULL, expires INTEGER NOT NULL)',
+  )
+  api.post('/auth/setup-code', async (r) => {
+    const hex = z.string().regex(/^[0-9a-f]{64}$/)
+    const { hash, issued, proof } = z
+      .object({ hash: hex, issued: z.number().int(), proof: hex })
+      .parse(r.body)
+    const expected = createHmac('sha256', Buffer.from(admin, 'hex'))
+      .update('OpenPassword/setup/v1/' + issued + '/' + hash)
+      .digest('hex')
+    if (
+      owner() ||
+      Math.abs(Date.now() - issued) > 30000 ||
+      !timingSafeEqual(Buffer.from(expected), Buffer.from(proof))
+    )
+      refuse(403, 'Setup unavailable')
+    const saved = db
+      .prepare(
+        'INSERT INTO setup_ticket VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash, issued=excluded.issued, expires=excluded.expires WHERE excluded.issued > setup_ticket.issued',
+      )
+      .run(hash, issued, issued + 600000)
+    if (!saved.changes) refuse(409, 'Generate a fresh code')
+    db.prepare("DELETE FROM signin_attempts WHERE session='setup'").run()
+    return { origin }
+  })
+  function createOwner() {
+    db.prepare('INSERT INTO console_owner(id) VALUES(1)').run()
+    db.prepare(
+      'DELETE FROM sessions WHERE token NOT IN (SELECT session FROM session_members)',
+    ).run()
+  }
+  function setupCode(token: string, consume: boolean) {
+    if (owner()) refuse(409, 'Administrator already created')
+    const ticket = db.prepare('SELECT hash,expires FROM setup_ticket WHERE id=1').get()
+    const expected = ticket ? String(ticket.hash) : admin
+    if (
+      (ticket && Number(ticket.expires) <= Date.now()) ||
+      !timingSafeEqual(Buffer.from(digest(token)), Buffer.from(expected))
+    )
+      refuse(403, 'Incorrect or expired setup code')
+    // Keep the row after redemption so the host proof cannot become a browser code again.
+    if (ticket && consume) db.prepare('UPDATE setup_ticket SET expires=0 WHERE id=1').run()
   }
   const methodCount = (id: string) =>
     Number(
@@ -150,13 +191,12 @@ export function consoleAuth(
       .extend({ password: z.string().min(12).max(256), token: z.string().max(256) })
       .parse(r.body)
     if (owner()) refuse(409, 'Administrator already created')
-    if (!timingSafeEqual(Buffer.from(digest(b.token)), Buffer.from(admin)))
-      refuse(403, 'Incorrect setup code')
+    setupCode(b.token, false)
     const salt = randomBytes(16).toString('hex'),
       hash = (await derive(b.password, salt, 64)) as Buffer
     transaction(() => {
-      if (owner()) refuse(409, 'Administrator already created')
-      db.prepare('INSERT INTO console_owner(id) VALUES(1)').run()
+      setupCode(b.token, true)
+      createOwner()
       db.prepare('INSERT INTO profile_password VALUES(?,?,?,?)').run(
         'owner',
         b.username,
@@ -246,7 +286,7 @@ export function consoleAuth(
     )
       refuse(422, 'Apple requires a registered HTTPS domain')
     if (bootstrap) {
-      setupCode(bootstrap.token)
+      setupCode(bootstrap.token, true)
       db.prepare('INSERT OR REPLACE INTO signin_apps VALUES(?,?,?,NULL)').run(
         p,
         bootstrap.client,
@@ -297,6 +337,9 @@ export function consoleAuth(
       .find((v) => v.startsWith('op_signin='))
       ?.slice(10)
     if (!browser || typeof state !== 'string') return reply.redirect('/?signin=failed')
+    const setupGeneration = () =>
+      db.prepare('SELECT issued FROM setup_ticket WHERE id=1').get()?.issued
+    const generation = setupGeneration()
     const t = db
       .prepare(
         'DELETE FROM signin_attempts WHERE state=? AND browser=? AND provider=? AND expires>? RETURNING *',
@@ -361,8 +404,8 @@ export function consoleAuth(
         transaction(() => {
           let id = 'owner'
           if (t.session === 'setup') {
-            if (owner()) throw Error('Setup complete')
-            db.prepare('INSERT INTO console_owner(id) VALUES(1)').run()
+            if (owner() || generation !== setupGeneration()) throw Error('Setup changed')
+            createOwner()
           } else {
             if (session(r).token !== t.session) throw Error('Session changed')
             id = profile(r)

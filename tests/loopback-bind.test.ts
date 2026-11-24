@@ -28,3 +28,8 @@ test('the console rewrites and the broker use the same loopback address', () => 
   for (const h of rewrites) assert.equal(h, '127.0.0.1')
   assert.match(read('server/main.ts'), /host:\s*'127\.0\.0\.1'/)
 })
+
+test('the activation controller probes the console on the address the unit binds', () => {
+  const m = read('deploy/upgrade.ts').match(/return 'http:\/\/([^:']+):' \+ port/)
+  assert.equal(m?.[1], '127.0.0.1', 'deploy/upgrade.ts must probe 127.0.0.1')
+})

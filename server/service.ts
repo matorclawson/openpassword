@@ -1,3 +1,7 @@
+import { personalVault } from './personal-vault.ts'
+import { hosts } from './hosts.ts'
+import releasePackage from '../package.json' with { type: 'json' }
+import { activity } from './activity.ts'
 import { consoleAuth } from './console-auth.ts'
 import { issueFiles, issueFolder, bundleOperation } from './issue-files.ts'
 import { templatePlan, writeTemplate } from './template.ts'
@@ -65,6 +69,7 @@ export function service(
   origin = 'http://localhost:3000',
   transport: typeof fetch = fetch,
   relay = process.env.OPENPASSWORD_YOUTUBE_RELAY === '1',
+  initializeHostPolicy = false,
 ) {
   const web = new URL(origin)
   if (
@@ -124,15 +129,45 @@ export function service(
     const current = auditContext.getStore()
     if (current) current.actor = id
   }
-  const event = (t: string, action: string, id: string) =>
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS cli_connected ON events(tenant,subject,at) WHERE action='CLI connected'",
+  )
+  const feed = activity(db)
+  let draining = false
+  let inFlight = 0
+  api.decorate('beginDrain', () => {
+    draining = true
+    feed.wakeAll()
+  })
+  api.addHook('onRequest', async (r, reply) => {
+    if (r.url.split('?')[0] === '/health') return
+    if (draining)
+      return reply
+        .code(503)
+        .header('Retry-After', '1')
+        .header('OpenPassword-Protocol-Version', '1')
+        .send({ detail: 'Broker is updating' })
+    inFlight++
+    const finish = () => {
+      reply.raw.off('close', finish)
+      reply.raw.off('finish', finish)
+      inFlight--
+    }
+    reply.raw.once('finish', finish)
+    reply.raw.once('close', finish)
+  })
+  const event = (t: string, action: string, id: string) => {
+    const by = auditContext.getStore()?.actor || 'system'
     run(
       'INSERT INTO events(tenant,action,subject,at,actor) VALUES(?,?,?,?,?)',
       t,
       action,
       id,
       now(),
-      auditContext.getStore()?.actor || 'system',
+      by,
     )
+    queueMicrotask(() => feed.signal(t, by))
+  }
   function tx<T>(fn: () => T) {
     db.exec('BEGIN IMMEDIATE')
     try {
@@ -327,6 +362,17 @@ export function service(
       return { ok: true }
     })
   })
+  function checkIssuer(g: Row) {
+    const issuer =
+      get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner'
+    if (
+      !available(g.connection_id, issuer) ||
+      (issuer !== 'owner' && !get('SELECT id FROM members WHERE id=? AND active=1', issuer))
+    )
+      fail(401, 'Device access revoked')
+  }
+  personalVault(api, db, session, event)
+  const hostAccess = hosts(api, db, origin, session, event, initializeHostPolicy)
   function grant(r: FastifyRequest) {
     if (!/^Bearer [A-Za-z0-9_-]+$/.test(r.headers.authorization || ''))
       fail(401, 'Device bearer required')
@@ -337,16 +383,48 @@ export function service(
         now(),
         now(),
       ) ?? fail(401, 'Device access expired')
-    const issuer =
-      get('SELECT profile FROM grant_issuers WHERE grant_id=?', g.id)?.profile ?? 'owner'
-    if (
-      !available(g.connection_id, issuer) ||
-      (issuer !== 'owner' && !get('SELECT id FROM members WHERE id=? AND active=1', issuer))
-    )
-      fail(401, 'Device access revoked')
+    hostAccess.bound(r, g.id, g.tenant)
+    checkIssuer(g)
     actor(g.id)
     return g
   }
+  for (const path of ['/admin/activity', '/v1/activity']) {
+    api.get(path, async (r, reply) => {
+      const q = z
+        .object({
+          after: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+          wait: z.coerce.number().int().min(0).max(20000).default(20000),
+        })
+        .parse(r.query)
+      const authorize = () => {
+        if (path === '/v1/activity') {
+          const g = grant(r)
+          return { tenant: g.tenant, actor: g.id }
+        }
+        const s = session(r)
+        return { tenant: s.tenant, actor: s.role === 'owner' ? undefined : profileId(s) }
+      }
+      const stop = new AbortController()
+      const disconnect = () => stop.abort()
+      reply.raw.once('close', disconnect)
+      try {
+        return await feed.poll(authorize, q.after, stop.signal, q.wait)
+      } finally {
+        reply.raw.off('close', disconnect)
+      }
+    })
+  }
+  api.get('/v1/whoami', async (r) => {
+    const g = grant(r)
+    return {
+      device_id: g.id,
+      host_id: get('SELECT host FROM host_grants WHERE grant_id=?', g.id)?.host ?? null,
+      label: g.label,
+      workspace: g.tenant,
+      connection_id: g.connection_id,
+      expires_at: iso(g.expires),
+    }
+  })
   const id = (r: FastifyRequest) => (r.params as { id: string }).id
   const conn = (t: string, c: string) =>
     get('SELECT * FROM connections WHERE tenant=? AND id=?', t, c) ??
@@ -399,23 +477,31 @@ export function service(
       !r.headers['content-type'].startsWith('application/json')
     )
       fail(415, 'Use JSON')
+  })
+  api.addHook('preHandler', async (r) => {
     if (
       [
         '/admin/login',
         '/auth/password',
         '/auth/setup',
+        '/auth/setup-code',
         '/auth/apple/start',
         '/auth/github/start',
         '/auth/google/start',
+        '/v1/hosts/enroll',
         '/v1/device/authorizations',
         '/v1/device/token',
         '/v1/delegation/check',
       ].includes(r.url.split('?')[0])
     ) {
-      const k = r.ip + r.url.split('?')[0],
+      const trusted =
+        r.url.startsWith('/v1/device/') && r.headers['openpassword-host']
+          ? hostAccess.identity(r)
+          : null
+      const k = (trusted ? 'host/' + trusted.id : r.ip) + r.url.split('?')[0],
         row = attempts.get(k)
       if (!row || row.until <= now()) attempts.set(k, { count: 1, until: now() + 60000 })
-      else if (++row.count > 60) fail(429, 'Try again in one minute')
+      else if (++row.count > (trusted ? 2400 : 60)) fail(429, 'Try again in one minute')
     }
   })
   api.setErrorHandler((err: Error & { statusCode?: number }, _r, reply) => {
@@ -436,7 +522,11 @@ export function service(
     (t) => !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
   )
   delegation(api, db, origin, session, seal, open, event)
-  api.get('/health', async () => ({ status: 'ok' }))
+  api.get('/health', async () => ({
+    status: draining ? 'draining' : 'ok',
+    drain_supported: true,
+    in_flight: inFlight,
+  }))
   function startSession(reply: import('fastify').FastifyReply, member?: Row) {
     const s = opaque()
     tx(() => {
@@ -454,7 +544,9 @@ export function service(
   api.post('/admin/login', async (r, reply) => {
     const { token } = z.object({ token: name }).parse(r.body)
     const member =
-      !consoleOwner() && timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
+      !consoleOwner() &&
+      !get('SELECT id FROM setup_ticket WHERE id=1') &&
+      timingSafeEqual(Buffer.from(digest(token)), Buffer.from(admin))
         ? undefined
         : (get('SELECT * FROM members WHERE token=? AND active=1', digest(token)) ??
           fail(401, 'Invalid access token'))
@@ -484,6 +576,55 @@ export function service(
   db.exec(
     'CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, tenant TEXT, title TEXT, username TEXT, envelope TEXT, updated INTEGER)',
   )
+  db.exec('CREATE INDEX IF NOT EXISTS items_directory ON items(tenant,title COLLATE NOCASE,id)')
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS connection_items(conn TEXT PRIMARY KEY,item TEXT NOT NULL); CREATE INDEX IF NOT EXISTS connection_items_by_item ON connection_items(item)',
+  )
+  api.get('/admin/items', async (r) => {
+    const s = session(r)
+    const { q, page } = z
+      .object({
+        q: z.string().max(256).default(''),
+        page: z.coerce.number().int().min(1).max(1000000).default(1),
+      })
+      .parse(r.query)
+    const filter =
+      'tenant=? AND (instr(lower(title),lower(?))>0 OR instr(lower(username),lower(?))>0)'
+    const params = [s.tenant, q, q]
+    const total = get('SELECT count(*) AS n FROM items WHERE ' + filter, ...params)!.n
+    const current = Math.min(page, Math.max(1, Math.ceil(total / 30)))
+    const rows = all(
+      'SELECT id,title,username,updated FROM items WHERE ' +
+        filter +
+        ' ORDER BY title COLLATE NOCASE,id LIMIT 30 OFFSET ?',
+      ...params,
+      (current - 1) * 30,
+    )
+    return { rows, total, page: current }
+  })
+  api.get('/admin/items/:id', async (r) => {
+    const s = session(r)
+    return (
+      get('SELECT id,title,username,updated FROM items WHERE tenant=? AND id=?', s.tenant, id(r)) ??
+      fail(404, 'Item unavailable in this workspace')
+    )
+  })
+  api.get('/admin/items/:id/history', async (r) => {
+    const s = session(r)
+    if (!get('SELECT id FROM items WHERE tenant=? AND id=?', s.tenant, id(r)))
+      fail(404, 'Item unavailable in this workspace')
+    const { before } = z
+      .object({ before: z.coerce.number().int().positive().default(Number.MAX_SAFE_INTEGER) })
+      .parse(r.query)
+    return all(
+      'SELECT id, action, at FROM events WHERE tenant=? AND subject=? AND (?=1 OR actor=?) AND id<? ORDER BY id DESC LIMIT 31',
+      s.tenant,
+      id(r),
+      Number(s.role === 'owner'),
+      profileId(s),
+      before,
+    )
+  })
   api.post('/admin/items', async (r) => {
     const s = session(r),
       b = z
@@ -516,6 +657,17 @@ export function service(
   api.delete('/admin/items/:id', async (r) => {
     const s = session(r)
     return tx(() => {
+      if (
+        get(
+          'SELECT 1 FROM connection_items l JOIN connections c ON c.id=l.conn WHERE c.tenant=? AND l.item=?',
+          s.tenant,
+          id(r),
+        )
+      )
+        fail(
+          409,
+          'A connection uses this item. Rotate its credential or revoke the connection before deleting the item.',
+        )
       if (!run('DELETE FROM items WHERE id=? AND tenant=?', id(r), s.tenant).changes)
         fail(404, 'Item unavailable')
       event(s.tenant, 'Vault item deleted', id(r))
@@ -528,6 +680,17 @@ export function service(
     return {
       tenant: t,
       role: s.role,
+      managed_hosts: hostAccess.managed(t),
+      hosts: all(
+        'SELECT id,label,revoked,expires,pub IS NOT NULL AS enrolled FROM cli_hosts WHERE tenant=? ORDER BY rowid DESC',
+        t,
+      ),
+      requests: all(
+        'SELECT p.id,p.label,h.label AS host FROM pairs p JOIN host_pairs hp ON hp.pair=p.id JOIN cli_hosts h ON h.id=hp.host WHERE h.tenant=? AND h.revoked=0 AND p.expires>? AND p.grant_id IS NULL ORDER BY p.rowid DESC LIMIT 100',
+        t,
+        now(),
+      ),
+      version: releasePackage.version,
       operation_stops: all('SELECT op FROM operation_stops WHERE tenant=? ORDER BY op', t).map(
         (x) => x.op,
       ),
@@ -540,7 +703,10 @@ export function service(
         t,
       ).filter((g) => grantManager(s, g)),
       paused: !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
-      items: all('SELECT id,title,username,updated FROM items WHERE tenant=? ORDER BY title', t),
+      items:
+        (r.query as { items?: string }).items === 'paged'
+          ? []
+          : all('SELECT id,title,username,updated FROM items WHERE tenant=? ORDER BY title', t),
       apps:
         s.role === 'owner'
           ? all(
@@ -569,6 +735,20 @@ export function service(
             manage = manages(s, c.id)
           return {
             ...c,
+            private_source:
+              manage &&
+              !!get(
+                'SELECT d.item FROM personal_delegations d JOIN personal_items i ON i.id=d.item WHERE d.conn=? AND i.profile=? AND i.tenant=?',
+                c.id,
+                profileId(s),
+                t,
+              ),
+            vault_item:
+              get(
+                'SELECT i.id,i.title FROM connection_items l JOIN items i ON i.id=l.item AND i.tenant=? WHERE l.conn=?',
+                t,
+                c.id,
+              ) ?? null,
             expires_at: deadline(c.id, 'credential'),
             access_expires_at: Number.isFinite(accessDeadline(c.id, profileId(s)))
               ? accessDeadline(c.id, profileId(s))
@@ -602,7 +782,12 @@ export function service(
           }
         }),
       grants: all(
-        'SELECT id,label,connection_id,ops,expires,active FROM grants WHERE tenant=? ORDER BY rowid DESC',
+        `SELECT g.id,g.label,g.connection_id,g.ops,g.expires,g.active,
+          (SELECT h.label FROM host_grants hg JOIN cli_hosts h ON h.id=hg.host WHERE hg.grant_id=g.id) AS host,
+          (SELECT h.revoked FROM host_grants hg JOIN cli_hosts h ON h.id=hg.host WHERE hg.grant_id=g.id) AS host_revoked,
+          (SELECT model FROM model_leases WHERE grant_id=g.id) AS model,
+          (SELECT MAX(at) FROM events WHERE tenant=g.tenant AND subject=g.id AND action='CLI connected') AS connected_at
+         FROM grants g WHERE tenant=? ORDER BY g.rowid DESC`,
         t,
       ).filter((g) => grantManager(s, g)),
       approvals: all(
@@ -982,9 +1167,19 @@ export function service(
     return reply.redirect(origin + '/')
   })
   const refreshes = new Map<string, Promise<string>>()
+  function storedCredential(c: Row) {
+    if (c.secret) return open(c.secret, c.id)
+    const item = get(
+      'SELECT i.id,i.envelope FROM connection_items l JOIN items i ON i.id=l.item AND i.tenant=? WHERE l.conn=?',
+      c.tenant,
+      c.id,
+    )
+    if (!c.active || !item) return fail(409, 'Credential unavailable')
+    return open(item.envelope, item.id)
+  }
   async function credential(c: Row, force = false): Promise<string> {
     if ((deadline(c.id, 'credential') ?? Infinity) <= now()) fail(403, 'Credential expired')
-    const value = open(c.secret, c.id)
+    const value = storedCredential(c)
     if (typeof value === 'string')
       return scopedToken(
         c.provider,
@@ -1044,7 +1239,7 @@ export function service(
     const s = session(r),
       c = conn(s.tenant, id(r))
     own(r, c.id)
-    if (!c.active || typeof open(c.secret, c.id) === 'string')
+    if (!c.active || typeof storedCredential(c) === 'string')
       fail(409, 'Select an active OAuth connection')
     await credential(c, true)
     event(s.tenant, 'OAuth credential refreshed', c.id)
@@ -1075,12 +1270,47 @@ export function service(
       .header('Content-Disposition', 'attachment; filename="gmail-page.json"')
       .send(Buffer.from(value))
   })
+  function linkItem(principal: Principal, connection: string, itemId: string) {
+    if (principal.role === 'viewer') fail(403, 'Workspace editor required to use a stored value')
+    const item =
+      get('SELECT id,envelope FROM items WHERE id=? AND tenant=?', itemId, principal.tenant) ??
+      fail(404, 'Item unavailable')
+    connectionInput.shape.secret.parse(open(item.envelope, item.id))
+    run(
+      'INSERT INTO connection_items(conn,item) VALUES(?,?) ON CONFLICT(conn) DO UPDATE SET item=excluded.item',
+      connection,
+      item.id,
+    )
+  }
   api.post('/admin/connections', async (r) => {
-    const t = session(r).tenant,
-      b = connectionInput.parse(intakeBody(r, 'secret'))
+    const principal = session(r),
+      t = principal.tenant
+    const input = intakeBody(r, 'secret')
+    const privateSource = input.private_source
+    if (privateSource !== undefined) {
+      z.string().uuid().parse(privateSource)
+      if (
+        input.ownership !== 'personal' ||
+        !('sealed' in (r.body as Record<string, unknown>)) ||
+        'vault_item_id' in input ||
+        !get(
+          'SELECT id FROM personal_items WHERE id=? AND tenant=? AND profile=?',
+          String(privateSource),
+          t,
+          profileId(principal),
+        )
+      )
+        fail(403, 'Private item owner required')
+      delete input.private_source
+    }
+    const linked = 'vault_item_id' in input
+    const b = linked
+      ? connectionInput.omit({ secret: true }).extend({ vault_item_id: name }).parse(input)
+      : connectionInput.parse(input)
     if (!Object.hasOwn(providers, b.provider)) fail(422, 'Unknown provider')
     const c = 'con_' + randomUUID()
     tx(() => {
+      if ('vault_item_id' in b) linkItem(principal, c, b.vault_item_id)
       run(
         'INSERT INTO connections VALUES(?,?,?,?,?,1,?,1)',
         c,
@@ -1088,24 +1318,36 @@ export function service(
         b.provider,
         b.label,
         b.external_identity,
-        seal(b.secret, c),
+        'secret' in b ? seal(b.secret, c) : '',
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
       recordOwner(session(r), c, b.ownership, b.expires_at)
-      event(t, 'Connection added', c)
+      if (privateSource)
+        run('INSERT INTO personal_delegations VALUES(?,?)', c, String(privateSource))
+      event(t, privateSource ? 'Private credential delegated' : 'Connection added', c)
     })
     return { connection_id: c }
   })
   api.post('/admin/connections/:id/rotate', async (r) => {
-    const t = session(r).tenant,
-      c = conn(t, id(r)),
-      { secret } = z.object({ secret: z.string().min(1).max(32768) }).parse(intakeBody(r, 'secret'))
+    const principal = session(r),
+      t = principal.tenant,
+      c = conn(t, id(r))
     own(r, c.id)
     if (!c.active) fail(409, 'Connection revoked')
+    const input = intakeBody(r, 'secret')
+    const source = z
+      .union([
+        z.object({ secret: connectionInput.shape.secret }).strict(),
+        z.object({ vault_item_id: name }).strict(),
+      ])
+      .parse(input)
     tx(() => {
+      run('DELETE FROM personal_delegations WHERE conn=?', c.id)
+      if ('vault_item_id' in source) linkItem(principal, c.id, source.vault_item_id)
+      else run('DELETE FROM connection_items WHERE conn=?', c.id)
       run(
         'UPDATE connections SET secret=?,revision=revision+1 WHERE id=?',
-        seal(secret, c.id),
+        'secret' in source ? seal(source.secret, c.id) : '',
         c.id,
       )
       event(t, 'Credential rotated', c.id)
@@ -1117,6 +1359,7 @@ export function service(
       c = conn(t, id(r))
     own(r, c.id)
     tx(() => {
+      run('DELETE FROM connection_items WHERE conn=?', c.id)
       run("UPDATE connections SET active=0,secret='',revision=revision+1 WHERE id=?", c.id)
       run('UPDATE grants SET active=0 WHERE connection_id=?', c.id)
       run("UPDATE runs SET state='denied' WHERE conn=? AND state IN ('approved','pending')", c.id)
@@ -1149,7 +1392,12 @@ export function service(
       u = randomBytes(5).toString('hex').toUpperCase(),
       p = randomUUID(),
       exp = now() + 600000
-    run('INSERT INTO pairs VALUES(?,?,?,?,?,NULL)', p, digest(code), digest(u), label, exp)
+    const host = hostAccess.identity(r)
+    tx(() => {
+      run('DELETE FROM pairs WHERE expires<=?', now())
+      run('INSERT INTO pairs VALUES(?,?,?,?,?,NULL)', p, digest(code), digest(u), label, exp)
+      if (host) run('INSERT INTO host_pairs VALUES(?,?)', p, String(host.id))
+    })
     return {
       pairing_id: p,
       device_code: code,
@@ -1174,6 +1422,8 @@ export function service(
           operations: z.array(name).min(1),
           hours: z.number().int().min(1).max(720),
           user_code: name.optional(),
+          enrollment: z.boolean().optional(),
+          host_request: z.string().uuid().optional(),
           model_lease: modelLease.optional(),
           draft_limit: z.number().int().min(1).max(100).optional(),
         })
@@ -1227,11 +1477,39 @@ export function service(
           b.model_lease.calls,
         )
       }
+      if (b.host_request || hostAccess.managed(t)) {
+        const pair =
+          get(
+            'SELECT p.id,p.label,h.id AS host FROM pairs p JOIN host_pairs hp ON hp.pair=p.id JOIN cli_hosts h ON h.id=hp.host WHERE p.id=? AND h.tenant=? AND h.revoked=0 AND p.grant_id IS NULL AND p.expires>?',
+            b.host_request || '',
+            t,
+            now(),
+          ) ?? fail(403, 'Choose a pending request from an approved host')
+        run('UPDATE pairs SET grant_id=? WHERE id=?', g, pair.id)
+        run('INSERT INTO host_grants VALUES(?,?)', g, pair.host)
+        event(t, 'Access granted', g)
+        return { device_id: g }
+      }
       event(t, 'Access granted', g)
+      if (b.enrollment && !b.user_code) {
+        const ticket = opaque()
+        const until = Math.min(now() + 600000, expires)
+        run('DELETE FROM pairs WHERE expires<=?', now())
+        run(
+          'INSERT INTO pairs VALUES(?,?,?,?,?,?)',
+          randomUUID(),
+          digest(ticket),
+          digest(opaque()),
+          b.label,
+          until,
+          g,
+        )
+        return { enrollment_token: ticket, device_id: g, expires_at: iso(until) }
+      }
       if (b.user_code) {
         if (
           !run(
-            'UPDATE pairs SET grant_id=? WHERE user_code=? AND expires>? AND grant_id IS NULL',
+            'UPDATE pairs SET grant_id=? WHERE user_code=? AND expires>? AND grant_id IS NULL AND id NOT IN (SELECT pair FROM host_pairs)',
             g,
             digest(b.user_code.toUpperCase()),
             now(),
@@ -1249,6 +1527,9 @@ export function service(
       const p =
         get('SELECT * FROM pairs WHERE code=? AND expires>?', digest(code), now()) ??
         fail(400, 'Expired pairing')
+      const hostPair = get('SELECT host FROM host_pairs WHERE pair=?', p.id)
+      if (hostPair && hostAccess.identity(r)?.id !== hostPair.host)
+        fail(403, 'Requesting host required')
       if (!p.grant_id) {
         reply.code(428)
         return { code: 'authorization_pending' }
@@ -1256,21 +1537,27 @@ export function service(
       const g =
         get('SELECT * FROM grants WHERE id=? AND active=1 AND expires>?', p.grant_id, now()) ??
         fail(403, 'Grant unavailable')
+      hostAccess.bound(r, g.id, g.tenant)
+      checkIssuer(g)
       run('DELETE FROM pairs WHERE id=?', p.id)
+      actor(g.id)
+      event(g.tenant, 'CLI connected', g.id)
       return issue(g)
     })
   })
   api.post('/v1/device/token/refresh', async (r) => {
     const b = z.object({ refresh_token: name }).parse(r.body)
-    return tx(() =>
-      issue(
+    return tx(() => {
+      const g =
         get(
           'SELECT * FROM grants WHERE refresh=? AND active=1 AND expires>?',
           digest(b.refresh_token),
           now(),
-        ) ?? fail(401, 'Refresh expired'),
-      ),
-    )
+        ) ?? fail(401, 'Refresh expired')
+      hostAccess.bound(r, g.id, g.tenant)
+      checkIssuer(g)
+      return issue(g)
+    })
   })
   api.post('/v1/device/revoke', async (r, reply) => {
     const g = grant(r)
@@ -1585,7 +1872,8 @@ export function service(
         c.revision,
         now(),
       ) ?? fail(403, 'Upload not authorized')
-    if (!c.active || r.headers['openpassword-connection'] !== c.id) fail(403, 'Upload connection changed')
+    if (!c.active || r.headers['openpassword-connection'] !== c.id)
+      fail(403, 'Upload connection changed')
     const range = String(r.headers['openpassword-content-range'] || ''),
       match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range)
     const data = r.body ?? Buffer.alloc(0),
@@ -1770,7 +2058,7 @@ export function service(
     const ex = old?.id ?? 'exec_' + randomUUID(),
       effect = a.method !== 'GET' && !['tiktok.status', 'tiktok.creator_info'].includes(a.id)
     if (old?.state === 'denied') return { status: 'refused', execution_id: ex }
-    const stored = open(c.secret, c.id)
+    const stored = storedCredential(c)
     let secret = typeof stored === 'string' ? stored : stored.access_token
     let request: ReturnType<typeof buildRequest>
     try {

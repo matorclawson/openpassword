@@ -55,6 +55,12 @@ export function ConsoleLogin({
         status && (
           <>
             <form onSubmit={submit} key={String(setup) + String(member)}>
+              {setup && (
+                <p>
+                  Use the setup code from the machine running OpenPassword. This account will manage
+                  your workspace.
+                </p>
+              )}
               {(setup || member) && (
                 <label>
                   {member ? 'Workspace access token' : 'Setup code'}
@@ -65,14 +71,16 @@ export function ConsoleLogin({
                 <details>
                   <summary>Where do I find the setup code?</summary>
                   <p>
-                    Open a terminal on the machine running OpenPassword. For a remote server,
-                    connect through SSH or its cloud console.
+                    On your laptop, run <code>openpassword setup-code --ssh user@host</code>. Use
+                    your deployment’s trusted SSH host or alias. For a user installation, append{' '}
+                    <code>--user</code>.
                   </p>
                   <p>
-                    For a user installation, run <code>cat ~/.openpassword/operator.token</code>.
-                    For the systemd service, run{' '}
-                    <code>sudo cat /var/lib/openpassword/operator.token</code>. A custom
-                    installation prints the exact path at startup.
+                    On the deployment host itself, a user installation can run{' '}
+                    <code>openpassword setup-code</code>. Enter the ten-minute code here. After
+                    sign-in, open Workspace → CLI hosts and issue a host enrollment token. Paste it
+                    into <code>openpassword host connect</code> on the agent machine. Each agent
+                    then requests its own grant.
                   </p>
                 </details>
               )}
