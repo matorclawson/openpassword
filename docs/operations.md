@@ -12,7 +12,7 @@ Keep the SQLite database and master.key together in a protected backup. For an o
 
 ## Backups
 
-The data directory holds `vault.sqlite` (encrypted provider credentials, grants, history), `master.key` (the key for those credentials) and `operator.token`. A copy of the database without `master.key` cannot be read, and a copy of both together must never be stored unencrypted off the host. `deploy/backup/backup.sh` therefore writes both into one **borg** archive, encrypted on the host before upload; only the encrypted archive leaves it.
+The data directory holds `vault.sqlite` (encrypted provider credentials, grants, history), `master.key` (the key for those credentials) and `operator.token`. A database copy alone retains readable metadata but cannot decrypt broker-sealed values without the associated master key, and a copy of both together must never be stored unencrypted off the host. `deploy/backup/backup.sh` therefore writes both into one **borg** archive, encrypted on the host before upload; only the encrypted archive leaves it.
 
 Setup, once, as root. Create `/etc/openpassword/backup.env` (owner root, mode 0600) with `BORG_REPO` (for example an `ssh://` repository on your storage), `BORG_PASSCOMMAND` (a command that prints the passphrase, such as `cat /etc/openpassword/backup.pass` with that file at mode 0600) and optionally `BORG_RSH` for the SSH key and port. `BORG_PASSPHRASE` in the file is refused. Initialise the repository with `borg init --encryption=repokey-blake2` using the same settings. Keep the passphrase and a copy of the repository key somewhere other than the backed-up host: without them an archive cannot be opened.
 
@@ -158,7 +158,7 @@ A user installation can run `openpassword setup-code` as its service owner, with
 
 The broker encrypts each sealed value with a new random 256-bit data key. AES-GCM authenticates the value and its context, and the broker wraps the data key under the installation master key. Item titles, usernames, ownership and audit metadata remain readable in SQLite. A stolen running broker or a copy of both the database and master key can expose stored values. CLI device access and refresh tokens are stored in a per-user SQLite file on the client. Restrict access to that OS account.
 
-This release uses server-side decryption for unattended gateway calls. A phishing-resistant login, a device remembered for a limited time, and a client-held vault decryption key address separate threats. The current release has no independent client-side vault unlock or 30-day trusted-device feature. A future private human vault needs device enrollment, recovery and sharing designed together, with explicit opt-in when a secret is delegated to the broker. The root key files must be regular, single-link files owned by the broker, readable only by that identity. Verify permissions after restoring backups.
+This release uses server-side decryption for unattended gateway calls. A phishing-resistant login, a device remembered for a limited time, and a client-held vault decryption key address separate threats. The personal Private vault has an independent client-held key. Its owner can explicitly delegate a credential copy to the gateway. Device enrollment with passkeys and persistent 30-day unlock remain future work. The root key files must be regular, single-link files owned by the broker, readable only by that identity. Verify permissions after restoring backups.
 
 ### Protect a database backup with a separate wrapping key
 
