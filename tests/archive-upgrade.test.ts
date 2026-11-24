@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { activate, recoverPending, snapshotStore, restoreStore } from '../deploy/upgrade.ts'
+import { activate, recoverPending, snapshotStore, restoreStore, refuseHostProofDowngrade, enforcesHostProof } from '../deploy/upgrade.ts'
 
 const old = { version: '0.3.1', units: ['old-broker', 'old-web'] }
 const next = { version: '0.4.0', units: ['new-broker', 'new-web'] }
@@ -310,5 +310,88 @@ test('the snapshot is refused for a missing directory, a corrupt vault or a link
     assert.throws(() => snapshotStore(b.data, b.snap), /Unexpected entry/)
   } finally {
     cleanup(b.dir)
+  }
+})
+
+// The manual-downgrade fence, with a synthetic host-bound grant in a real vault file.
+function fenceFixture() {
+  const dir = fs.mkdtempSync(join(tmpdir(), 'op-fence-'))
+  const data = join(dir, 'data')
+  fs.mkdirSync(data)
+  const release = (v: string, hosts: boolean) => {
+    const d = join(dir, 'releases', v)
+    fs.mkdirSync(join(d, 'server'), { recursive: true })
+    if (hosts) fs.writeFileSync(join(d, 'server/hosts.ts'), '// host proof\n')
+    return d
+  }
+  const db = new DatabaseSync(join(data, 'vault.sqlite'))
+  db.exec(`CREATE TABLE grants(id TEXT PRIMARY KEY, active INTEGER, expires INTEGER);
+    CREATE TABLE host_grants(grant_id TEXT PRIMARY KEY, host TEXT NOT NULL);
+    CREATE TABLE pairs(id TEXT PRIMARY KEY, grant_id TEXT, expires INTEGER);
+    CREATE TABLE host_pairs(pair TEXT PRIMARY KEY, host TEXT NOT NULL)`)
+  return { dir, data, db, newer: release('0.4.0', true), older: release('0.3.1', false), also: release('0.4.1', true) }
+}
+test('a release that predates host proof is recognised by what it ships', () => {
+  const f = fenceFixture()
+  try {
+    assert.equal(enforcesHostProof(f.newer), true)
+    assert.equal(enforcesHostProof(f.older), false)
+  } finally {
+    f.db.close()
+    cleanup(f.dir)
+  }
+})
+test('the downgrade fence refuses while host-bound grants or enrollment tokens exist', () => {
+  const f = fenceFixture()
+  const now = 1_000_000
+  try {
+    f.db.exec("INSERT INTO grants VALUES('g1',1,2000000); INSERT INTO host_grants VALUES('g1','host_a')")
+    assert.throws(() => refuseHostProofDowngrade(f.newer, f.older, f.data, now), /1 active host-bound grant\(s\) and 0 unredeemed/)
+    // Revoked, expired or plain bearer grants do not count.
+    f.db.exec("UPDATE grants SET active=0 WHERE id='g1'")
+    refuseHostProofDowngrade(f.newer, f.older, f.data, now)
+    f.db.exec("UPDATE grants SET active=1, expires=500 WHERE id='g1'")
+    refuseHostProofDowngrade(f.newer, f.older, f.data, now)
+    f.db.exec("INSERT INTO grants VALUES('g2',1,2000000)")
+    refuseHostProofDowngrade(f.newer, f.older, f.data, now)
+    // An unredeemed host-bound enrollment token would become a bearer token.
+    f.db.exec("INSERT INTO pairs VALUES('p1',NULL,2000000); INSERT INTO host_pairs VALUES('p1','host_a')")
+    assert.throws(() => refuseHostProofDowngrade(f.newer, f.older, f.data, now), /0 active host-bound grant\(s\) and 1 unredeemed/)
+    f.db.exec("UPDATE pairs SET grant_id='g2' WHERE id='p1'")
+    refuseHostProofDowngrade(f.newer, f.older, f.data, now)
+  } finally {
+    f.db.close()
+    cleanup(f.dir)
+  }
+})
+test('the fence applies only to a move to a release without host proof', () => {
+  const f = fenceFixture()
+  try {
+    f.db.exec("INSERT INTO grants VALUES('g1',1,9999999999999); INSERT INTO host_grants VALUES('g1','host_a')")
+    refuseHostProofDowngrade(f.newer, f.also, f.data) // both enforce
+    refuseHostProofDowngrade(f.older, f.newer, f.data) // upgrade
+    refuseHostProofDowngrade(null, f.older, f.data) // first installation
+    assert.throws(() => refuseHostProofDowngrade(f.newer, f.older, null), /state directory is missing/)
+    assert.throws(() => refuseHostProofDowngrade(f.newer, f.older, f.data), /Refusing to move from 0\.4\.0 to 0\.3\.1/)
+  } finally {
+    f.db.close()
+    cleanup(f.dir)
+  }
+})
+test('a vault from before host binding has nothing to fence', () => {
+  const dir = fs.mkdtempSync(join(tmpdir(), 'op-fence-'))
+  try {
+    const data = join(dir, 'data')
+    fs.mkdirSync(data)
+    new DatabaseSync(join(data, 'vault.sqlite')).close()
+    const mk = (v: string, hosts: boolean) => {
+      const d = join(dir, v)
+      fs.mkdirSync(join(d, 'server'), { recursive: true })
+      if (hosts) fs.writeFileSync(join(d, 'server/hosts.ts'), '')
+      return d
+    }
+    refuseHostProofDowngrade(mk('0.4.0', true), mk('0.3.1', false), data)
+  } finally {
+    cleanup(dir)
   }
 })

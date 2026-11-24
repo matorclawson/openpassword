@@ -10,7 +10,7 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 
 - Personal vault items have browser-encrypted names and secret values. Each profile unlocks its own vault with a separately saved recovery key. Hiding the page, navigating away or five minutes of inactivity locks it. Explicit delegation creates a personal provider connection with a gateway-readable copy. Editing the private item leaves copy rotation to its owner.
 - First administration, host enrollment and agent approval are separate. A CLI host registers an Ed25519 public key using a one-use web ticket. Its Unix socket service signs CLI and MCP requests. A human approves each agent request for a specific connection, operations and expiry. A different host cannot use the agent's token. Revoking a host blocks subsequent calls from its agents.
-- New workspaces on the deployed service require host-bound grants. Workspaces with existing grant history switch on first host enrollment. Re-pair agents at cutover and verify raw bearer-only clients have a signing integration first. Revoke host-bound grants before downgrading to a broker that predates signature enforcement.
+- New workspaces on the deployed service require host-bound grants. Workspaces with existing grant history switch on first host enrollment. Re-pair agents at cutover and verify raw bearer-only clients have a signing integration first. The updater refuses a move to a release that predates signature enforcement while active host-bound grants or unredeemed host-bound enrollment tokens exist; revoke them first.
 
 ### Model and voice policy
 

@@ -172,6 +172,40 @@ export function restoreStore(dataDir: string, snap: string) {
 function dataDir() {
   return fs.existsSync(dataLink) ? fs.realpathSync(dataLink) : null
 }
+// A release enforces host proof when it ships server/hosts.ts. Moving to one that does not turns every host-bound
+// grant (and every unredeemed host-bound enrollment token) into a plain bearer credential: an authorization downgrade.
+export const enforcesHostProof = (releaseDir: string) => fs.existsSync(join(releaseDir, 'server/hosts.ts'))
+export function hostBoundCredentials(vault: string, now = Date.now()) {
+  const db = new DatabaseSync(vault, { readOnly: true })
+  try {
+    const has = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t)
+    const count = (sql: string) => Number((db.prepare(sql).get(now) as { n: number }).n)
+    const grants =
+      has('grants') && has('host_grants')
+        ? count('SELECT count(*) AS n FROM grants g JOIN host_grants hg ON hg.grant_id=g.id WHERE g.active=1 AND g.expires>?')
+        : 0
+    const pairs =
+      has('pairs') && has('host_pairs')
+        ? count('SELECT count(*) AS n FROM host_pairs hp JOIN pairs p ON p.id=hp.pair WHERE p.grant_id IS NULL AND p.expires>?')
+        : 0
+    return { grants, pairs }
+  } finally {
+    db.close()
+  }
+}
+export function refuseHostProofDowngrade(fromDir: string | null, toDir: string | null, dataDir: string | null, now = Date.now()) {
+  if (!fromDir || !toDir || !enforcesHostProof(fromDir) || enforcesHostProof(toDir)) return
+  const from = basename(fromDir),
+    to = basename(toDir)
+  ensure(dataDir, 'The state directory is missing: host-bound grants cannot be checked')
+  const { grants, pairs } = hostBoundCredentials(join(dataDir, 'vault.sqlite'), now)
+  ensure(
+    grants === 0 && pairs === 0,
+    'Refusing to move from ' + from + ' to ' + to + ', which does not enforce host proof: ' + grants +
+      ' active host-bound grant(s) and ' + pairs +
+      ' unredeemed host-bound enrollment token(s) would become plain bearer credentials. Revoke them in the console first, then retry.',
+  )
+}
 function point(version: string | null) {
   const link = join(root, 'current')
   if (!version) {
@@ -518,6 +552,11 @@ async function main() {
     console.log('Already active: ' + old.version)
     return
   }
+  refuseHostProofDowngrade(
+    old.version && releasePath(old.version),
+    target.version && releasePath(target.version),
+    dataDir(),
+  )
   preflight(target.version!)
   let keep: string | null = null
   if (fs.existsSync(previous)) keep = (JSON.parse(fs.readFileSync(previous, 'utf8')) as Pending).store ?? null
