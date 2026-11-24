@@ -1,4 +1,4 @@
-.PHONY: help setup dev verify build start package checksum
+.PHONY: help setup dev verify build start package checksum backup-test
 help:
 	@echo "make setup     Install dependencies and compile the public packages"
 	@echo "make dev       Start the local console and broker"
@@ -7,6 +7,7 @@ help:
 	@echo "make start     Run the production console and broker"
 	@echo "make package COMMIT=<sha>  Build that exact commit and archive it into dist-release/"
 	@echo "make checksum  Write the .sha256 sidecar for the archive"
+	@echo "make backup-test  Test the backup and restore scripts (Linux, needs borg)"
 setup:
 	npm ci
 	npm run packages
@@ -24,9 +25,11 @@ package:
 	bash scripts/package.sh "$(COMMIT)"
 checksum:
 	bash scripts/checksum.sh
-
 .PHONY: install-cli
 install-cli: packages/cli/dist/index.js
 	mkdir -p "$(HOME)/.local/bin"
 	chmod +x packages/cli/dist/index.js
 	ln -sfn "$(CURDIR)/packages/cli/dist/index.js" "$(HOME)/.local/bin/openpassword"
+
+backup-test:
+	bash scripts/backup-test.sh

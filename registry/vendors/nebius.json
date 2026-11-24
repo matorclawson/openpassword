@@ -1,0 +1,20 @@
+{
+  "id": "nebius",
+  "name": "Nebius Token Factory",
+  "category": "hoster",
+  "status": "candidate",
+  "substitution": "unknown",
+  "auth": {
+    "kind": "bearer"
+  },
+  "endpoints": {
+    "chat": {
+      "family": "openai-chat",
+      "base_url": "https://api.tokenfactory.nebius.com/v1",
+      "path": "/chat/completions"
+    }
+  },
+  "models_path": "/models",
+  "models": [],
+  "doc_url": "https://docs.tokenfactory.nebius.com/"
+}
