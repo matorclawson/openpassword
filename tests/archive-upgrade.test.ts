@@ -6,9 +6,10 @@ import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { activate, recoverPending, snapshotStore, restoreStore, refuseHostProofDowngrade, enforcesHostProof } from '../deploy/upgrade.ts'
 
-const old = { version: '0.3.1', units: ['old-broker', 'old-web'] }
-const next = { version: '0.4.0', units: ['new-broker', 'new-web'] }
-type Rec = typeof old & { store?: string | null; phase?: 'forward'; target?: typeof old }
+type Snap = { version: string | null; units: (string | null)[] }
+const old: Snap = { version: '0.3.1', units: ['old-broker', 'old-web'] }
+const next: Snap = { version: '0.4.0', units: ['new-broker', 'new-web'] }
+type Rec = Snap & { store?: string | null; phase?: 'forward'; target?: Snap }
 
 // A model of the host: the journal, the vault copy, the store schema and what is running. Every operation can
 // be interrupted before it runs (`crashAt`), and the candidate can fail at any of its boundaries.
@@ -20,7 +21,7 @@ function newHost() {
     snapshots: new Set<string>(),
     snapshotSchema: new Map<string, number>(),
     schema: 1,
-    release: old.version as string,
+    release: old.version as string | null,
     running: 'old' as 'old' | 'private' | 'public' | 'none',
     oldServing: false, // the old release is up and may have acknowledged writes
     calls: 0,
@@ -54,7 +55,7 @@ function host(
       h.snapshotSchema.set('snap', h.schema)
       return 'snap'
     },
-    prove: async (t: typeof old) => {
+    prove: async (t: Snap) => {
       tick('prove')
       assert.equal(h.running, 'none')
       h.release = t.version
@@ -64,7 +65,7 @@ function host(
       if (opts.candidate === 'fail-after-migration') throw Error('candidate not ready')
       h.running = 'none'
     },
-    publish: async (t: typeof old) => {
+    publish: async (t: Snap) => {
       tick('publish ' + t.version)
       assert.equal(h.running === 'private' ? 'x' : 'ok', 'ok', 'publish stops the private candidate first')
       h.release = t.version
@@ -188,10 +189,10 @@ test('interrupting the recovery itself never replays a restore over writes the o
         k,
         (...a: unknown[]) => {
           if (++n === crashAt) throw new Crash(k)
-          return (f as (...x: unknown[]) => unknown)(...a)
+          return (f as unknown as (...x: unknown[]) => unknown)(...a)
         },
       ]),
-    ) as typeof ops
+    ) as unknown as typeof ops
     let crashed = false
     try {
       await recoverPending(h.pending, crashy)
