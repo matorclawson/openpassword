@@ -1,3 +1,4 @@
+import releasePackage from '../package.json' with { type: 'json' }
 import { activity } from './activity.ts'
 import { consoleAuth } from './console-auth.ts'
 import { issueFiles, issueFolder, bundleOperation } from './issue-files.ts'
@@ -558,6 +559,52 @@ export function service(
   db.exec(
     'CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, tenant TEXT, title TEXT, username TEXT, envelope TEXT, updated INTEGER)',
   )
+  db.exec('CREATE INDEX IF NOT EXISTS items_directory ON items(tenant,title COLLATE NOCASE,id)')
+  api.get('/admin/items', async (r) => {
+    const s = session(r)
+    const { q, page } = z
+      .object({
+        q: z.string().max(256).default(''),
+        page: z.coerce.number().int().min(1).max(1000000).default(1),
+      })
+      .parse(r.query)
+    const filter =
+      'tenant=? AND (instr(lower(title),lower(?))>0 OR instr(lower(username),lower(?))>0)'
+    const params = [s.tenant, q, q]
+    const total = get('SELECT count(*) AS n FROM items WHERE ' + filter, ...params)!.n
+    const current = Math.min(page, Math.max(1, Math.ceil(total / 30)))
+    const rows = all(
+      'SELECT id,title,username,updated FROM items WHERE ' +
+        filter +
+        ' ORDER BY title COLLATE NOCASE,id LIMIT 30 OFFSET ?',
+      ...params,
+      (current - 1) * 30,
+    )
+    return { rows, total, page: current }
+  })
+  api.get('/admin/items/:id', async (r) => {
+    const s = session(r)
+    return (
+      get('SELECT id,title,username,updated FROM items WHERE tenant=? AND id=?', s.tenant, id(r)) ??
+      fail(404, 'Item unavailable in this workspace')
+    )
+  })
+  api.get('/admin/items/:id/history', async (r) => {
+    const s = session(r)
+    if (!get('SELECT id FROM items WHERE tenant=? AND id=?', s.tenant, id(r)))
+      fail(404, 'Item unavailable in this workspace')
+    const { before } = z
+      .object({ before: z.coerce.number().int().positive().default(Number.MAX_SAFE_INTEGER) })
+      .parse(r.query)
+    return all(
+      'SELECT id, action, at FROM events WHERE tenant=? AND subject=? AND (?=1 OR actor=?) AND id<? ORDER BY id DESC LIMIT 31',
+      s.tenant,
+      id(r),
+      Number(s.role === 'owner'),
+      profileId(s),
+      before,
+    )
+  })
   api.post('/admin/items', async (r) => {
     const s = session(r),
       b = z
@@ -602,6 +649,7 @@ export function service(
     return {
       tenant: t,
       role: s.role,
+      version: releasePackage.version,
       operation_stops: all('SELECT op FROM operation_stops WHERE tenant=? ORDER BY op', t).map(
         (x) => x.op,
       ),
@@ -614,7 +662,10 @@ export function service(
         t,
       ).filter((g) => grantManager(s, g)),
       paused: !!get('SELECT paused FROM stops WHERE tenant=?', t)?.paused,
-      items: all('SELECT id,title,username,updated FROM items WHERE tenant=? ORDER BY title', t),
+      items:
+        (r.query as { items?: string }).items === 'paged'
+          ? []
+          : all('SELECT id,title,username,updated FROM items WHERE tenant=? ORDER BY title', t),
       apps:
         s.role === 'owner'
           ? all(
@@ -1680,7 +1731,8 @@ export function service(
         c.revision,
         now(),
       ) ?? fail(403, 'Upload not authorized')
-    if (!c.active || r.headers['openpassword-connection'] !== c.id) fail(403, 'Upload connection changed')
+    if (!c.active || r.headers['openpassword-connection'] !== c.id)
+      fail(403, 'Upload connection changed')
     const range = String(r.headers['openpassword-content-range'] || ''),
       match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(range)
     const data = r.body ?? Buffer.alloc(0),

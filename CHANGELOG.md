@@ -19,6 +19,10 @@ Breaking wire changes. Clients and integrations written against the predecessor 
 - The systemd units run from `/opt/openpassword/current`, a symlink to a versioned release directory.
 - The reference runner takes the predecessor's identifier prefix from `REFERENCE_ID_PREFIX`.
 
+### Vault interface
+- Rebuild the vault directory, masked item reader and first-run account screen with the shared family tokens and local fonts. Add persistent System, Light and Dark appearance, bounded server-side item search, stable item and activity URLs, and role-aware copy and reveal controls.
+- Apply the palette to connections, integrations, grants, approvals, usage, activity and settings. Collapse mobile navigation and add a searchable workspace switcher.
+
 ### Enrollment and agent access
 
 - The first administrator enters the installation setup code in the console. The setup screen now explains how to issue a separate enrollment token for a client after adding a provider connection.

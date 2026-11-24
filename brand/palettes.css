@@ -1,0 +1,13 @@
+html[data-palette=dark]{
+ color-scheme:dark;
+ --color-background:hsl(30 15% 10%);--color-foreground:hsl(42 25% 92%);
+ --color-card:hsl(30 12% 14%);--color-card-foreground:var(--color-foreground);
+ --color-popover:var(--color-background);--color-popover-foreground:var(--color-foreground);
+ --color-primary:hsl(24 85% 58%);--color-primary-foreground:var(--color-background);
+ --color-secondary:hsl(175 40% 45%);--color-accent:hsl(45 65% 55%);
+ --color-muted:hsl(30 10% 20%);--color-muted-foreground:hsl(35 15% 68%);
+ --color-ring:var(--color-primary);--color-border:hsl(30 10% 25%);--color-input:var(--color-border);
+ --color-navy:hsl(215 30% 87%);--color-warm-white:hsl(30 11% 16%);
+ --background-image-hero:linear-gradient(135deg,var(--color-background),var(--color-card))
+}
+html[data-palette=light]{color-scheme:light}

@@ -1,5 +1,8 @@
 'use client'
 import { Authentication, ConsoleLogin, Profile } from './authentication'
+import { WorkspaceSwitcher } from './workspace-switcher'
+import { Appearance } from './appearance'
+import { VaultReader } from './vault-reader'
 import { ActivityFeed } from './activity-feed'
 import { usePathname } from 'next/navigation'
 import { Consumption } from './consumption'
@@ -8,6 +11,7 @@ import { sealInput } from './intake'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   Vault,
+  Menu,
   KeyRound,
   Blocks,
   Activity,
@@ -55,6 +59,7 @@ type Grant = {
 }
 type Approval = { id: string; actor: string; conn: string; op: string; preview: unknown }
 type Workspace = {
+  version: string
   directory: { id: string; label: string }[]
   operation_stops: string[]
   provider_stops: string[]
@@ -73,13 +78,13 @@ type Workspace = {
   events: { action: string; subject: string; at: number; actor: string }[]
 }
 const tabs = [
+  ['Vault items', LockKeyhole],
   ['Connections', Vault],
   ['Integrations', Blocks],
   ['Access grants', KeyRound],
   ['Approvals', ShieldCheck],
   ['Consumption', Activity],
   ['Activity', Activity],
-  ['Vault items', LockKeyhole],
   ['Workspace', Building2],
 ] as const
 type Tab = (typeof tabs)[number][0]
@@ -151,13 +156,16 @@ function Brand() {
 }
 export default function Page() {
   const pathname = usePathname()
+  const [navigation, setNavigation] = useState(false)
   const tab =
-    tabs.find(([t]) => paths[t] === pathname)?.[0] ??
-    (pathname === '/device'
-      ? 'Access grants'
-      : pathname.startsWith('/approvals/')
-        ? 'Approvals'
-        : 'Connections')
+    pathname === '/' || pathname.startsWith('/vault/')
+      ? 'Vault items'
+      : (tabs.find(([t]) => paths[t] === pathname)?.[0] ??
+        (pathname === '/device'
+          ? 'Access grants'
+          : pathname.startsWith('/approvals/')
+            ? 'Approvals'
+            : 'Connections'))
   const [w, W] = useState<Workspace | null>(null),
     [busy, B] = useState(false),
     [err, E] = useState(''),
@@ -170,9 +178,11 @@ export default function Page() {
     [copied, CP] = useState(false)
   const dialog = useRef<HTMLDialogElement>(null),
     search = useRef<HTMLInputElement>(null)
+  const [revision, R] = useState(0)
   async function load() {
-    const data = await request('admin/workspace')
+    const data = await request('admin/workspace?items=paged')
     W(data)
+    R((r) => r + 1)
     return data as Workspace
   }
   useEffect(() => {
@@ -190,6 +200,13 @@ export default function Page() {
     else dialog.current?.close()
   }, [modal])
   useEffect(() => {
+    const locked = (e: StorageEvent) => {
+      if (e.key === 'openpassword.lock') {
+        W(null)
+        close()
+      }
+    }
+    window.addEventListener('storage', locked)
     function key(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
@@ -197,7 +214,10 @@ export default function Page() {
       }
     }
     window.addEventListener('keydown', key)
-    return () => window.removeEventListener('keydown', key)
+    return () => {
+      window.removeEventListener('keydown', key)
+      window.removeEventListener('storage', locked)
+    }
   }, [])
   function close() {
     M('')
@@ -288,7 +308,10 @@ export default function Page() {
         }
       }
       if (modal === 'item') await request('admin/items', f)
-      if (modal === 'deleteItem') await request('admin/items/' + selected, undefined, 'DELETE')
+      if (modal === 'deleteItem') {
+        await request('admin/items/' + selected, undefined, 'DELETE')
+        go('Vault items')
+      }
       if (modal === 'member') {
         const a = await request('admin/members', { label: f.label, role: f.role })
         K(a.token)
@@ -388,21 +411,26 @@ export default function Page() {
       <main className="login">
         <section className="loginArt">
           <Brand />
-          <div className="dial">
-            <Vault strokeWidth={0.8} />
+          <div className="plate" aria-hidden="true">
+            <div className="spindle">
+              <Vault strokeWidth={0.9} />
+            </div>
           </div>
-          <p>
-            OpenPassword <span>/</span> Operator console
-          </p>
+          <div className="loginFoot">
+            <LockKeyhole size={16} /> Credential vault
+          </div>
         </section>
-        <ConsoleLogin
-          request={request}
-          done={async (setup) => {
-            await load()
-            if (setup) go('Workspace')
-          }}
-        />
-        {error}
+        <div className="loginPane">
+          <Appearance />
+          <ConsoleLogin
+            request={request}
+            done={async (setup) => {
+              await load()
+              if (setup) go('Workspace')
+            }}
+          />
+          {error}
+        </div>
       </main>
     )
   const active = w.connections.filter(
@@ -431,32 +459,30 @@ export default function Page() {
             : null
   return (
     <div className="shell">
-      <aside>
+      <aside data-navigation={navigation ? 'open' : 'closed'}>
         <Brand />
-        <label className="org">
-          <Building2 size={18} />
-          <select
-            aria-label="Workspace"
-            value={w.tenant}
-            onChange={(e) => {
-              const id = e.target.value
-              if (id === '+') show('workspace')
-              else
-                void work(async () => {
-                  await request('admin/switch', { id })
-                  await load()
-                })
-            }}
-          >
-            {w.workspaces.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.label}
-              </option>
-            ))}
-            {w.role === 'owner' && <option value="+">New workspace…</option>}
-          </select>
-        </label>
-        <nav aria-label="Workspace navigation">
+        <button
+          className="mobileNavToggle"
+          aria-expanded={navigation}
+          aria-controls="workspace-nav"
+          onClick={() => setNavigation(!navigation)}
+        >
+          {navigation ? <X size={16} /> : <Menu size={16} />}Menu
+        </button>
+        <WorkspaceSwitcher
+          current={w.tenant}
+          spaces={w.workspaces}
+          canCreate={w.role === 'owner'}
+          create={() => show('workspace')}
+          change={(id) =>
+            void work(async () => {
+              await request('admin/switch', { id })
+              await load()
+              if (pathname.startsWith('/vault/')) go('Vault items')
+            })
+          }
+        />
+        <nav id="workspace-nav" aria-label="Workspace navigation">
           {tabs.map(([t, Icon]) => (
             <a href={paths[t]} key={t} aria-current={t === tab ? 'page' : undefined}>
               <Icon size={18} />
@@ -465,6 +491,9 @@ export default function Page() {
             </a>
           ))}
         </nav>
+        <div className="version">
+          OpenPassword <code>v{w.version}</code>
+        </div>
         <a className="sourceLink" href="/openpassword-source.tar.gz" download>
           Download source
         </a>
@@ -473,6 +502,9 @@ export default function Page() {
           onClick={() =>
             work(async () => {
               await request('admin/logout', {})
+              try {
+                localStorage.setItem('openpassword.lock', String(Date.now()))
+              } catch {}
               W(null)
               close()
             })
@@ -481,412 +513,414 @@ export default function Page() {
           <LogOut size={16} /> Lock workspace
         </button>
       </aside>
-      <main className="desk">
+      <main className="desk" data-section={tab}>
         <header>
           <span>
             {name} <ChevronRight size={14} /> {tab}
           </span>
-          <button
-            aria-label="Refresh workspace"
-            disabled={busy}
-            onClick={() =>
-              work(async () => {
-                await load()
-              })
-            }
-          >
-            <RefreshCw size={16} />
-          </button>
+          <div className="headActions">
+            <Appearance />
+            <button
+              aria-label="Refresh workspace"
+              disabled={busy}
+              onClick={() =>
+                work(async () => {
+                  await load()
+                })
+              }
+            >
+              <RefreshCw size={16} />
+            </button>
+          </div>
         </header>
         <div className="canvas">
-          <div className="heading">
-            <div>
-              <h1>{tab}</h1>
-              <p>
-                {
-                  {
-                    Consumption: 'Review API requests, billed units and estimated spend.',
-                    Connections: 'Manage the accounts your people and agents can use.',
-                    Integrations: 'Explore providers and the operations each connection supports.',
-                    'Access grants': 'Give an agent access to specific operations on one account.',
-                    Approvals: 'Review the exact request before a provider write.',
-                    'Vault items': 'Store shared passwords and secure notes.',
-                    Workspace: 'Manage workspace access and provider dispatch.',
-                    Activity: 'Inspect recent access decisions and provider activity.',
-                  }[tab]
-                }
-              </p>
-            </div>
-            {creation && (
-              <button
-                className="primary"
-                disabled={busy || (tab === 'Access grants' && !active.length)}
-                onClick={creation[1]}
-              >
-                <Plus size={17} />
-                {creation[0]}
-              </button>
-            )}
-          </div>
-          {error && !modal && error}
-          {tab === 'Connections' && (
-            <div className="metrics">
-              {[
-                [Vault, 'Active connections', active.length],
-                [
-                  KeyRound,
-                  'Active grants',
-                  w.grants.filter((x) => x.active && x.expires > Date.now()).length,
-                ],
-                [ShieldCheck, 'Awaiting approval', w.approvals.length],
-              ].map(([I, label, n]) => {
-                const Icon = I as typeof Vault
-                return (
-                  <div key={String(label)}>
-                    <Icon size={19} />
-                    <span>{String(label)}</span>
-                    <strong>{String(n)}</strong>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          <section className="panel">
-            <div className="toolbar">
-              <h2>
-                {tab === 'Connections'
-                  ? 'Credential vault'
-                  : tab === 'Integrations'
-                    ? 'Provider directory'
-                    : tab === 'Access grants'
-                      ? 'Agent access'
-                      : tab === 'Approvals'
-                        ? 'Review queue'
-                        : tab === 'Workspace'
-                          ? 'Workspace settings'
-                          : tab === 'Vault items'
-                            ? 'Saved items'
-                            : 'Recent events'}
-              </h2>
-              <label className="search">
-                <Search size={15} />
-                <input
-                  ref={search}
-                  aria-label={'Search ' + tab}
-                  value={q}
-                  onChange={(e) => Q(e.target.value)}
-                  placeholder="Search…"
-                />
-                <Command size={12} />K
-              </label>
-            </div>
-            {tab === 'Consumption' && <Consumption key={w.tenant} request={request} />}
-            {tab === 'Connections' &&
-              (list.length ? (
-                list.map((c) => (
-                  <article key={c.id}>
-                    <div className="mark">
-                      <Layers />
-                    </div>
-                    <div className="grow">
-                      <strong>{c.label}</strong>
-                      <small>
-                        {w.providers[c.provider].name} · {c.source}
-                        {c.access_expires_at && ' · Access ends ' + stamp(c.access_expires_at)}
-                        {c.identity && ' · ' + c.identity}
-                        {c.manage &&
-                          ' · ' +
-                            {
-                              private: 'Only you',
-                              specific: 'Specific people',
-                              organization: 'Whole organization',
-                            }[c.visibility]}
-                      </small>
-                    </div>
-                    <span className={'pill ' + (c.active ? 'ok' : '')}>
-                      {!c.active
-                        ? 'Revoked'
-                        : c.access_expires_at && c.access_expires_at <= Date.now()
-                          ? 'Expired'
-                          : 'Active'}
-                    </span>
-                    {!!c.active && c.manage && (
-                      <div className="actions">
-                        {btn('Edit access', () => show('sharing', c.id))}
-                        {btn('Rotate', () => show('rotate', c.id))}
-                        {btn('Revoke', () => show('revoke', c.id))}
-                      </div>
-                    )}
-                  </article>
-                ))
-              ) : (
-                <div className="empty">
-                  <Vault />
-                  <h3>{q ? 'No matching connections' : 'Your vault is ready'}</h3>
+          {tab === 'Vault items' ? (
+            <>
+              {error && !modal && error}
+              <VaultReader
+                key={w.tenant}
+                path={pathname}
+                workspace={name || w.tenant}
+                role={w.role}
+                revision={revision}
+                request={request}
+                open={show}
+              />
+            </>
+          ) : (
+            <>
+              <div className="heading">
+                <div>
+                  <h1>{tab}</h1>
                   <p>
-                    {q
-                      ? 'Try a provider or account name.'
-                      : 'Add a provider account, then grant access to the operations an agent needs.'}
+                    {
+                      {
+                        Consumption: 'Review API requests, billed units and estimated spend.',
+                        Connections: 'Manage the accounts your people and agents can use.',
+                        Integrations:
+                          'Explore providers and the operations each connection supports.',
+                        'Access grants':
+                          'Give an agent access to specific operations on one account.',
+                        Approvals: 'Review the exact request before a provider write.',
+                        'Vault items': 'Store shared passwords and secure notes.',
+                        Workspace: 'Manage workspace access and provider dispatch.',
+                        Activity: 'Inspect recent access decisions and provider activity.',
+                      }[tab]
+                    }
                   </p>
-                  {!q && btn('Browse integrations', () => go('Integrations'))}
                 </div>
-              ))}
-            {tab === 'Integrations' && (
-              <div className="cards">
-                {Object.entries(w.providers)
-                  .filter(([, p]) => includes(p.name, p.group, ...p.actions.map((a) => a.id)))
-                  .map(([id, p]) => (
-                    <button key={id} className="card" onClick={() => show('provider', id)}>
-                      <div className="mark">{p.name.slice(0, 2)}</div>
-                      <small>{p.group}</small>
-                      <strong>{p.name}</strong>
-                      <span>
-                        {p.actions.length} operations <ArrowUpRight size={14} />
-                      </span>
-                    </button>
-                  ))}
+                {creation && (
+                  <button
+                    className="primary"
+                    disabled={busy || (tab === 'Access grants' && !active.length)}
+                    onClick={creation[1]}
+                  >
+                    <Plus size={17} />
+                    {creation[0]}
+                  </button>
+                )}
               </div>
-            )}
-            {tab === 'Access grants' &&
-              (w.grants.length ? (
-                w.grants
-                  .filter((g) => includes(g.label, g.id))
-                  .map((g) => (
-                    <article key={g.id}>
-                      <KeyRound />
-                      <div className="grow">
-                        <strong>{g.label}</strong>
-                        {g.connected_at && <small>CLI connected {stamp(g.connected_at)}</small>}
-                        <small>
-                          Grant ID: <code>{g.id}</code>
-                        </small>
-                        <small>
-                          {w.connections.find((c) => c.id === g.connection_id)?.label} ·{' '}
-                          {JSON.parse(g.ops).length} operations · Expires {stamp(g.expires)}
-                        </small>
+              {error && !modal && error}
+              {tab === 'Connections' && (
+                <div className="metrics">
+                  {[
+                    [Vault, 'Active connections', active.length],
+                    [
+                      KeyRound,
+                      'Active grants',
+                      w.grants.filter((x) => x.active && x.expires > Date.now()).length,
+                    ],
+                    [ShieldCheck, 'Awaiting approval', w.approvals.length],
+                  ].map(([I, label, n]) => {
+                    const Icon = I as typeof Vault
+                    return (
+                      <div key={String(label)}>
+                        <Icon size={19} />
+                        <span>{String(label)}</span>
+                        <strong>{String(n)}</strong>
                       </div>
-                      {g.active && g.expires > Date.now() ? (
-                        btn('Revoke', () => show('revoke', g.id))
-                      ) : (
-                        <span className="pill">
-                          {g.active && g.expires > Date.now() ? 'Active' : 'Inactive'}
+                    )
+                  })}
+                </div>
+              )}
+              <section className="panel">
+                <div className="toolbar">
+                  <h2>
+                    {tab === 'Connections'
+                      ? 'Credential vault'
+                      : tab === 'Integrations'
+                        ? 'Provider directory'
+                        : tab === 'Access grants'
+                          ? 'Agent access'
+                          : tab === 'Approvals'
+                            ? 'Review queue'
+                            : tab === 'Workspace'
+                              ? 'Workspace settings'
+                              : tab === 'Consumption'
+                                ? 'Usage report'
+                                : 'Recent events'}
+                  </h2>
+                  {tab !== 'Consumption' && (
+                    <label className="search">
+                      <Search size={15} />
+                      <input
+                        ref={search}
+                        aria-label={'Search ' + tab}
+                        value={q}
+                        onChange={(e) => Q(e.target.value)}
+                        placeholder="Search…"
+                      />
+                      <Command size={12} />K
+                    </label>
+                  )}
+                </div>
+                {tab === 'Consumption' && <Consumption key={w.tenant} request={request} />}
+                {tab === 'Connections' &&
+                  (list.length ? (
+                    list.map((c) => (
+                      <article key={c.id}>
+                        <div className="mark">
+                          <Layers />
+                        </div>
+                        <div className="grow">
+                          <strong>{c.label}</strong>
+                          <small>
+                            {w.providers[c.provider].name} · {c.source}
+                            {c.access_expires_at && ' · Access ends ' + stamp(c.access_expires_at)}
+                            {c.identity && ' · ' + c.identity}
+                            {c.manage &&
+                              ' · ' +
+                                {
+                                  private: 'Only you',
+                                  specific: 'Specific people',
+                                  organization: 'Whole organization',
+                                }[c.visibility]}
+                          </small>
+                        </div>
+                        <span className={'pill ' + (c.active ? 'ok' : '')}>
+                          {!c.active
+                            ? 'Revoked'
+                            : c.access_expires_at && c.access_expires_at <= Date.now()
+                              ? 'Expired'
+                              : 'Active'}
                         </span>
-                      )}
-                    </article>
-                  ))
-              ) : (
-                <div className="empty">
-                  <KeyRound />
-                  <h3>No grants issued</h3>
-                  <p>
-                    {active.length
-                      ? 'Issue a grant to pair an agent or generate scoped credentials.'
-                      : 'Add a connection to issue your first grant.'}
-                  </p>
-                </div>
-              ))}
-            {tab === 'Approvals' &&
-              (w.approvals.length ? (
-                w.approvals
-                  .filter((a) => includes(a.op, a.id))
-                  .map((a) => (
-                    <article key={a.id}>
-                      <div className="grow">
-                        <strong>{a.op}</strong>
-                        <small>
-                          {w.grants.find((g) => g.id === a.actor)?.label} →{' '}
-                          {w.connections.find((c) => c.id === a.conn)?.label}
-                        </small>
-                        <ApprovalPreview value={a.preview} />
-                        <div className="actions">
-                          {[true, false].map((approve) => (
-                            <button
-                              key={String(approve)}
-                              disabled={busy}
-                              onClick={() =>
-                                work(async () => {
-                                  await request('admin/approvals/' + a.id, {
-                                    approve,
-                                    ...(a.op === 'loops.contacts.import_chunk'
-                                      ? {
-                                          shown_manifest_sha256: (
-                                            a.preview as { manifest_sha256: string }
-                                          ).manifest_sha256,
-                                        }
-                                      : {}),
-                                  })
-                                  await load()
-                                })
-                              }
-                            >
-                              {approve ? 'Approve request' : 'Deny'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </article>
-                  ))
-              ) : (
-                <div className="empty">
-                  <ShieldCheck />
-                  <h3>No pending requests</h3>
-                  <p>Provider writes appear here before execution.</p>
-                </div>
-              ))}
-            {tab === 'Vault items' &&
-              (w.items.length ? (
-                w.items
-                  .filter((i) => includes(i.title, i.username))
-                  .map((i) => (
-                    <article key={i.id}>
-                      <LockKeyhole />
-                      <div className="grow">
-                        <strong>{i.title}</strong>
-                        <small>{i.username}</small>
-                      </div>
-                      {w.role !== 'viewer' && (
-                        <div className="actions">
-                          {btn('Reveal', () =>
-                            work(async () => {
-                              const a = await request('admin/items/' + i.id + '/reveal', {})
-                              show('revealed', i.id)
-                              K(a.value)
-                            }),
-                          )}
-                          {btn('Delete', () => show('deleteItem', i.id))}
-                        </div>
-                      )}
-                    </article>
-                  ))
-              ) : (
-                <div className="empty">
-                  <LockKeyhole />
-                  <h3>No saved items</h3>
-                  <p>Add a shared login or secure note to this workspace.</p>
-                </div>
-              ))}
-            {tab === 'Workspace' && (
-              <>
-                <Profile request={request} />
-                {w.role === 'owner' && <Authentication request={request} />}
-                {w.billing.map((b, i) => (
-                  <article key={i}>
-                    <div className="grow">
-                      <strong>{b.label} · Model budget</strong>
-                      <small>
-                        {b.spent} spent · {b.held} reserved · {b.available} available (micro-USD)
-                      </small>
+                        {!!c.active && c.manage && (
+                          <div className="actions">
+                            {btn('Edit access', () => show('sharing', c.id))}
+                            {btn('Rotate', () => show('rotate', c.id))}
+                            <details className="dangerMenu">
+                              <summary>More actions</summary>
+                              {btn('Revoke', () => show('revoke', c.id))}
+                            </details>
+                          </div>
+                        )}
+                      </article>
+                    ))
+                  ) : (
+                    <div className="empty">
+                      <Vault />
+                      <h3>{q ? 'No matching connections' : 'Your vault is ready'}</h3>
+                      <p>
+                        {q
+                          ? 'Try a provider or account name.'
+                          : 'Add a provider account, then grant access to the operations an agent needs.'}
+                      </p>
+                      {!q && btn('Browse integrations', () => go('Integrations'))}
                     </div>
-                  </article>
-                ))}
-                <article>
-                  <ShieldCheck />
-                  <div className="grow">
-                    <strong>Provider dispatch</strong>
-                    <small>
-                      {w.paused ? 'Paused' : 'Running'} · Applies to all workspace agents
-                    </small>
+                  ))}
+                {tab === 'Integrations' && (
+                  <div className="cards">
+                    {Object.entries(w.providers)
+                      .filter(([, p]) => includes(p.name, p.group, ...p.actions.map((a) => a.id)))
+                      .map(([id, p]) => (
+                        <button key={id} className="card" onClick={() => show('provider', id)}>
+                          <div className="mark">{p.name.slice(0, 2)}</div>
+                          <small>{p.group}</small>
+                          <strong>{p.name}</strong>
+                          <span>
+                            {p.actions.length} operations <ArrowUpRight size={14} />
+                          </span>
+                        </button>
+                      ))}
                   </div>
-                  {w.role === 'owner' &&
-                    btn(w.paused ? 'Resume dispatch' : 'Pause dispatch', () =>
-                      work(async () => {
-                        await request('admin/dispatch', { paused: !w.paused })
-                        await load()
-                      }),
-                    )}
-                </article>
-                {w.role === 'owner' && (
-                  <>
-                    <details>
-                      <summary>Provider dispatch controls</summary>
-                      {Object.entries(w.providers).map(([p, v]) => (
-                        <div key={p}>
-                          <article>
-                            <div className="grow">
-                              <strong>{v.name}</strong>
-                              <small>{w.provider_stops.includes(p) ? 'Paused' : 'Running'}</small>
+                )}
+                {tab === 'Access grants' &&
+                  (w.grants.length ? (
+                    w.grants
+                      .filter((g) => includes(g.label, g.id))
+                      .map((g) => (
+                        <article key={g.id}>
+                          <KeyRound />
+                          <div className="grow">
+                            <strong>{g.label}</strong>
+                            {g.connected_at && <small>CLI connected {stamp(g.connected_at)}</small>}
+                            <small>
+                              Grant ID: <code>{g.id}</code>
+                            </small>
+                            <small>
+                              {w.connections.find((c) => c.id === g.connection_id)?.label} ·{' '}
+                              {JSON.parse(g.ops).length} operations · Expires {stamp(g.expires)}
+                            </small>
+                          </div>
+                          {g.active && g.expires > Date.now() ? (
+                            btn('Revoke', () => show('revoke', g.id))
+                          ) : (
+                            <span className="pill">
+                              {g.active && g.expires > Date.now() ? 'Active' : 'Inactive'}
+                            </span>
+                          )}
+                        </article>
+                      ))
+                  ) : (
+                    <div className="empty">
+                      <KeyRound />
+                      <h3>No grants issued</h3>
+                      <p>
+                        {active.length
+                          ? 'Issue a grant to pair an agent or generate scoped credentials.'
+                          : 'Add a connection to issue your first grant.'}
+                      </p>
+                    </div>
+                  ))}
+                {tab === 'Approvals' &&
+                  (w.approvals.length ? (
+                    w.approvals
+                      .filter((a) => includes(a.op, a.id))
+                      .map((a) => (
+                        <article key={a.id}>
+                          <div className="grow">
+                            <strong>{a.op}</strong>
+                            <small>
+                              {w.grants.find((g) => g.id === a.actor)?.label} →{' '}
+                              {w.connections.find((c) => c.id === a.conn)?.label}
+                            </small>
+                            <ApprovalPreview value={a.preview} />
+                            <div className="actions">
+                              {[true, false].map((approve) => (
+                                <button
+                                  key={String(approve)}
+                                  disabled={busy}
+                                  onClick={() =>
+                                    work(async () => {
+                                      await request('admin/approvals/' + a.id, {
+                                        approve,
+                                        ...(a.op === 'loops.contacts.import_chunk'
+                                          ? {
+                                              shown_manifest_sha256: (
+                                                a.preview as { manifest_sha256: string }
+                                              ).manifest_sha256,
+                                            }
+                                          : {}),
+                                      })
+                                      await load()
+                                    })
+                                  }
+                                >
+                                  {approve ? 'Approve request' : 'Deny'}
+                                </button>
+                              ))}
                             </div>
-                            {btn(w.provider_stops.includes(p) ? 'Resume' : 'Pause', () =>
-                              work(async () => {
-                                await request('admin/dispatch/' + p, {
-                                  paused: !w.provider_stops.includes(p),
-                                })
-                                await load()
-                              }),
-                            )}
-                          </article>
-                          <details>
-                            <summary>{v.name} operations</summary>
-                            {v.actions.map((a) => (
-                              <article key={a.id}>
-                                <strong className="grow">{a.id}</strong>
-                                {btn(w.operation_stops.includes(a.id) ? 'Resume' : 'Pause', () =>
+                          </div>
+                        </article>
+                      ))
+                  ) : (
+                    <div className="empty">
+                      <ShieldCheck />
+                      <h3>No pending requests</h3>
+                      <p>Provider writes appear here before execution.</p>
+                    </div>
+                  ))}
+                {tab === 'Workspace' && (
+                  <>
+                    <Profile request={request} />
+                    {w.role === 'owner' && <Authentication request={request} />}
+                    {w.billing.map((b, i) => (
+                      <article key={i}>
+                        <div className="grow">
+                          <strong>{b.label} · Model budget</strong>
+                          <small>
+                            {b.spent} spent · {b.held} reserved · {b.available} available
+                            (micro-USD)
+                          </small>
+                        </div>
+                      </article>
+                    ))}
+                    <article>
+                      <ShieldCheck />
+                      <div className="grow">
+                        <strong>Provider dispatch</strong>
+                        <small>
+                          {w.paused ? 'Paused' : 'Running'} · Applies to all workspace agents
+                        </small>
+                      </div>
+                      {w.role === 'owner' &&
+                        btn(w.paused ? 'Resume dispatch' : 'Pause dispatch', () =>
+                          work(async () => {
+                            await request('admin/dispatch', { paused: !w.paused })
+                            await load()
+                          }),
+                        )}
+                    </article>
+                    {w.role === 'owner' && (
+                      <>
+                        <details>
+                          <summary>Provider dispatch controls</summary>
+                          {Object.entries(w.providers).map(([p, v]) => (
+                            <div key={p}>
+                              <article>
+                                <div className="grow">
+                                  <strong>{v.name}</strong>
+                                  <small>
+                                    {w.provider_stops.includes(p) ? 'Paused' : 'Running'}
+                                  </small>
+                                </div>
+                                {btn(w.provider_stops.includes(p) ? 'Resume' : 'Pause', () =>
                                   work(async () => {
-                                    await request('admin/dispatch/' + p + '/' + a.id, {
-                                      paused: !w.operation_stops.includes(a.id),
+                                    await request('admin/dispatch/' + p, {
+                                      paused: !w.provider_stops.includes(p),
                                     })
                                     await load()
                                   }),
                                 )}
                               </article>
-                            ))}
-                          </details>
-                        </div>
-                      ))}
-                    </details>
-                    <article>
-                      <Building2 />
-                      <div className="grow">
-                        <strong>Team members</strong>
-                        <small>
-                          Editors manage connections and grants. Viewers can inspect inventory and
-                          audit events.
-                        </small>
-                      </div>
-                      {btn('Add member', () => show('member'))}
-                    </article>
-                    <article>
-                      <div className="grow">
-                        <strong>Identity applications</strong>
-                        <small>Allow an application to request a signed workspace identity.</small>
-                      </div>
-                      {btn('Register app', () => show('app'))}
-                    </article>
-                    {w.apps
-                      .filter((a) => includes(a.label, a.audience))
-                      .map((a) => (
-                        <article key={a.id}>
+                              <details>
+                                <summary>{v.name} operations</summary>
+                                {v.actions.map((a) => (
+                                  <article key={a.id}>
+                                    <strong className="grow">{a.id}</strong>
+                                    {btn(
+                                      w.operation_stops.includes(a.id) ? 'Resume' : 'Pause',
+                                      () =>
+                                        work(async () => {
+                                          await request('admin/dispatch/' + p + '/' + a.id, {
+                                            paused: !w.operation_stops.includes(a.id),
+                                          })
+                                          await load()
+                                        }),
+                                    )}
+                                  </article>
+                                ))}
+                              </details>
+                            </div>
+                          ))}
+                        </details>
+                        <article>
+                          <Building2 />
                           <div className="grow">
-                            <strong>{a.label}</strong>
+                            <strong>Team members</strong>
                             <small>
-                              {a.id} · {a.audience}
+                              Editors manage connections and grants. Viewers can inspect inventory
+                              and audit events.
                             </small>
                           </div>
-                          {btn(a.active ? 'Suspend' : 'Activate', () =>
-                            work(async () => {
-                              await request('admin/apps/' + a.id, { active: !a.active })
-                              await load()
-                            }),
-                          )}
+                          {btn('Add member', () => show('member'))}
                         </article>
-                      ))}
-                    {w.members
-                      .filter((m) => includes(m.label, m.role))
-                      .map((m) => (
-                        <article key={m.id}>
+                        <article>
                           <div className="grow">
-                            <strong>{m.label}</strong>
-                            <small>{m.role}</small>
+                            <strong>Identity applications</strong>
+                            <small>
+                              Allow an application to request a signed workspace identity.
+                            </small>
                           </div>
-                          {m.active ? btn('Revoke', () => show('revoke', m.id)) : 'Revoked'}
+                          {btn('Register app', () => show('app'))}
                         </article>
-                      ))}
+                        {w.apps
+                          .filter((a) => includes(a.label, a.audience))
+                          .map((a) => (
+                            <article key={a.id}>
+                              <div className="grow">
+                                <strong>{a.label}</strong>
+                                <small>
+                                  {a.id} · {a.audience}
+                                </small>
+                              </div>
+                              {btn(a.active ? 'Suspend' : 'Activate', () =>
+                                work(async () => {
+                                  await request('admin/apps/' + a.id, { active: !a.active })
+                                  await load()
+                                }),
+                              )}
+                            </article>
+                          ))}
+                        {w.members
+                          .filter((m) => includes(m.label, m.role))
+                          .map((m) => (
+                            <article key={m.id}>
+                              <div className="grow">
+                                <strong>{m.label}</strong>
+                                <small>{m.role}</small>
+                              </div>
+                              {m.active ? btn('Revoke', () => show('revoke', m.id)) : 'Revoked'}
+                            </article>
+                          ))}
+                      </>
+                    )}
                   </>
                 )}
-              </>
-            )}
-            {tab === 'Activity' && <ActivityFeed key={w.tenant} query={q} />}
-          </section>
+                {tab === 'Activity' && <ActivityFeed key={w.tenant} query={q} />}
+              </section>
+            </>
+          )}
         </div>
       </main>
       <dialog ref={dialog} onCancel={close} aria-labelledby="dialog-title">
@@ -897,7 +931,6 @@ export default function Page() {
                 {
                   item: 'Add vault item',
                   deleteItem: 'Delete vault item',
-                  revealed: 'Vault item value',
                   app: 'Register identity application',
                   member: tokens ? 'Member access token' : 'Add workspace member',
                   oauth:
@@ -939,15 +972,13 @@ export default function Page() {
         ) : tokens ? (
           <>
             <p>
-              {modal === 'revealed'
-                ? 'Close this dialog to hide the value.'
-                : modal === 'member'
-                  ? 'Give this token to the member through a private channel.'
-                  : modal === 'app'
-                    ? 'Copy the action-check credential now and provide it to the registered application.'
-                    : modal === 'grant' && !tokens.startsWith('{')
-                      ? 'On the client machine, set OPENPASSWORD_BROKER to this server, run openpassword connect and paste this single-use token. It expires within 10 minutes.'
-                      : 'Copy these credentials now. The access token expires in 15 minutes or when the grant ends.'}
+              {modal === 'member'
+                ? 'Give this token to the member through a private channel.'
+                : modal === 'app'
+                  ? 'Copy the action-check credential now and provide it to the registered application.'
+                  : modal === 'grant' && !tokens.startsWith('{')
+                    ? 'On the client machine, set OPENPASSWORD_BROKER to this server, run openpassword connect and paste this single-use token. It expires within 10 minutes.'
+                    : 'Copy these credentials now. The access token expires in 15 minutes or when the grant ends.'}
             </p>
             {modal === 'grant' && !tokens.startsWith('{') && (
               <>
@@ -1169,9 +1200,7 @@ export default function Page() {
                 ? New calls using this access will be refused.
               </p>
             )}
-            {modal === 'deleteItem' && (
-              <p>Delete {w.items.find((i) => i.id === selected)?.title} from this workspace?</p>
-            )}
+            {modal === 'deleteItem' && <p>Delete this vault item from the workspace?</p>}
             {modal === 'item' && (
               <>
                 <label>

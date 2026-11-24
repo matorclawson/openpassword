@@ -120,6 +120,7 @@ try {
       await p.goForward()
       await p.getByLabel('Group by').waitFor()
       await p.setViewportSize({ width: 390, height: 844 })
+      await p.getByRole('button', { name: 'Menu', exact: true }).click()
       await p.getByRole('link', { name: 'Integrations', exact: true }).click()
       await p.getByLabel('Search Integrations').fill('Notion')
       await p.getByRole('button', { name: /Notion/ }).click()
@@ -129,11 +130,13 @@ try {
       const source = await p.request.get(origin + '/openpassword-source.tar.gz')
       assert.equal(source.status(), 200)
       assert.equal((await source.body()).subarray(0, 2).toString('hex'), '1f8b')
+      if (!(await p.getByRole('button', { name: 'Lock workspace' }).isVisible()))
+        await p.getByRole('button', { name: 'Menu', exact: true }).click()
       await p.getByRole('button', { name: 'Lock workspace' }).click()
       await p.getByLabel('Username').fill('operator')
       await p.getByLabel('Password', { exact: true }).fill('browser-only-fixture')
       await p.getByRole('button', { name: 'Sign in', exact: true }).click()
-      await p.getByRole('button', { name: 'Lock workspace' }).waitFor()
+      await p.getByRole('button', { name: 'Menu', exact: true }).waitFor()
       console.log(
         'Desktop login, sealed credential enrollment, scope selection, grant issuance, mobile search and details, source download and logout passed.',
       )

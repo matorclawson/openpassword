@@ -58,7 +58,9 @@ export function ActivityFeed({ query }: { query: string }) {
   )
   return (
     <>
-      <small role="status">{status}</small>
+      <small className="feedStatus" role="status">
+        {status}
+      </small>
       {visible.map((e) => (
         <article key={e.id}>
           <div className="grow">
@@ -67,7 +69,12 @@ export function ActivityFeed({ query }: { query: string }) {
               {e.actor} · {e.subject}
             </small>
           </div>
-          <time dateTime={new Date(e.at).toISOString()}>{new Date(e.at).toLocaleString()}</time>
+          <time dateTime={new Date(e.at).toISOString()}>
+            {new Date(e.at)
+              .toISOString()
+              .replace('T', ' ')
+              .replace(/\.\d{3}Z$/, ' UTC')}
+          </time>
         </article>
       ))}
       {!visible.length && <p>{query ? 'No matching events.' : 'Waiting for activity.'}</p>}
