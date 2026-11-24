@@ -7,9 +7,11 @@ import { spawn } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import assert from 'node:assert/strict'
 import { service } from '../server/service.ts'
-const out = resolve(process.env.DESIGN_OUTPUT || 'design-evidence'),
+// Evidence goes outside the checkout unless DESIGN_OUTPUT names a directory, so a passing gate leaves it clean.
+const out = process.env.DESIGN_OUTPUT ? resolve(process.env.DESIGN_OUTPUT) : mkdtempSync(join(tmpdir(), 'design-evidence-')),
   home = mkdtempSync(join(tmpdir(), 'vault-review-'))
 mkdirSync(out, { recursive: true })
+console.error('Design evidence directory: ' + out)
 const port = 3647,
   origin = 'http://127.0.0.1:' + port
 const broker = service(home, origin)
