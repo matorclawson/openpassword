@@ -3,9 +3,9 @@
   "version": "0.3.0",
   "description": "",
   "scripts": {
-    "dev": "concurrently -k \"node --import tsx server/main.ts\" \"next dev -H localhost\"",
+    "dev": "concurrently -k \"node --import tsx server/main.ts\" \"next dev -H 127.0.0.1\"",
     "build": "next build --webpack",
-    "start": "concurrently -k \"node --import tsx server/main.ts\" \"next start -H localhost\"",
+    "start": "concurrently -k \"node --import tsx server/main.ts\" \"next start -H 127.0.0.1\"",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "verify": "npm run packages && npm run typecheck && npm test && npm run build",

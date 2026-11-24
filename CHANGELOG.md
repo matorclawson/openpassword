@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+
+- The console binds 127.0.0.1 explicitly (systemd unit, `npm start`, `npm run dev`). With `-H localhost` Node 24 can listen on `::1` only, so a proxy or probe dialing 127.0.0.1 got connection refused. A test keeps the unit, the console rewrites and the broker on the same address.
+
 ## 0.3.0 (unreleased)
 
 - Adds `deploy/install.sh`: `agent plan|apply|status` with JSON output, installing a gated archive by digest, commit and version, with a readiness check. The switch is transactional: a complete baseline (symlink, units, origin drop-in, install record) is captured before any change, activation must succeed on every service operation and the new processes must serve the new release, and any failure restores the baseline. Rerunning the installed version re-verifies the archive digest, commit, origin, host files and running processes against an install record. One apply runs at a time. The administrator account stays a human step (the setup-code path is returned, never its content). Disposable-vault preflight and request drain are marked as not yet implemented.
