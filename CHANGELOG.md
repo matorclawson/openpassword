@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+
+- The console binds 127.0.0.1 explicitly (systemd unit, `npm start`, `npm run dev`). With `-H localhost` Node 24 can listen on `::1` only, so a proxy or probe dialing 127.0.0.1 got connection refused. A test keeps the unit, the console rewrites and the broker on the same address.
+
 ## 0.3.0 (unreleased)
 
 - The release archive bundles the pinned Node.js v24.19.0 (`node/bin/node`, from the official tarball checked against `scripts/node-pins.txt`); the systemd units run it by absolute path, so a host needs no system Node. `RELEASE.json` records the bundled binary and tarball sha256. The build now needs `xz` and network access to nodejs.org. The root package, lockfile root and MCP server version are 0.3.0; the workspace packages under `packages/` keep their own 0.2.0 versions.
