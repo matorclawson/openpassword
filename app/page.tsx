@@ -458,7 +458,7 @@ export default function Page() {
     selectedConnection = w.connections.find((x) => x.id === grantId)
   const includes = (...values: string[]) => values.join(' ').toLowerCase().includes(q.toLowerCase())
   const list = w.connections.filter((c) =>
-    includes(c.label, c.identity, w.providers[c.provider].name),
+    includes(c.label, c.identity, w.providers[c.provider].name, c.vault_item?.title || ''),
   )
   const btn = (text: string, fn: () => void) => (
     <button type="button" onClick={fn}>
@@ -792,7 +792,17 @@ export default function Page() {
                 {tab === 'Access grants' &&
                   (w.grants.length ? (
                     w.grants
-                      .filter((g) => includes(g.label, g.id))
+                      .filter((g) => {
+                        const connection = w.connections.find((c) => c.id === g.connection_id)
+                        return includes(
+                          g.label,
+                          g.id,
+                          g.model || '',
+                          g.ops,
+                          connection?.label || '',
+                          connection?.vault_item?.title || '',
+                        )
+                      })
                       .map((g) => (
                         <article key={g.id} id={g.id} tabIndex={-1}>
                           <KeyRound />
