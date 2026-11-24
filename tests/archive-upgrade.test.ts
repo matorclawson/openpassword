@@ -65,7 +65,8 @@ const schema = (file: string) => {
     return {
       version: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
       columns: (db.prepare('PRAGMA table_info(items)').all() as { name: string }[]).map((c) => c.name),
-      rows: db.prepare('SELECT * FROM items ORDER BY id').all(),
+      // node:sqlite rows have a null prototype; compare plain copies.
+      rows: db.prepare('SELECT * FROM items ORDER BY id').all().map((r) => ({ ...r })),
     }
   } finally {
     db.close()
