@@ -1,0 +1,21 @@
+{
+  "id": "moonshot",
+  "name": "Moonshot (Kimi)",
+  "category": "lab",
+  "status": "candidate",
+  "substitution": "none-documented",
+  "auth": {
+    "kind": "bearer"
+  },
+  "endpoints": {
+    "chat": {
+      "family": "openai-chat",
+      "base_url": "https://api.moonshot.ai/v1",
+      "path": "/chat/completions",
+      "max_tokens_param": "max_completion_tokens"
+    }
+  },
+  "models_path": "/models",
+  "models": [],
+  "doc_url": "https://platform.kimi.ai/docs"
+}

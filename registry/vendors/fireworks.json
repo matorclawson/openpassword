@@ -1,0 +1,20 @@
+{
+  "id": "fireworks",
+  "name": "Fireworks AI",
+  "category": "hoster",
+  "status": "candidate",
+  "substitution": "unknown",
+  "auth": {
+    "kind": "bearer"
+  },
+  "endpoints": {
+    "chat": {
+      "family": "openai-chat",
+      "base_url": "https://api.fireworks.ai/inference/v1",
+      "path": "/chat/completions"
+    }
+  },
+  "models_path": "/models",
+  "models": [],
+  "doc_url": "https://docs.fireworks.ai/"
+}

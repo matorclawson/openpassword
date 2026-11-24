@@ -10,9 +10,19 @@ The broker binds to loopback. Next.js also defaults to localhost. Use a TLS reve
 
 Keep the SQLite database and master.key together in a protected backup. For an offline backup stop the service, copy the complete data directory including SQLite sidecars, and preserve file permissions. The default deployment uses a local master key and process-level trust. Use a dedicated service user with a private home. Protect the operator token during initial setup. The local launch and storage layout are designed for Linux including ARM64. The service has been tested on Linux x86-64.
 
+## Backups
+
+The data directory holds `vault.sqlite` (encrypted provider credentials, grants, history), `master.key` (the key for those credentials) and `operator.token`. A copy of the database without `master.key` cannot be read, and a copy of both together must never be stored unencrypted off the host. `deploy/backup/backup.sh` therefore writes both into one **borg** archive, encrypted on the host before upload; only the encrypted archive leaves it.
+
+Setup, once, as root. Create `/etc/openpassword/backup.env` (owner root, mode 0600) with `BORG_REPO` (for example an `ssh://` repository on your storage), `BORG_PASSCOMMAND` (a command that prints the passphrase, such as `cat /etc/openpassword/backup.pass` with that file at mode 0600) and optionally `BORG_RSH` for the SSH key and port. `BORG_PASSPHRASE` in the file is refused. Initialise the repository with `borg init --encryption=repokey-blake2` using the same settings. Keep the passphrase and a copy of the repository key somewhere other than the backed-up host: without them an archive cannot be opened.
+
+Run `deploy/backup/backup.sh` as root. It takes a consistent snapshot with SQLite's online backup (safe while the broker runs), under the broker's own service identity so that it cannot change file ownership in the state directory, then runs `borg create`. `--direct` runs as the user that owns the data directory (used by the tests and for local installs). `deploy/systemd/openpassword-backup.service` and `.timer` run it daily; install them like the other units and enable the timer. The scripts use the bundled Node (`OPENPASSWORD_NODE` overrides the path).
+
+To restore, run `deploy/backup/restore.sh <archive-name> <empty-dir>` (find names with `borg list`). It restores into an empty directory, never over a live one, and checks that the vault passes SQLite's integrity check. To bring a host back: stop both services, move the restored files into the state directory with their ownership as before, start the broker, then the console. Practise a restore before relying on the backups. `make backup-test` exercises backup and restore against a local borg repository (Linux, needs borg).
+
 ## Installer
 
-`deploy/install.sh` performs the install procedure above as one command on the target Linux host, as root, and prints one JSON object (`state`: `ready`, `needs_human` or `failed`; `checks`, `needs_human` steps, the console URL and an `error` code). It never builds or downloads anything and never prints a secret.
+`deploy/install.sh` performs the install procedure in Release package, below, as one command on the target Linux host, as root, and prints one JSON object (`state`: `ready`, `needs_human` or `failed`; `checks`, `needs_human` steps, the console URL and an `error` code). It never builds or downloads anything and never prints a secret.
 
 ```sh
 sudo bash install.sh agent plan  --archive openpassword-0.3.0-linux-arm64.tar.gz --sha256 <digest> --commit <commit> --version 0.3.0 --arch arm64 --origin https://pass.example.com
