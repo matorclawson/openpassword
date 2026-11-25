@@ -32,6 +32,10 @@ if grep -qa 'SQLite format' "$t/out.age"; then fail "plain text in the ciphertex
 mkdir -m 0700 "$t/restored"
 OPENPASSWORD_BACKUP_IDENTITY=$t/id.txt OPENPASSWORD_NODE=$OPENPASSWORD_NODE bash deploy/backup/restore-encrypted.sh "$t/out.age" "$t/restored" >/dev/null || fail "restore"
 
+# The cancellation cases need the test substitutes (a slow age), which only a copy carrying .test-seams honors. The copy lives
+# in the shim directory so the transient unit's user can read it; the success path above stays on the unmarked script.
+cp -R deploy/backup "$shim/bk"; : > "$shim/bk/.test-seams"
+chmod -R a+rX "$shim/bk"
 # 2. Cancellation during the snapshot phase: a slow Node stands in for a slow snapshot.
 # The shims leave a marker in the unit's own runtime directory when their phase starts, so the test signals only then.
 cat > "$shim/slow-node" <<SH
@@ -43,7 +47,7 @@ SH
 chmod 755 "$shim/slow-node"
 interrupt() { # phase name, marker name, then env assignments
   local phase=$1 marker=$2; shift 2
-  env "$@" bash deploy/backup/backup.sh --encrypt > "$t/$phase.out" 2>/dev/null &
+  env "$@" bash "$shim/bk/backup.sh" --encrypt > "$t/$phase.out" 2>/dev/null &
   local pid=$! unit=
   for _ in $(seq 1 150); do
     unit=$(units | head -1)
