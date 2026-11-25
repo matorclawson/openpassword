@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 (unreleased)
+
+- Add `openpassword artifact ID [SHA256]`, which writes an artifact's exact bytes to stdout (for example a Gmail page read) through the CLI, so a caller that holds no token can fetch it. With a digest (the `content_sha256` from the invoke result, with or without the `sha256:` prefix) it verifies the bytes first and writes nothing on a mismatch.
+
 ## 0.4.0 (unreleased)
 
 ### Scope since 0.2.0
