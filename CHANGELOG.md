@@ -6,6 +6,7 @@
 - **Deployment note:** set `OPENPASSWORD_TRUST_PROXY=127.0.0.1` in the broker drop-in when the reverse proxy runs on the same host; without it every client shares one 60-a-minute bucket for sign-in and pairing.
 - Sign-in and pairing limits are per source address when `OPENPASSWORD_TRUST_PROXY` names the reverse proxy (off by default; forwarded addresses from other peers are ignored; wildcards and over-broad ranges are refused). Behind a proxy without it, all clients share one bucket.
 - Add a per-grant ceiling on authenticated `/v1` requests, 600 a minute by default (`OPENPASSWORD_GRANT_RATE`; an empty or malformed value refuses to start, and only an explicit `0` disables it, with a warning). Expired counters are swept so many sources cannot grow memory without bound.
+- Add `openpassword artifact ID [SHA256]`, which writes an artifact's exact bytes to stdout (for example a Gmail page read) through the CLI, so a caller that holds no token can fetch it. With a digest (the `content_sha256` from the invoke result, with or without the `sha256:` prefix) it verifies the bytes first and writes nothing on a mismatch.
 
 ## 0.4.0 (unreleased)
 
