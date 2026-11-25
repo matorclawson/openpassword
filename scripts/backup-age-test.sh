@@ -107,8 +107,13 @@ printf 'Filename\tType\tSize\tUsed\tPriority\n/swapfile\tfile\t1000\t0\t-2\n' > 
 refuses "tmpfs with an unencrypted swap file" env OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.file bash deploy/backup/backup.sh --encrypt --direct
 refuses "an unreadable swap table" env OPENPASSWORD_BACKUP_SWAPS_FILE=$t/no-such-file bash deploy/backup/backup.sh --encrypt --direct
 printf 'Filename\tType\tSize\tUsed\tPriority\n/dev/zram0\tpartition\t1000\t0\t100\n' > "$t/swaps.zram"
-OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.zram backup > "$t/zram.age" || fail "zram swap should be allowed"
+mkdir -p "$t/sys/block/zram0"
+OPENPASSWORD_BACKUP_SYSFS=$t/sys OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.zram backup > "$t/zram.age" || fail "zram swap with no writeback device should be allowed"
 [ -s "$t/zram.age" ] || fail "zram run wrote nothing"
+printf 'none\n' > "$t/sys/block/zram0/backing_dev"
+OPENPASSWORD_BACKUP_SYSFS=$t/sys OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.zram backup > "$t/zram2.age" || fail "zram swap whose backing_dev is none should be allowed"
+printf '/dev/sdb1\n' > "$t/sys/block/zram0/backing_dev"
+refuses "zram swap with a writeback device" env OPENPASSWORD_BACKUP_SYSFS=$t/sys OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.zram bash deploy/backup/backup.sh --encrypt --direct
 
 # 5. The staged plain snapshot is gone after a failure and after termination.
 mkdir "$t/bin"

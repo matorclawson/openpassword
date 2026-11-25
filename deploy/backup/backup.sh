@@ -20,8 +20,9 @@ DATA=${OPENPASSWORD_HOME:-/var/lib/openpassword}
 NODE=${OPENPASSWORD_NODE:-/opt/openpassword/current/node/bin/node}
 ENVF=${OPENPASSWORD_BACKUP_ENV:-/etc/openpassword/backup.env}
 RECIP=${OPENPASSWORD_BACKUP_RECIPIENT:-/etc/openpassword/backup.recipient}
-# Test seam: where the swap table is read from. The default is the kernel's.
+# Test seams: where the swap table and sysfs are read from. The defaults are the kernel's.
 SWAPS=${OPENPASSWORD_BACKUP_SWAPS_FILE:-/proc/swaps}
+SYSFS=${OPENPASSWORD_BACKUP_SYSFS:-/sys}
 refuse() { echo "backup: $*" >&2; exit 1; }
 usage() { echo "backup: usage: backup.sh [--direct | --encrypt [--direct]]" >&2; exit 2; }
 mode=systemd; encrypt=0
@@ -33,18 +34,23 @@ case "${1:-}" in
 esac
 [ -x "$NODE" ] || refuse "no executable Node at $NODE (set OPENPASSWORD_NODE)"
 
-# True when every swap device is encrypted (dm-crypt) or compressed RAM (zram), or when there is no swap.
+# True when every swap device is encrypted (dm-crypt) or compressed RAM (zram with no writeback device), or when there is
+# no swap. A zram device with a backing (writeback) device can write pages raw to that disk, so it is refused.
 swap_safe() {
-  local dev _kind real name uuid
+  local dev _kind real name uuid back
   [ -r "$SWAPS" ] || return 1
   while read -r dev _kind _; do
     [ -n "$dev" ] && [ "$dev" != Filename ] || continue
     case "$dev" in
-      /dev/zram*) ;;
+      /dev/zram*)
+        name=${dev#/dev/}
+        back=none
+        if [ -e "$SYSFS/block/$name/backing_dev" ]; then back=$(cat "$SYSFS/block/$name/backing_dev" 2>/dev/null) || return 1; fi
+        [ "$back" = none ] || return 1 ;;
       /dev/mapper/*|/dev/dm-*)
         real=$(readlink -f -- "$dev") || return 1
         name=${real##*/}
-        uuid=$(cat "/sys/block/$name/dm/uuid" 2>/dev/null || true)
+        uuid=$(cat "$SYSFS/block/$name/dm/uuid" 2>/dev/null || true)
         case "$uuid" in CRYPT-*) ;; *) return 1 ;; esac ;;
       *) return 1 ;;
     esac

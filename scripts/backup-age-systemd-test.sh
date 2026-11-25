@@ -33,29 +33,36 @@ mkdir -m 0700 "$t/restored"
 OPENPASSWORD_BACKUP_IDENTITY=$t/id.txt OPENPASSWORD_NODE=$OPENPASSWORD_NODE bash deploy/backup/restore-encrypted.sh "$t/out.age" "$t/restored" >/dev/null || fail "restore"
 
 # 2. Cancellation during the snapshot phase: a slow Node stands in for a slow snapshot.
+# The shims leave a marker in the unit's own runtime directory when their phase starts, so the test signals only then.
 cat > "$shim/slow-node" <<SH
 #!/bin/sh
+: > "\$RUNTIME_DIRECTORY/snapshot-started"
 sleep 40
 exec "$OPENPASSWORD_NODE" "\$@"
 SH
 chmod 755 "$shim/slow-node"
-interrupt() { # phase name, then env assignments
-  local phase=$1; shift
+interrupt() { # phase name, marker name, then env assignments
+  local phase=$1 marker=$2; shift 2
   env "$@" bash deploy/backup/backup.sh --encrypt > "$t/$phase.out" 2>/dev/null &
-  local pid=$!
-  for _ in $(seq 1 100); do [ -n "$(units)" ] && break; sleep 0.1; done
-  [ -n "$(units)" ] || fail "the $phase unit never started"
-  local unit; unit=$(units | head -1)
-  [ -d "/run/${unit%.service}" ] || fail "the $phase runtime directory was not created"
+  local pid=$! unit=
+  for _ in $(seq 1 150); do
+    unit=$(units | head -1)
+    [ -n "$unit" ] && [ -e "/run/${unit%.service}/$marker" ] && break
+    sleep 0.1
+  done
+  [ -n "$unit" ] && [ -e "/run/${unit%.service}/$marker" ] || fail "the $phase phase never started (no $marker marker)"
   kill -TERM "$pid"
-  wait "$pid" 2>/dev/null || true
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  [ "$rc" -ne 0 ] || fail "the $phase cancellation exited 0"
+  echo "backup-age-systemd-test: $phase cancellation exit status $rc"
   # The script must not return before the unit is stopped and its runtime directory is gone.
   [ -z "$(units)" ] || fail "the unit was still present after the $phase cancellation returned"
   [ ! -e "/run/${unit%.service}" ] || fail "the runtime directory was left after the $phase cancellation"
   [ ! -s "$t/$phase.out" ] || fail "the $phase cancellation wrote output"
 }
-interrupt snapshot OPENPASSWORD_NODE="$shim/slow-node"
+interrupt snapshot snapshot-started OPENPASSWORD_NODE="$shim/slow-node"
 # Cancellation during the encryption phase.
-printf '#!/bin/sh\nsleep 40\n' > "$shim/slow-age"; chmod 755 "$shim/slow-age"
-interrupt encryption OPENPASSWORD_BACKUP_AGE="$shim/slow-age"
+printf '#!/bin/sh\n: > "$RUNTIME_DIRECTORY/encryption-started"\nsleep 40\n' > "$shim/slow-age"; chmod 755 "$shim/slow-age"
+interrupt encryption encryption-started OPENPASSWORD_BACKUP_AGE="$shim/slow-age"
 echo "backup-age-systemd-test: ok"
