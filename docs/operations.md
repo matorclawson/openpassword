@@ -14,6 +14,18 @@ Keep the SQLite database and master.key together in a protected backup. For an o
 
 The data directory holds `vault.sqlite` (encrypted provider credentials, grants, history), `master.key` (the key for those credentials) and `operator.token`. A database copy alone retains readable metadata but cannot decrypt broker-sealed values without the associated master key, and a copy of both together must never be stored unencrypted off the host. `deploy/backup/backup.sh` therefore writes both into one **borg** archive, encrypted on the host before upload; only the encrypted archive leaves it.
 
+### Operator-run backup (no backup key on the host)
+
+Where the operator holds the borg key, keep it off the host: do not create `/etc/openpassword/backup.env` and leave `openpassword-backup.timer` disabled. The host only needs the release's `deploy/backup/backup.sh --stream`, which takes the same consistent snapshot under the service identity and writes it to stdout as a tar, with no borg and no key. The operator runs `deploy/backup/pull.sh` on his own machine:
+
+```sh
+OPENPASSWORD_BACKUP_HOST=operator@pass.example.com deploy/backup/pull.sh
+```
+
+It runs `sudo -n /opt/openpassword/current/deploy/backup/backup.sh --stream` over ssh (the operator's account needs noninteractive sudo for that one command; set `OPENPASSWORD_BACKUP_REMOTE` to change the command), encrypts the stream with borg locally, then reads the archive back and checks that it holds the vault and the master key. A failed or truncated stream is deleted so it cannot be mistaken for a good backup. The settings are in `~/.config/openpassword/backup.env` (`BORG_REPO`, `BORG_PASSCOMMAND`, optional `BORG_RSH`; owned by the operator, mode 0600). The archive contains one file, `state.tar`. `deploy/backup/restore.sh <archive> <empty-dir>` reads it (set `OPENPASSWORD_NODE` to a Node 24 binary when it runs off the host) and checks the vault's integrity. Prove one restore before enrolling real credentials, and run the pull before every upgrade. Backups happen only when the operator runs them.
+
+### Host-held backup key (optional)
+
 Setup, once, as root. Create `/etc/openpassword/backup.env` (owner root, mode 0600) with `BORG_REPO` (for example an `ssh://` repository on your storage), `BORG_PASSCOMMAND` (a command that prints the passphrase, such as `cat /etc/openpassword/backup.pass` with that file at mode 0600) and optionally `BORG_RSH` for the SSH key and port. `BORG_PASSPHRASE` in the file is refused. Initialise the repository with `borg init --encryption=repokey-blake2` using the same settings. Keep the passphrase and a copy of the repository key somewhere other than the backed-up host: without them an archive cannot be opened.
 
 Run `deploy/backup/backup.sh` as root. It takes a consistent snapshot with SQLite's online backup (safe while the broker runs), under the broker's own service identity so that it cannot change file ownership in the state directory, then runs `borg create`. `--direct` runs as the user that owns the data directory (used by the tests and for local installs). `deploy/systemd/openpassword-backup.service` and `.timer` run it daily; install them like the other units and enable the timer. The scripts use the bundled Node (`OPENPASSWORD_NODE` overrides the path).

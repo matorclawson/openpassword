@@ -18,6 +18,8 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 
 ### Deployment and key custody
 
+- Add an operator-run backup, `deploy/backup/pull.sh`, so no backup key has to live on the host. The host side is `backup.sh --stream` (the same consistent snapshot, written to stdout as a tar); borg runs on the operator's machine, reads the archive back and deletes a failed one. `restore.sh` reads both archive formats. The host-held timer remains optional and is not enabled by the updater.
+
 - Support an independently provisioned wrapping key for new or existing vaults. Wrapped snapshots require the separate credential to decrypt item values.
 
 - Add SSH-backed CLI setup codes for first administration. Codes expire after ten minutes and issuing another supersedes the previous one. The web console can then authorize the agent host. Reject nonprivate or malformed host key files and invalidate pre-setup administrator sessions when the first owner is created.
