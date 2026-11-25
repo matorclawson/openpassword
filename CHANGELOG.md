@@ -11,7 +11,7 @@
 
 ## 0.4.0 · 2026-11-25
 
-The wording of this entry on host switching and rollback was corrected after the archive was built; the corrected text ships in the 0.4.1 source, and the 0.4.0 archive carries the earlier wording.
+The wording of this entry on host switching and rollback was corrected after the archive was built; the corrected text ships in the 0.4.1 source. The 0.4.0 archive was never published as a separate release and carries the earlier wording.
 
 ### Scope since 0.2.0
 
