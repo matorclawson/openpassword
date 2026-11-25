@@ -140,7 +140,7 @@ On the server use the trusted `deploy/upgrade.sh` delivered separately with the 
 sudo sh deploy/upgrade.sh --install "$ARCHIVE" "$EXPECTED_SHA256" "$VERSION" "$EXPECTED_COMMIT"
 ```
 
-Set the broker unit's environment drop-in to `OPENPASSWORD_WEB_ORIGIN=https://pass.zeo.ac` for this deployment. Other installations use their own public origin. Use the existing reverse proxy. For a nondefault local console port pass `OPENPASSWORD_WEB_PORT` through sudo. The existing vault, master key, sessions and grant records remain in the broker's state directory.
+Set the broker unit's environment drop-in to `OPENPASSWORD_WEB_ORIGIN=https://pass.zeo.ac` for this deployment, and, when the reverse proxy runs on the same host, add `OPENPASSWORD_TRUST_PROXY=127.0.0.1` so the sign-in and pairing limits are per client address instead of one shared bucket (see Request limits). Other installations use their own public origin. Use the existing reverse proxy. For a nondefault local console port pass `OPENPASSWORD_WEB_PORT` through sudo. The existing vault, master key, sessions and grant records remain in the broker's state directory.
 
 The installer hashes a private staged copy before extraction, then runs the verified release's TypeScript upgrader using its bundled Node. It checks release identity and Node digest, installs the release at `/opt/openpassword/releases/<version>`, and exercises the broker on a disposable vault and the Next launcher under a transient service identity. A previously installed version is reusable only with the same recorded archive digest. Reusing a version from a manual install without a receipt is refused; use a new version.
 
