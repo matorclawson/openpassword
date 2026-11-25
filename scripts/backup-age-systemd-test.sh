@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests the production (root, systemd) path of `backup.sh --encrypt`: the snapshot and the encryption run inside one
 # transient unit whose runtime directory is a tmpfs; cancelling stops and joins that unit.
-# Run as root on a STAGING host that has the broker's state directory (a disposable vault), systemd, age, tar and Node.
+# Run as root DIRECTLY (a root shell or ssh as root), never through sudo: backup.sh ignores every OPENPASSWORD_* setting under
+# sudo, so the settings below would be dropped. Run on a STAGING host that has the broker's state directory (a disposable vault), systemd, age, tar and Node.
 # It only reads the vault (a snapshot); it writes nothing under the state directory. Fails, not skips, when unmet.
 #   OPENPASSWORD_HOME=/var/lib/openpassword OPENPASSWORD_NODE=/opt/openpassword/current/node/bin/node \
 #     OPENPASSWORD_BACKUP_RECIPIENT=<root-owned file with a throwaway age public key> bash scripts/backup-age-systemd-test.sh
@@ -9,6 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 fail() { echo "backup-age-systemd-test: FAIL: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || fail "run as root"
+[ -z "${SUDO_USER:-}" ] && [ -z "${SUDO_UID:-}" ] || fail "run as root directly, not through sudo (sudo makes backup.sh ignore the OPENPASSWORD_* settings this test passes)"
 [ -d /run/systemd/system ] && command -v systemd-run >/dev/null || fail "systemd is required"
 command -v age >/dev/null && command -v age-keygen >/dev/null || fail "age and age-keygen are required"
 export OPENPASSWORD_HOME=${OPENPASSWORD_HOME:-/var/lib/openpassword}
