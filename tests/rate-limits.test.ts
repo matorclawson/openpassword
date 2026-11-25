@@ -1,4 +1,4 @@
-import test from 'node:test'
+import test, { type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { service, trustedProxies } from '../server/service.ts'
 
 const hdr = { 'openpassword-protocol-version': '1', 'content-type': 'application/json' }
-function setup(t: test.TestContext, limits: Parameters<typeof service>[5] = {}) {
+function setup(t: TestContext, limits: Parameters<typeof service>[5] = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'op-rate-')),
     api = service(dir, undefined, fetch, false, false, limits)
   t.after(async () => {
