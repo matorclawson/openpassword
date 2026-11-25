@@ -16,6 +16,13 @@
 set -euo pipefail
 umask 077
 here=$(cd "$(dirname "$0")" && pwd)
+# Through sudo (the restricted ssh account) no environment setting is honored: the defaults apply, whatever sudo passed.
+# The test substitutes (age, swap table, sysfs) are honored only beside a .test-seams file, which a release never ships.
+if [ -n "${SUDO_USER:-}" ] || [ -n "${SUDO_UID:-}" ]; then
+  unset OPENPASSWORD_HOME OPENPASSWORD_NODE OPENPASSWORD_BACKUP_ENV OPENPASSWORD_BACKUP_RECIPIENT OPENPASSWORD_BACKUP_STAGE \
+    OPENPASSWORD_BACKUP_AGE OPENPASSWORD_BACKUP_SWAPS_FILE OPENPASSWORD_BACKUP_SYSFS
+fi
+[ -f "$here/.test-seams" ] || unset OPENPASSWORD_BACKUP_AGE OPENPASSWORD_BACKUP_SWAPS_FILE OPENPASSWORD_BACKUP_SYSFS
 DATA=${OPENPASSWORD_HOME:-/var/lib/openpassword}
 NODE=${OPENPASSWORD_NODE:-/opt/openpassword/current/node/bin/node}
 ENVF=${OPENPASSWORD_BACKUP_ENV:-/etc/openpassword/backup.env}

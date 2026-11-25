@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Staging checks for backup.sh, kept in a file of their own so they can be tested without a particular host.
-# Test seams: where the swap table and sysfs are read from. The defaults are the kernel's.
-SWAPS=${OPENPASSWORD_BACKUP_SWAPS_FILE:-/proc/swaps}
-SYSFS=${OPENPASSWORD_BACKUP_SYSFS:-/sys}
+# Test seams: where the swap table and sysfs are read from. They are honored ONLY when a file named .test-seams sits next
+# to this script (a test copies the directory and adds it; a release never ships it). Otherwise the kernel's paths are used,
+# whatever the environment says.
+SWAPS=/proc/swaps
+SYSFS=/sys
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/.test-seams" ]; then
+  SWAPS=${OPENPASSWORD_BACKUP_SWAPS_FILE:-$SWAPS}
+  SYSFS=${OPENPASSWORD_BACKUP_SYSFS:-$SYSFS}
+fi
 # True when every swap device is encrypted (dm-crypt) or compressed RAM (zram with no writeback device), or when there is
 # no swap. A zram device with a backing (writeback) device can write pages raw to that disk, so it is refused.
 swap_safe() {
@@ -14,7 +20,8 @@ swap_safe() {
       /dev/zram*)
         name=${dev#/dev/}
         # The device directory must exist and be readable: a missing one is not evidence that no writeback is configured.
-        [ -d "$SYSFS/block/$name" ] && [ -r "$SYSFS/block/$name" ] || return 1
+        # It needs search permission as well as read: without it backing_dev would be hidden and its absence would prove nothing.
+        [ -d "$SYSFS/block/$name" ] && [ -r "$SYSFS/block/$name" ] && [ -x "$SYSFS/block/$name" ] || return 1
         back=none
         if [ -e "$SYSFS/block/$name/backing_dev" ]; then back=$(cat "$SYSFS/block/$name/backing_dev" 2>/dev/null) || return 1; fi
         [ "$back" = none ] || return 1 ;;
