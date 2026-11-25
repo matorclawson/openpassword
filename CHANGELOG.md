@@ -13,6 +13,10 @@
 
 The wording of this entry on host switching and rollback was corrected after the archive was built; the corrected text ships in the 0.4.1 source. The 0.4.0 archive was never published as a separate release and carries the earlier wording.
 
+### HTTP API
+
+- Published the core agent API contract at `GET /v1/openapi.json`. Added a direct HTTP walkthrough, a dependency-free Node fetch example for host-bound grants, and a TCP integration test covering approval, invocation, replay, rotation and revocation.
+
 ### Native harness integrations
 
 - Generate a local, per-agent executable with `harness prepare`. It pins the broker, OS identity, agent profile and host signing socket and supports a remote deployment.

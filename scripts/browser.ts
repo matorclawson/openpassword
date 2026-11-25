@@ -44,6 +44,9 @@ try {
     })
     try {
       const p = await browser.newPage()
+      const contract = await p.request.get(origin + '/v1/openapi.json')
+      assert.equal(contract.status(), 200)
+      assert.equal((await contract.json()).openapi, '3.1.0')
       const pair = await p.request.post(origin + '/v1/device/authorizations', {
         headers: { 'OpenPassword-Protocol-Version': '1' },
         data: { device_name: 'remote client' },

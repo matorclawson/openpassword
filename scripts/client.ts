@@ -10,7 +10,10 @@ await build({
   target: 'node24',
   format: 'cjs',
   bundle: true,
-  alias: { '@openpassword/client': resolve('packages/client/index.ts') },
+  alias: {
+    '@openpassword/client/host-proof': resolve('packages/client/host-proof.ts'),
+    '@openpassword/client': resolve('packages/client/index.ts'),
+  },
   legalComments: 'eof',
 })
 

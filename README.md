@@ -4,11 +4,12 @@
 
 Give Claude Code permission to read a GitHub account for a week. Let an application call a specific model through your OpenAI account with a spending limit. In both cases, the provider key stays on your server. Each client gets its own access token, permissions, and usage history.
 
-OpenPassword runs on your laptop or a Linux server. Agents can use a local CLI, Python or TypeScript client, or MCP. Applications can route model calls through the OpenAI-compatible Chat Completions API.
+OpenPassword runs on your laptop or a Linux server. Applications and agents can use the HTTP REST API, local CLI or MCP. Python and TypeScript clients are also available. Applications can route model calls through the OpenAI-compatible Chat Completions API.
 
 | I want to… | Start here |
 | --- | --- |
 | Try OpenPassword on my machine | [Start locally](#start-locally) |
+| Call OpenPassword directly from a service or script | [HTTP quickstart and API reference](docs/http-api.md) |
 | Connect a coding assistant, Python framework or Rasa action to a local CLI | [Native harness integrations and examples](examples/harnesses/README.md) |
 | Give Codex or Claude Code an MCP tool | [Connect an agent](#connect-an-agent) |
 | Make a model request from my app | [Route a model request](#route-a-model-request) |
@@ -96,6 +97,8 @@ The MCP connection gives the agent tools. The coding client continues to use its
 ## Route a model request
 
 OpenPassword routes each model grant to **one provider connection and one exact model ID**. Supported upstreams are OpenAI, OpenRouter, and Moonshot. Clients can discover their authorized model through `GET /v1/models` and use `POST /v1/chat/completions` for text, streaming responses, and tool calls.
+
+On an enrolled host, use the [host-signed HTTP example](docs/http-api.md#try-the-api) and run `node examples/http/agent.ts chat`. The bearer-only Python walkthrough below applies to workspaces that allow standalone grants.
 
 1. Add your provider under **Connections**. For this example, choose OpenAI and enter your provider API key.
 2. In **Access grants → Issue grant**, name the client, select the connection, and enable `openai.chat`. Under **Standing model access**, enter a model ID available to your provider account, permit at least one request, and allow at least 32 output tokens. You can also set a monetary budget using the provider’s rates.

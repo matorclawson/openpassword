@@ -1,4 +1,5 @@
 import { isIP } from 'node:net'
+import { httpContract } from './http-contract.ts'
 import { personalVault } from './personal-vault.ts'
 import { hosts } from './hosts.ts'
 import releasePackage from '../package.json' with { type: 'json' }
@@ -474,6 +475,7 @@ export function service(
       }
     })
   }
+  api.get('/v1/openapi.json', async () => httpContract)
   api.get('/v1/whoami', async (r) => {
     const g = grant(r)
     return {
@@ -502,7 +504,7 @@ export function service(
     reply.header('OpenPassword-Protocol-Version', '1')
     if (
       r.url.startsWith('/v1/') &&
-      !['/v1/chat/completions', '/v1/models', '/v1/delegation/check'].includes(r.url.split('?')[0])
+      !['/v1/openapi.json', '/v1/chat/completions', '/v1/models', '/v1/delegation/check'].includes(r.url.split('?')[0])
     ) {
       const names = ['openpassword-protocol-version']
       const values = names.flatMap(

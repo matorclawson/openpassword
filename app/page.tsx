@@ -559,6 +559,7 @@ export default function Page() {
         <div className="version">
           OpenPassword <code>v{w.version}</code>
         </div>
+        <a className="sourceLink" href="/v1/openapi.json">HTTP API reference</a>
         <a className="sourceLink" href="/openpassword-source.tar.gz" download>
           Download source
         </a>
@@ -864,7 +865,7 @@ export default function Page() {
                               Allowed operations · {JSON.parse(g.ops).join(', ')}
                               {g.model && ' · Model ' + g.model}
                             </small>
-                            {g.connected_at && <small>CLI connected {stamp(g.connected_at)}</small>}
+                            {g.connected_at && <small>Client connected {stamp(g.connected_at)}</small>}
                             <small>
                               Grant ID · <code>{g.id}</code>
                             </small>
