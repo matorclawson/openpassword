@@ -10,11 +10,8 @@ command -v age >/dev/null && command -v age-keygen >/dev/null || fail "age and a
 node_bin=$(command -v node)
 t=$(mktemp -d); shm=$(mktemp -d /dev/shm/op-backup-age.XXXXXXXX)
 trap 'rm -rf -- "${t:?}" "${shm:?}"' EXIT
-export OPENPASSWORD_NODE=$node_bin OPENPASSWORD_HOME=$t/data
 mkdir -m 0700 "$t/data" "$shm/stage"
-export OPENPASSWORD_BACKUP_STAGE=$shm/stage
 printf 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n' > "$t/swaps"   # no swap
-export OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps
 cat > "$t/seed.mjs" <<'JS'
 import { DatabaseSync } from 'node:sqlite'
 const db = new DatabaseSync(process.argv[2] + '/vault.sqlite')
@@ -30,10 +27,14 @@ JS
 printf 'test-master-key\n' > "$t/data/master.key"; printf 'test-token\n' > "$t/data/operator.token"
 age-keygen -o "$t/id.txt" >/dev/null 2>&1; chmod 600 "$t/id.txt"
 age-keygen -y "$t/id.txt" > "$t/recipient"
-export OPENPASSWORD_BACKUP_RECIPIENT=$t/recipient
 empty_stage() { [ -z "$(ls -A "$shm/stage")" ]; }
-backup() { bash deploy/backup/backup.sh --encrypt --direct "$@"; }
-restore() { OPENPASSWORD_BACKUP_IDENTITY=$t/id.txt bash deploy/backup/restore-encrypted.sh "$@"; }
+# Every case runs in a clean environment holding only these settings; a case's own VAR=value arguments replace them, and
+# nothing set for one case reaches the next.
+base_env=(PATH="$PATH" HOME="$t" OPENPASSWORD_NODE="$node_bin" OPENPASSWORD_HOME="$t/data" OPENPASSWORD_BACKUP_STAGE="$shm/stage"
+  OPENPASSWORD_BACKUP_SWAPS_FILE="$t/swaps" OPENPASSWORD_BACKUP_RECIPIENT="$t/recipient")
+bk() { env -i "${base_env[@]}" "$@" bash deploy/backup/backup.sh --encrypt --direct; }
+backup() { bk; }
+restore() { env -i PATH="$PATH" HOME="$t" OPENPASSWORD_NODE="$node_bin" OPENPASSWORD_BACKUP_IDENTITY="$t/id.txt" bash deploy/backup/restore-encrypted.sh "$@"; }
 
 # 1. A good run: ciphertext only, nothing readable, stage empty afterwards.
 backup > "$t/out.age" || fail "encrypted backup"
@@ -51,7 +52,7 @@ cmp -s "$t/data/operator.token" "$t/restored/operator.token" || fail "restored o
 # 3. Restore refusals leave the target empty: wrong key, truncated file, non-empty target, loose key permissions.
 age-keygen -o "$t/other.txt" >/dev/null 2>&1; chmod 600 "$t/other.txt"
 mkdir -m 0700 "$t/r2"
-OPENPASSWORD_BACKUP_IDENTITY=$t/other.txt bash deploy/backup/restore-encrypted.sh "$t/out.age" "$t/r2" >/dev/null 2>&1 && fail "a wrong key was accepted"
+env -i PATH="$PATH" HOME="$t" OPENPASSWORD_NODE="$node_bin" OPENPASSWORD_BACKUP_IDENTITY="$t/other.txt" bash deploy/backup/restore-encrypted.sh "$t/out.age" "$t/r2" >/dev/null 2>&1 && fail "a wrong key was accepted"
 [ -z "$(ls -A "$t/r2")" ] || fail "a wrong key left files in the target"
 head -c 300 "$t/out.age" > "$t/short.age"
 restore "$t/short.age" "$t/r2" >/dev/null 2>&1 && fail "a truncated file was accepted"
@@ -78,51 +79,80 @@ evil dirmember bash -c "cp '$t/data/vault.sqlite' vault.sqlite; mkdir master.key
 evil nomaster bash -c "cp '$t/data/vault.sqlite' vault.sqlite; tar -cf nomaster.tar vault.sqlite"
 evil traversal bash -c "cp '$t/data/vault.sqlite' vault.sqlite; cp '$t/data/master.key' master.key; tar -cf traversal.tar vault.sqlite master.key --transform='s,^master.key,../master.key,'"
 
-# 4. The host refuses before any snapshot when the recipient file or the staging place is unsuitable.
-refuses() { local what=$1; shift; "$@" > "$t/refused.out" 2>/dev/null && fail "$what was accepted"; [ ! -s "$t/refused.out" ] || fail "$what wrote output"; empty_stage || fail "$what left a staged snapshot"; }
-refuses "a missing recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/none bash deploy/backup/backup.sh --encrypt --direct
+# 4. The host refuses before any snapshot when the recipient file is unsuitable.
+refuses() { local what=$1; shift; bk "$@" > "$t/refused.out" 2>/dev/null && fail "$what was accepted"; [ ! -s "$t/refused.out" ] || fail "$what wrote output"; empty_stage || fail "$what left a staged snapshot"; }
+refuses "a missing recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/none"
 cp "$t/id.txt" "$t/withsecret"
-refuses "a private key in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/withsecret bash deploy/backup/backup.sh --encrypt --direct
+refuses "a private key in the recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/withsecret"
 printf 'not-a-key\n' > "$t/junk"
-refuses "junk in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/junk bash deploy/backup/backup.sh --encrypt --direct
+refuses "junk in the recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/junk"
 printf '# AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLE\n%s\n' "$rcp" > "$t/commented"
-refuses "a commented private key in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/commented bash deploy/backup/backup.sh --encrypt --direct
+refuses "a commented private key in the recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/commented"
 printf '%s\nnot-a-key\n' "$rcp" > "$t/mixed"
-refuses "a stray line in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/mixed bash deploy/backup/backup.sh --encrypt --direct
+refuses "a stray line in the recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/mixed"
 : > "$t/empty"
-refuses "an empty recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/empty bash deploy/backup/backup.sh --encrypt --direct
+refuses "an empty recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/empty"
 cp "$t/recipient" "$t/gw"; chmod 664 "$t/gw"
-refuses "a group-writable recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/gw bash deploy/backup/backup.sh --encrypt --direct
+refuses "a group-writable recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/gw"
 ln -s "$t/recipient" "$t/link"
-refuses "a symlinked recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/link bash deploy/backup/backup.sh --encrypt --direct
+refuses "a symlinked recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/link"
 mkdir "$t/dir"
-refuses "a directory as the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/dir bash deploy/backup/backup.sh --encrypt --direct
+refuses "a directory as the recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/dir"
 # Staging must be memory-only.
 if [ "$(stat -f -c %T /var/tmp 2>/dev/null)" != tmpfs ] && [ "$(stat -f -c %T /var/tmp 2>/dev/null)" != ramfs ]; then
-  refuses "a staging directory on disk" env OPENPASSWORD_BACKUP_STAGE=/var/tmp bash deploy/backup/backup.sh --encrypt --direct
+  refuses "a staging directory on disk" OPENPASSWORD_BACKUP_STAGE=/var/tmp
 fi
-printf 'Filename\tType\tSize\tUsed\tPriority\n/dev/sda2\tpartition\t1000\t0\t-2\n' > "$t/swaps.disk"
-refuses "tmpfs with an unencrypted swap partition" env OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.disk bash deploy/backup/backup.sh --encrypt --direct
-printf 'Filename\tType\tSize\tUsed\tPriority\n/swapfile\tfile\t1000\t0\t-2\n' > "$t/swaps.file"
-refuses "tmpfs with an unencrypted swap file" env OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.file bash deploy/backup/backup.sh --encrypt --direct
-refuses "an unreadable swap table" env OPENPASSWORD_BACKUP_SWAPS_FILE=$t/no-such-file bash deploy/backup/backup.sh --encrypt --direct
-printf 'Filename\tType\tSize\tUsed\tPriority\n/dev/zram0\tpartition\t1000\t0\t100\n' > "$t/swaps.zram"
+
+# 4b. The swap and mount classifier, tested on its own so no result depends on this host's swap or mount options.
+swaps_with() { printf 'Filename\tType\tSize\tUsed\tPriority\n%s\n' "$1" > "$t/sw"; }
+classify() { # expected exit (0 safe, 1 unsafe), description, then env assignments for the case
+  local want=$1 what=$2 got=0; shift 2
+  env -i PATH="$PATH" "$@" bash -c '. deploy/backup/stage-check.sh; swap_safe' || got=$?
+  [ "$got" = "$want" ] || fail "swap classifier: $what (wanted $want, got $got)"
+}
+classify 0 "no swap" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/swaps"
+swaps_with '/dev/sda2 partition 1000 0 -2';  classify 1 "an unencrypted swap partition" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw"
+swaps_with '/swapfile file 1000 0 -2';       classify 1 "an unencrypted swap file" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw"
+classify 1 "an unreadable swap table" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/no-such-file"
+swaps_with '/dev/zram0 partition 1000 0 100'
+mkdir -p "$t/sys-empty/block"
+classify 1 "zram whose sysfs directory is missing" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw" OPENPASSWORD_BACKUP_SYSFS="$t/sys-empty"
 mkdir -p "$t/sys/block/zram0"
-OPENPASSWORD_BACKUP_SYSFS=$t/sys OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.zram backup > "$t/zram.age" || fail "zram swap with no writeback device should be allowed"
-[ -s "$t/zram.age" ] || fail "zram run wrote nothing"
+classify 0 "zram with no backing_dev file" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw" OPENPASSWORD_BACKUP_SYSFS="$t/sys"
 printf 'none\n' > "$t/sys/block/zram0/backing_dev"
-OPENPASSWORD_BACKUP_SYSFS=$t/sys OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.zram backup > "$t/zram2.age" || fail "zram swap whose backing_dev is none should be allowed"
+classify 0 "zram whose backing_dev is none" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw" OPENPASSWORD_BACKUP_SYSFS="$t/sys"
 printf '/dev/sdb1\n' > "$t/sys/block/zram0/backing_dev"
-refuses "zram swap with a writeback device" env OPENPASSWORD_BACKUP_SYSFS=$t/sys OPENPASSWORD_BACKUP_SWAPS_FILE=$t/swaps.zram bash deploy/backup/backup.sh --encrypt --direct
+classify 1 "zram with a writeback device" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw" OPENPASSWORD_BACKUP_SYSFS="$t/sys"
+mkdir -p "$t/sys/block/dm-0/dm"; swaps_with '/dev/dm-0 partition 1000 0 -2'
+printf 'CRYPT-LUKS2-0123-swap\n' > "$t/sys/block/dm-0/dm/uuid"
+classify 0 "a dm-crypt swap device" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw" OPENPASSWORD_BACKUP_SYSFS="$t/sys"
+printf 'LVM-abcdef\n' > "$t/sys/block/dm-0/dm/uuid"
+classify 1 "a plain logical volume as swap" OPENPASSWORD_BACKUP_SWAPS_FILE="$t/sw" OPENPASSWORD_BACKUP_SYSFS="$t/sys"
+# tmpfs with and without noswap, with a findmnt stand-in so the host's mount options do not matter.
+mkdir "$t/shim"
+printf '#!/bin/sh\necho "rw,nosuid,noswap"\n' > "$t/shim/findmnt"; chmod 755 "$t/shim/findmnt"
+mount_case() { # expected, description, shim output, swap table
+  local want=$1 what=$2 got=0; printf '#!/bin/sh\necho "%s"\n' "$3" > "$t/shim/findmnt"
+  env -i PATH="$t/shim:$PATH" OPENPASSWORD_BACKUP_SWAPS_FILE="$4" bash -c '. deploy/backup/stage-check.sh; memory_only "$1"' bash "$shm" || got=$?
+  [ "$got" = "$want" ] || fail "memory_only: $what (wanted $want, got $got)"
+}
+swaps_with '/dev/sda2 partition 1000 0 -2'
+mount_case 0 "tmpfs mounted noswap with disk swap present" "rw,nosuid,noswap" "$t/sw"
+mount_case 1 "tmpfs without noswap with disk swap present" "rw,nosuid" "$t/sw"
+mount_case 0 "tmpfs without noswap and no swap" "rw,nosuid" "$t/swaps"
+if [ "$(stat -f -c %T /var/tmp 2>/dev/null)" != tmpfs ] && [ "$(stat -f -c %T /var/tmp 2>/dev/null)" != ramfs ]; then
+  got=0; env -i PATH="$PATH" bash -c '. deploy/backup/stage-check.sh; memory_only /var/tmp' || got=$?
+  [ "$got" = 1 ] || fail "memory_only accepted a directory that is not on tmpfs or ramfs"
+fi
 
 # 5. The staged plain snapshot is gone after a failure and after termination.
 mkdir "$t/bin"
 printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > "$t/bin/age"; chmod 700 "$t/bin/age"
-refuses "an encryption failure" env OPENPASSWORD_BACKUP_AGE=$t/bin/age bash deploy/backup/backup.sh --encrypt --direct
+refuses "an encryption failure" OPENPASSWORD_BACKUP_AGE="$t/bin/age"
 printf '#!/bin/sh\nsleep 30\n' > "$t/bin/age"
 # Terminate the whole process group, as Ctrl-C or a service stop does, without killing any child by hand.
 command -v setsid >/dev/null || fail "setsid is required"
-OPENPASSWORD_BACKUP_AGE=$t/bin/age setsid bash deploy/backup/backup.sh --encrypt --direct > "$t/o6" 2>/dev/null &
+env -i "${base_env[@]}" OPENPASSWORD_BACKUP_AGE="$t/bin/age" setsid bash deploy/backup/backup.sh --encrypt --direct > "$t/o6" 2>/dev/null &
 pid=$!
 for _ in $(seq 1 100); do
   [ -s "$shm/stage"/*/vault.sqlite ] 2>/dev/null && break
@@ -135,12 +165,12 @@ sleep 0.5
 empty_stage || fail "the staged snapshot was left behind after termination"
 
 # 6. The host side needs no borg and no private key.
-( unset BORG_REPO BORG_PASSCOMMAND; OPENPASSWORD_BACKUP_ENV=/nonexistent backup >/dev/null ) || fail "encrypt mode needs borg settings"
+bk OPENPASSWORD_BACKUP_ENV=/nonexistent >/dev/null || fail "encrypt mode needs borg settings"
 # 7. The root path (snapshot and encryption inside one systemd unit) is part of this test. It needs root and systemd, and a
 # staging host's disposable vault (OPENPASSWORD_HOME); set OPENPASSWORD_SKIP_SYSTEMD_PATH=1 only to say, loudly, that it was NOT run.
 if [ "$(id -u)" = 0 ] && [ -d /run/systemd/system ]; then
-  env -u OPENPASSWORD_BACKUP_STAGE -u OPENPASSWORD_BACKUP_SWAPS_FILE -u OPENPASSWORD_BACKUP_RECIPIENT -u OPENPASSWORD_HOME \
-    OPENPASSWORD_HOME="${OPENPASSWORD_SYSTEMD_HOME:-/var/lib/openpassword}" bash scripts/backup-age-systemd-test.sh || fail "the root systemd path"
+  env -i PATH="$PATH" HOME=/root OPENPASSWORD_HOME="${OPENPASSWORD_SYSTEMD_HOME:-/var/lib/openpassword}" \
+    OPENPASSWORD_NODE="${OPENPASSWORD_SYSTEMD_NODE:-/opt/openpassword/current/node/bin/node}" bash scripts/backup-age-systemd-test.sh || fail "the root systemd path"
 elif [ "${OPENPASSWORD_SKIP_SYSTEMD_PATH:-}" = 1 ]; then
   echo "backup-age-test: NOTE: the root systemd path was NOT tested (OPENPASSWORD_SKIP_SYSTEMD_PATH=1)" >&2
 else
