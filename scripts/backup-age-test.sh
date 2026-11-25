@@ -222,6 +222,16 @@ grep -q 'deleted' "$t/op-check.out" || fail "operator check did not say the open
 if grep -q 'sealed-value\|test-master-key\|AGE-SECRET-KEY' "$t/op-check.out"; then fail "operator check printed a value or key material"; fi
 grep -q 'ExperimentalWarning' "$t/op-check.out" && fail "operator check printed a Node warning"
 [ -z "$(ls -A "$op" | grep restore-check || true)" ] || fail "operator check left the opened copy behind"
+# Nothing this run did not create is ever deleted: a pre-existing look-alike folder survives a successful check, and a failed
+# mktemp makes the check stop before anything is opened.
+mkdir -p "$op/restore-check.decoy"; printf 'keep me' > "$op/restore-check.decoy/file"
+opbk check "$t/op.age" >/dev/null 2>&1 || fail "operator check with a look-alike folder present"
+[ "$(cat "$op/restore-check.decoy/file" 2>/dev/null)" = "keep me" ] || fail "operator check deleted a folder it did not create"
+mkdir "$t/failing-mktemp"; printf '#!/bin/sh\nexit 1\n' > "$t/failing-mktemp/mktemp"; chmod 755 "$t/failing-mktemp/mktemp"
+env -i PATH="$t/failing-mktemp:$PATH" HOME="$t" OPENPASSWORD_OPERATOR_KEYDIR="$op" bash deploy/backup/operator-backup.sh check "$t/op.age" > "$t/op-nomk.out" 2>&1 && fail "operator check ran although it could not create its private folder"
+[ "$(cat "$op/restore-check.decoy/file" 2>/dev/null)" = "keep me" ] || fail "a failed folder creation deleted existing data"
+grep -q 'RESTORE CHECK PASSED' "$t/op-nomk.out" && fail "operator check reported success without opening anything"
+rm -rf "$op/restore-check.decoy"
 printf 'garbage' > "$t/bad.age"
 opbk check "$t/bad.age" > "$t/op-bad.out" 2>&1 && fail "operator check accepted a damaged file"
 [ -z "$(ls -A "$op" | grep restore-check || true)" ] || fail "a failed operator check left the opened copy behind"

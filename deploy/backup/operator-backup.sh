@@ -43,12 +43,14 @@ init() {
   say "   bash $0 check THAT-FILE.age"
 }
 
-# The folder holding the opened copy. A script-global, set before it is created, so the exit handler can always find it
-# (a function-local variable would be gone by the time the handler runs).
+# The folder holding the opened copy. A script-global, so the exit handler can find it (a function-local variable would be
+# gone by the time the handler runs). It is set only from mktemp's own output after mktemp succeeded, and CREATED marks that
+# THIS run made it: the handler never deletes a path this run did not create.
 WORK=
+CREATED=0
 cleanup() {
   trap - EXIT INT TERM HUP
-  if [ -n "$WORK" ]; then rm -rf -- "${WORK:?}"; fi
+  if [ "$CREATED" = 1 ] && [ -n "$WORK" ]; then rm -rf -- "${WORK:?}"; fi
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
@@ -64,9 +66,10 @@ check() {
   local major; major=$(node -p 'process.versions.node.split(".")[0]')
   [ "$major" -ge 24 ] || die "Node 24 or newer is needed (found $(node --version))"
   [ -f "$here/restore-encrypted.sh" ] || die "restore-encrypted.sh must sit next to this script"
-  WORK=$dir/restore-check.$$.$(date +%s)
   mkdir -m 0700 -p "$dir"
-  mkdir -m 0700 "$WORK"
+  local made; made=$(mktemp -d "$dir/restore-check.XXXXXXXX") || die "could not create a private folder for the opened copy; nothing was opened"
+  [ -d "$made" ] || die "could not create a private folder for the opened copy; nothing was opened"
+  WORK=$made; CREATED=1
   mkdir -m 0700 "$WORK/restored"
   say "Opening the backup with your key (nothing leaves this computer)."
   say "While it runs, the opened copy sits in a private folder under $dir/restore-check.* and is deleted when this ends, even on failure."
@@ -92,7 +95,7 @@ JS
   # Delete the opened copy now, and say so only after it is verified gone.
   rm -rf -- "${WORK:?}"
   [ ! -e "$WORK" ] || die "could not delete the opened copy at $WORK. Delete that folder by hand now."
-  WORK=
+  WORK=; CREATED=0
   say "RESTORE CHECK PASSED. The opened copy has been deleted from this computer."
   say "Send the server team: the line above that starts 'RESTORE CHECK PASSED', the fingerprint, and the table list."
 }
