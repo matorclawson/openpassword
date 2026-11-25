@@ -52,39 +52,4 @@ bash deploy/backup/backup.sh --direct >/dev/null 2>&1 && fail "a world-readable 
 chmod 600 "$t/backup.env"
 printf 'wrong\n' > "$t/pass"
 bash deploy/backup/backup.sh --direct >/dev/null 2>&1 && fail "a wrong passphrase was accepted"
-
-# Operator-run pull backup: a stand-in for ssh runs the host side locally; borg and the key stay on this side.
-printf 'correct-passphrase\n' > "$t/pass"
-cat > "$t/fake-ssh" <<'SH'
-#!/usr/bin/env bash
-# args: <host> <remote command words>; run the host side locally in stream mode
-shift
-exec bash "$OPENPASSWORD_TEST_ROOT/deploy/backup/backup.sh" --stream --direct
-SH
-cat > "$t/broken-ssh" <<'SH'
-#!/usr/bin/env bash
-# a stream that dies halfway
-shift
-bash "$OPENPASSWORD_TEST_ROOT/deploy/backup/backup.sh" --stream --direct | head -c 700
-exit 1
-SH
-chmod 700 "$t/fake-ssh" "$t/broken-ssh"
-export OPENPASSWORD_TEST_ROOT=$PWD
-OPENPASSWORD_BACKUP_HOST=operator@host.example.com OPENPASSWORD_BACKUP_SSH="$t/fake-ssh" \
-  bash deploy/backup/pull.sh >/dev/null || fail "pull backup"
-pulled=$( ( set -a; . "$t/backup.env"; set +a; borg list --short ) | tail -1 )
-[ "$pulled" != "$archive" ] || fail "pull wrote no new archive"
-if grep -rqa 'sealed-value\|test-master-key' "$t/repo"; then fail "plain text found in the repository after pull"; fi
-mkdir -m 0700 "$t/restored-pull"
-bash deploy/backup/restore.sh "$pulled" "$t/restored-pull" >/dev/null || fail "restore of a pulled archive"
-[ "$("$node_bin" "$t/read.mjs" "$t/restored-pull")" = sealed-value ] || fail "pulled restore row differs"
-cmp -s "$t/data/master.key" "$t/restored-pull/master.key" || fail "pulled master.key differs"
-count=$( ( set -a; . "$t/backup.env"; set +a; borg list --short ) | wc -l | tr -d ' ')
-OPENPASSWORD_BACKUP_HOST=operator@host.example.com OPENPASSWORD_BACKUP_SSH="$t/broken-ssh" \
-  bash deploy/backup/pull.sh >/dev/null 2>&1 && fail "a broken stream was accepted"
-[ "$( ( set -a; . "$t/backup.env"; set +a; borg list --short ) | wc -l | tr -d ' ')" = "$count" ] || fail "a failed pull left an archive"
-OPENPASSWORD_BACKUP_HOST=operator@host.example.com OPENPASSWORD_BACKUP_SSH="$t/fake-ssh" OPENPASSWORD_BACKUP_ENV="$t/bad.env" \
-  bash deploy/backup/pull.sh >/dev/null 2>&1 && fail "pull accepted a plain passphrase in the env"
-# The host side needs no borg, no env file and no key.
-( unset BORG_REPO BORG_PASSCOMMAND; OPENPASSWORD_BACKUP_ENV=/nonexistent bash deploy/backup/backup.sh --stream --direct | tar -tf - | grep -qx vault.sqlite ) || fail "stream mode needs the backup settings"
 echo "backup-test: ok"

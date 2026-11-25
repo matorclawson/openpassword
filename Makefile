@@ -1,4 +1,4 @@
-.PHONY: help setup dev verify build start package checksum backup-test
+.PHONY: help setup dev verify build start package checksum backup-test backup-age-test
 help:
 	@echo "make setup     Install dependencies and compile the public packages"
 	@echo "make dev       Start the local console and broker"
@@ -8,6 +8,7 @@ help:
 	@echo "make package COMMIT=<sha>  Build that exact commit and archive it into dist-release/"
 	@echo "make checksum  Write the .sha256 sidecar for the archive"
 	@echo "make backup-test  Test the backup and restore scripts (Linux, needs borg)"
+	@echo "make backup-age-test  Test the operator-held-key encrypted backup (Linux, needs age)"
 setup:
 	npm ci
 	npm run packages
@@ -33,3 +34,5 @@ install-cli: packages/cli/dist/index.js
 	ln -sfn "$(CURDIR)/packages/cli/dist/index.js" "$(HOME)/.local/bin/openpassword"
 backup-test:
 	bash scripts/backup-test.sh
+backup-age-test:
+	bash scripts/backup-age-test.sh

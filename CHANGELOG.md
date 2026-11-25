@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 (unreleased)
+
+- Add an encrypted backup that needs no secret on the host: `backup.sh --encrypt` writes the snapshot to stdout as age ciphertext for the operator's public key, so the host can encrypt but never decrypt, and `restore-encrypted.sh` opens it on the operator's machine with his private key and checks the vault. The plain snapshot is staged on a tmpfs and removed on every exit path. The host-held borg backup remains optional and is not enabled by the updater. Tests: `make backup-age-test`.
+
 ## 0.4.0 (unreleased)
 
 ### Scope since 0.2.0
@@ -17,8 +21,6 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 - Added standalone model and voice policy evaluation, descriptor validation, family and alias resolution, wildcard limits, and explicit voice endpoint classification. The vendor registry contains 12 candidate descriptors. The live broker's scoped model discovery and metered chat remain distinct from this policy engine. The candidate descriptors have not been qualified for live routing.
 
 ### Deployment and key custody
-
-- Add an operator-run backup, `deploy/backup/pull.sh`, so no backup key has to live on the host. The host side is `backup.sh --stream` (the same consistent snapshot, written to stdout as a tar); borg runs on the operator's machine, reads the archive back and deletes a failed one. `restore.sh` reads both archive formats. The host-held timer remains optional and is not enabled by the updater.
 
 - Support an independently provisioned wrapping key for new or existing vaults. Wrapped snapshots require the separate credential to decrypt item values.
 
