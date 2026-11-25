@@ -2,6 +2,7 @@
 
 ## 0.4.1 (unreleased)
 
+- Add `deploy/backup/operator-backup.sh`, one file the operator runs on his own computer: `init` creates his key pair and shows only the public line to hand over, `check FILE.age` proves a restore (table names and counts only, the opened copy deleted on exit).
 - Add an encrypted backup that needs no secret on the host: `backup.sh --encrypt` writes the snapshot to stdout as age ciphertext for the operator's public key, so the host can encrypt but never decrypt, and `restore-encrypted.sh` opens it on the operator's machine with his private key and checks the vault. As root the snapshot and the encryption run inside one transient unit with a tmpfs runtime directory that systemd removes (cancelling stops and joins the unit); otherwise the plain snapshot is staged only on tmpfs or ramfs, and the backup refuses when swap could write it to an unencrypted disk. The recipient file is validated once (regular file, owner, no group or world write, only `age1` keys) and the validated keys are passed to age. `restore-encrypted.sh` examines the archive before extracting: only regular `vault.sqlite`, `master.key` and `operator.token`, each once. Tests: `make backup-age-test`, `make backup-age-systemd-test`. The host-held borg backup remains optional and is not enabled by the updater.
 
 ## 0.4.0 (unreleased)

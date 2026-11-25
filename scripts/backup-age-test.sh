@@ -206,6 +206,24 @@ empty_stage || fail "the staged snapshot was left behind after termination"
 
 # 6. The host side needs no borg and no private key.
 bk OPENPASSWORD_BACKUP_ENV=/nonexistent >/dev/null || fail "encrypt mode needs borg settings"
+# 6b. The operator's one script: init, then a backup made for the key it created, then check.
+op=$t/operator-keys
+opbk() { env -i PATH="$PATH" HOME="$t" OPENPASSWORD_OPERATOR_KEYDIR="$op" bash deploy/backup/operator-backup.sh "$@"; }
+opbk init > "$t/op-init.out" 2>&1 || fail "operator init"
+[ "$(stat -c %a "$op/key.txt")" = 600 ] || fail "the operator's private key is not mode 600"
+if grep -q 'AGE-SECRET-KEY' "$t/op-init.out"; then fail "operator init printed private key material"; fi
+grep -q "$(cat "$op/public.txt")" "$t/op-init.out" || fail "operator init did not show the public line"
+opbk init >/dev/null 2>&1 && fail "operator init replaced an existing key"
+env -i "${base_env[@]}" OPENPASSWORD_BACKUP_RECIPIENT="$op/public.txt" bash "$t/bk/backup.sh" --encrypt --direct > "$t/op.age" || fail "backup for the operator's key"
+opbk check "$t/op.age" > "$t/op-check.out" 2>&1 || fail "operator check: $(cat "$t/op-check.out")"
+grep -q 'RESTORE CHECK PASSED' "$t/op-check.out" || fail "operator check did not report success"
+if grep -q 'sealed-value\|test-master-key\|AGE-SECRET-KEY' "$t/op-check.out"; then fail "operator check printed a value or key material"; fi
+grep -q 'ExperimentalWarning' "$t/op-check.out" && fail "operator check printed a Node warning"
+[ -z "$(ls -A "$op" | grep restore-check || true)" ] || fail "operator check left the opened copy behind"
+printf 'garbage' > "$t/bad.age"
+opbk check "$t/bad.age" > "$t/op-bad.out" 2>&1 && fail "operator check accepted a damaged file"
+[ -z "$(ls -A "$op" | grep restore-check || true)" ] || fail "a failed operator check left the opened copy behind"
+
 # 7. The root path (snapshot and encryption inside one systemd unit) is part of this test. It needs root and systemd, and a
 # staging host's disposable vault (OPENPASSWORD_HOME); set OPENPASSWORD_SKIP_SYSTEMD_PATH=1 only to say, loudly, that it was NOT run.
 if [ "$(id -u)" = 0 ] && [ -d /run/systemd/system ]; then
