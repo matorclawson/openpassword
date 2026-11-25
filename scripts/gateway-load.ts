@@ -11,10 +11,18 @@ const total = 3000
 const concurrency = 40
 const interval = process.argv.includes('--minute') ? 60000 / total : 0
 let sent = 0
-const api = service(dir, undefined, async () => {
-  sent++
-  return Response.json({ choices: [], usage: { prompt_tokens: 2, completion_tokens: 3 } })
-})
+// One grant sends every request, so the per-grant ceiling (default 600 a minute) is turned off for this measurement.
+const api = service(
+  dir,
+  undefined,
+  async () => {
+    sent++
+    return Response.json({ choices: [], usage: { prompt_tokens: 2, completion_tokens: 3 } })
+  },
+  false,
+  false,
+  { grantPerMinute: 0 },
+)
 try {
   const origin = await api.listen({ host: '127.0.0.1', port: 0 })
   const login = await api.inject({

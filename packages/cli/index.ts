@@ -250,6 +250,7 @@ async function main() {
     ![
       'connections',
       'invoke',
+      'artifact',
       'revoke',
       'whoami',
       'activity',
@@ -260,7 +261,7 @@ async function main() {
     ].includes(cmd)
   )
     throw Error(
-      'Usage: openpassword host connect | host serve | host status | setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | revoke',
+      'Usage: openpassword host connect | host serve | host status | setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | artifact ID [SHA256] | revoke',
     )
   if (cmd === 'watch') {
     let cursor: number | undefined = args.length ? Number(args[0]) : undefined
@@ -302,6 +303,18 @@ async function main() {
         2,
       ),
     )
+    return
+  }
+  if (cmd === 'artifact') {
+    if (args.length < 1 || args.length > 2)
+      throw Error('Usage: openpassword artifact ID [SHA256]')
+    const want = args[1]?.replace(/^sha256:/, '')
+    if (want !== undefined && !/^[0-9a-f]{64}$/.test(want)) throw Error('Invalid SHA-256')
+    const bytes = await bound.artifact(args[0])
+    if (want !== undefined && createHash('sha256').update(bytes).digest('hex') !== want)
+      throw Error('Artifact differs from the expected digest')
+    // The exact bytes, nothing added: the digest in the invoke receipt stays checkable.
+    process.stdout.write(bytes)
     return
   }
   if (['whoami', 'activity', 'capabilities', 'models'].includes(cmd)) {
