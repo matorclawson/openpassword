@@ -206,6 +206,36 @@ empty_stage || fail "the staged snapshot was left behind after termination"
 
 # 6. The host side needs no borg and no private key.
 bk OPENPASSWORD_BACKUP_ENV=/nonexistent >/dev/null || fail "encrypt mode needs borg settings"
+# 6b. The operator's one script: init, then a backup made for the key it created, then check.
+op=$t/operator-keys
+opbk() { env -i PATH="$PATH" HOME="$t" OPENPASSWORD_OPERATOR_KEYDIR="$op" bash deploy/backup/operator-backup.sh "$@"; }
+opbk init > "$t/op-init.out" 2>&1 || fail "operator init"
+[ "$(stat -c %a "$op/key.txt")" = 600 ] || fail "the operator's private key is not mode 600"
+if grep -q 'AGE-SECRET-KEY' "$t/op-init.out"; then fail "operator init printed private key material"; fi
+grep -q "$(cat "$op/public.txt")" "$t/op-init.out" || fail "operator init did not show the public line"
+opbk init >/dev/null 2>&1 && fail "operator init replaced an existing key"
+env -i "${base_env[@]}" OPENPASSWORD_BACKUP_RECIPIENT="$op/public.txt" bash "$t/bk/backup.sh" --encrypt --direct > "$t/op.age" || fail "backup for the operator's key"
+opbk check "$t/op.age" > "$t/op-check.out" 2>&1 || fail "operator check: $(cat "$t/op-check.out")"
+grep -q 'RESTORE CHECK PASSED' "$t/op-check.out" || fail "operator check did not report success"
+grep -Eq '^  t +1$' "$t/op-check.out" || fail "operator check did not list the vault's table and its row count: $(cat "$t/op-check.out")"
+grep -q 'deleted' "$t/op-check.out" || fail "operator check did not say the opened copy was deleted"
+if grep -q 'sealed-value\|test-master-key\|AGE-SECRET-KEY' "$t/op-check.out"; then fail "operator check printed a value or key material"; fi
+grep -q 'ExperimentalWarning' "$t/op-check.out" && fail "operator check printed a Node warning"
+[ -z "$(ls -A "$op" | grep restore-check || true)" ] || fail "operator check left the opened copy behind"
+# Nothing this run did not create is ever deleted: a pre-existing look-alike folder survives a successful check, and a failed
+# mktemp makes the check stop before anything is opened.
+mkdir -p "$op/restore-check.decoy"; printf 'keep me' > "$op/restore-check.decoy/file"
+opbk check "$t/op.age" >/dev/null 2>&1 || fail "operator check with a look-alike folder present"
+[ "$(cat "$op/restore-check.decoy/file" 2>/dev/null)" = "keep me" ] || fail "operator check deleted a folder it did not create"
+mkdir "$t/failing-mktemp"; printf '#!/bin/sh\nexit 1\n' > "$t/failing-mktemp/mktemp"; chmod 755 "$t/failing-mktemp/mktemp"
+env -i PATH="$t/failing-mktemp:$PATH" HOME="$t" OPENPASSWORD_OPERATOR_KEYDIR="$op" bash deploy/backup/operator-backup.sh check "$t/op.age" > "$t/op-nomk.out" 2>&1 && fail "operator check ran although it could not create its private folder"
+[ "$(cat "$op/restore-check.decoy/file" 2>/dev/null)" = "keep me" ] || fail "a failed folder creation deleted existing data"
+grep -q 'RESTORE CHECK PASSED' "$t/op-nomk.out" && fail "operator check reported success without opening anything"
+rm -rf "$op/restore-check.decoy"
+printf 'garbage' > "$t/bad.age"
+opbk check "$t/bad.age" > "$t/op-bad.out" 2>&1 && fail "operator check accepted a damaged file"
+[ -z "$(ls -A "$op" | grep restore-check || true)" ] || fail "a failed operator check left the opened copy behind"
+
 # 7. The root path (snapshot and encryption inside one systemd unit) is part of this test. It needs root and systemd, and a
 # staging host's disposable vault (OPENPASSWORD_HOME); set OPENPASSWORD_SKIP_SYSTEMD_PATH=1 only to say, loudly, that it was NOT run.
 if [ "$(id -u)" = 0 ] && [ -d /run/systemd/system ]; then
