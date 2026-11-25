@@ -13,6 +13,12 @@
 
 The wording of this entry on host switching and rollback was corrected after the archive was built; the corrected text ships in the 0.4.1 source. The 0.4.0 archive was never published as a separate release and carries the earlier wording.
 
+### Native harness integrations
+
+- Generate a local, per-agent executable with `harness prepare`. It pins the broker, OS identity, agent profile and host signing socket and supports a remote deployment.
+- Added native coding-assistant skills, Python framework tools, Rasa custom actions and a TypeScript subprocess client. The [setup guide](examples/harnesses/README.md) covers all 16 adapter targets. MCP registration remains optional.
+- Added stdin JSON operations with idempotency keys and connection identity checks, plus regression coverage for authorization, revocation and profile pinning.
+
 ### Scope since 0.2.0
 
 The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated into main by `21ffd6f`. It includes the maintainer and council branches in the candidate history. Items that already shipped from main in 0.3.0 and 0.3.1 (bundled Node, verified archives, backups, the `openpassword-` header rename, the loopback console bind) are listed under those versions and not repeated here. The 0.2.0 baseline already provided account linking, organization and personal credential ownership, independent sharing expiry, consumption recording, and remote CLI/MCP integration for coding agents.

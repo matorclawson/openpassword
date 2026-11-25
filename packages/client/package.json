@@ -5,7 +5,8 @@
   "license": "MIT",
   "exports": {
     ".": "./dist/index.js",
-    "./publishing": "./dist/publishing.js"
+    "./publishing": "./dist/publishing.js",
+    "./local": "./dist/local.js"
   },
   "engines": {
     "node": ">=24.0.0"
@@ -16,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --declaration --skipLibCheck --strict --outDir dist index.ts publishing.ts"
+    "build": "tsc --target ES2022 --module NodeNext --moduleResolution NodeNext --declaration --skipLibCheck --strict --outDir dist index.ts publishing.ts local.ts"
   },
   "dependencies": {
     "zod": "^4.6.7"

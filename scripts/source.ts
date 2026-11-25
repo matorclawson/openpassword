@@ -24,10 +24,14 @@ function collect(dir: string) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name)
     if (entry.isDirectory()) {
-      if (!['dist', 'node_modules'].includes(entry.name)) collect(path)
+      if (
+        !['dist', 'node_modules', 'build', '__pycache__', '.venv'].includes(entry.name) &&
+        !entry.name.endsWith('.egg-info')
+      )
+        collect(path)
     } else if (
       entry.isFile() &&
-      (/\.(ts|tsx|css|json|woff2|mjs|webp|png|txt|md|service|sh)$/.test(entry.name) ||
+      (/\.(ts|tsx|py|toml|yml|css|json|woff2|mjs|webp|png|txt|md|service|sh)$/.test(entry.name) ||
         entry.name === 'LICENSE')
     )
       inputs.push(path)

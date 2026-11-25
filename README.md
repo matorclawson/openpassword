@@ -4,12 +4,13 @@
 
 Give Claude Code permission to read a GitHub account for a week. Let an application call a specific model through your OpenAI account with a spending limit. In both cases, the provider key stays on your server. Each client gets its own access token, permissions, and usage history.
 
-OpenPassword runs on your laptop or a Linux server. It exposes two interfaces: an **OpenAI-compatible Chat Completions API** for model calls and a **Model Context Protocol (MCP) server** for agents that use tools.
+OpenPassword runs on your laptop or a Linux server. Agents can use a local CLI, Python or TypeScript client, or MCP. Applications can route model calls through the OpenAI-compatible Chat Completions API.
 
 | I want to… | Start here |
 | --- | --- |
 | Try OpenPassword on my machine | [Start locally](#start-locally) |
-| Give Codex or Claude Code a tool | [Connect an agent](#connect-an-agent) |
+| Connect a coding assistant, Python framework or Rasa action to a local CLI | [Native harness integrations and examples](examples/harnesses/README.md) |
+| Give Codex or Claude Code an MCP tool | [Connect an agent](#connect-an-agent) |
 | Make a model request from my app | [Route a model request](#route-a-model-request) |
 | Run the server in the cloud and the agent on my laptop | [Deploy on a server](#deploy-on-a-server) |
 
