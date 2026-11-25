@@ -58,6 +58,8 @@ openpassword capabilities
 
 Use your installation’s HTTPS address, or `http://localhost:3000` when the server runs on this computer. Paste the token at the hidden prompt. The token can be redeemed once within ten minutes. Compare the returned device ID with the grant in the console. The profile is scoped to this broker and agent name. The CLI stores the profile locally, and the server checks grant validity on requests. Keep separate OS accounts for agents that must be isolated from one another.
 
+**Fetch an artifact.** An operation that returns its result as an artifact (for example a Gmail page read) reports an `artifact_id` and a `content_sha256`. Run `openpassword artifact ART_ID [SHA256]` to write the artifact's exact bytes to standard output; with the digest it verifies them first and writes nothing on a mismatch. The artifact is valid for fifteen minutes and only for the grant that produced it.
+
 **Watch activity.** Open **Activity** at `/activity` for live workspace activity visible to you. Use `openpassword watch` for events from this CLI grant, or `openpassword activity` for a snapshot. MCP exposes `whoami` and `activity` through the same profile.
 
 **3. Register the tool server.** Run the command for your client in the same terminal, after pairing finishes.

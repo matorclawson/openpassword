@@ -67,6 +67,31 @@ export class OpenPassword {
     if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
     return r.status === 204 ? (undefined as T) : ((await r.json()) as T)
   }
+  /** Fetch an artifact's exact bytes (not re-serialized, so a content digest can be checked). */
+  async artifact(id: string): Promise<Uint8Array> {
+    if (!/^art_[0-9a-f-]{36}$/.test(id)) throw Error('Invalid artifact id')
+    const path = '/v1/artifacts/' + id
+    const r = await fetch(this.origin + path, {
+      method: 'GET',
+      redirect: 'error',
+      signal: AbortSignal.timeout(90000),
+      headers: {
+        ...(await this.hostProof?.(
+          this.origin,
+          'GET',
+          path,
+          this.token ? 'Bearer ' + this.token : '',
+          '',
+        )),
+        'OpenPassword-Protocol-Version': '1',
+        ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}),
+      },
+    })
+    if (r.headers.get('openpassword-protocol-version') !== '1')
+      throw Object.assign(Error('Broker protocol unavailable'), { status: r.status })
+    if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
+    return new Uint8Array(await r.arrayBuffer())
+  }
   chat(model: string, prompt: string, maxTokens: number, key: string) {
     if (!key.trim() || !Number.isSafeInteger(maxTokens) || maxTokens < 1)
       throw Error('Provide an idempotency key and a positive output token limit')
