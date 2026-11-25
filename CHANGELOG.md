@@ -2,6 +2,7 @@
 
 ## 0.4.1 (unreleased)
 
+- Add an encrypted backup that needs no secret on the host: `backup.sh --encrypt` writes the snapshot to stdout as age ciphertext for the operator's public key, so the host can encrypt but never decrypt, and `restore-encrypted.sh` opens it on the operator's machine with his private key and checks the vault. As root the snapshot and the encryption run inside one transient unit with a tmpfs runtime directory that systemd removes (cancelling stops and joins the unit); otherwise the plain snapshot is staged only on tmpfs or ramfs, and the backup refuses when swap could write it to an unencrypted disk. The recipient file is validated once (regular file, owner, no group or world write, only `age1` keys) and the validated keys are passed to age. `restore-encrypted.sh` examines the archive before extracting: only regular `vault.sqlite`, `master.key` and `operator.token`, each once. Tests: `make backup-age-test`, `make backup-age-systemd-test`. The host-held borg backup remains optional and is not enabled by the updater.
 - Add `openpassword artifact ID [SHA256]`, which writes an artifact's exact bytes to stdout (for example a Gmail page read) through the CLI, so a caller that holds no token can fetch it. With a digest (the `content_sha256` from the invoke result, with or without the `sha256:` prefix) it verifies the bytes first and writes nothing on a mismatch.
 
 ## 0.4.0 (unreleased)
