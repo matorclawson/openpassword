@@ -37,6 +37,8 @@ case "${1:-}" in
   *) usage ;;
 esac
 [ -x "$NODE" ] || refuse "no executable Node at $NODE (set OPENPASSWORD_NODE)"
+# systemd-run expands $VARIABLE and %specifier in the arguments it passes to a unit, so such a path would be altered.
+case "$here$NODE$DATA" in *'$'*|*'%'*) refuse "the script, Node and data paths must not contain \$ or %" ;; esac
 
 . "$here/stage-check.sh"
 # Read the recipient file once, refuse on any read or validation error, and keep the validated keys for age.
@@ -63,6 +65,7 @@ if [ "$encrypt" = 1 ]; then
   AGE=${OPENPASSWORD_BACKUP_AGE:-$(command -v age || true)}
   case "$AGE" in /*) [ -x "$AGE" ] || AGE= ;; *) AGE= ;; esac
   [ -n "$AGE" ] || refuse "age is not installed (or OPENPASSWORD_BACKUP_AGE is not an absolute executable path)"
+  case "$AGE" in *'$'*|*'%'*) refuse "the age path must not contain \$ or %" ;; esac
   if [ -t 1 ]; then refuse "refusing to write ciphertext to a terminal; redirect stdout to a file"; fi
   # Everything that can be refused is refused here, before any snapshot exists.
   read_recipients "$RECIP"
@@ -100,18 +103,11 @@ if [ "$encrypt" = 1 ] && [ "$mode" != --direct ]; then
   # the plaintext never reaches this shell, a pipe to it, or a disk. Only ciphertext comes back on stdout.
   run=openpassword-backup-$$
   unit=$run.service
-  inner='set -euo pipefail
-node=$1; snap=$2; data=$3; age=$4; shift 4
-"$node" "$snap" "$data" "$RUNTIME_DIRECTORY" >/dev/null
-cd "$RUNTIME_DIRECTORY"
-files=(vault.sqlite master.key)
-[ -f operator.token ] && files+=(operator.token)
-tar -cf - "${files[@]}" | "$age" "$@"'
   systemd-run --quiet --pipe --wait --collect -u "$run" \
     -p User=openpassword-broker -p DynamicUser=yes -p StateDirectory=openpassword \
     -p RuntimeDirectory="$run" -p RuntimeDirectoryMode=0700 \
     -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p PrivateNetwork=yes -p NoNewPrivileges=yes \
-    /bin/bash -c "$inner" bash "$NODE" "$here/snapshot.mjs" "$DATA" "$AGE" "${RECIPS[@]}" </dev/null &
+    /bin/bash "$here/unit-run.sh" "$NODE" "$here/snapshot.mjs" "$DATA" "$AGE" "${RECIPS[@]}" </dev/null &
   child=$!
   wait "$child"
   child=

@@ -100,6 +100,9 @@ ln -s "$t/recipient" "$t/link"
 refuses "a symlinked recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/link"
 mkdir "$t/dir"
 refuses "a directory as the recipient file" OPENPASSWORD_BACKUP_RECIPIENT="$t/dir"
+# Characters systemd would expand in a unit's arguments are refused in the paths it is given.
+refuses "a data path containing a dollar sign" OPENPASSWORD_HOME='/tmp/a$b'
+refuses "a data path containing a percent sign" OPENPASSWORD_HOME='/tmp/a%h'
 # Staging must be memory-only.
 if [ "$(stat -f -c %T /var/tmp 2>/dev/null)" != tmpfs ] && [ "$(stat -f -c %T /var/tmp 2>/dev/null)" != ramfs ]; then
   refuses "a staging directory on disk" OPENPASSWORD_BACKUP_STAGE=/var/tmp
