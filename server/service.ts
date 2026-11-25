@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { personalVault } from './personal-vault.ts'
 import { hosts } from './hosts.ts'
 import releasePackage from '../package.json' with { type: 'json' }
@@ -64,13 +65,50 @@ function connectorRevision(provider: string, op: string) {
   if (op.endsWith('.upload_session.create')) return 'google.youtube@1'
   return '1'
 }
+// OPENPASSWORD_TRUST_PROXY: comma-separated IP addresses or CIDR ranges of reverse proxies whose X-Forwarded-For is
+// believed (for example 127.0.0.1). Unset means no proxy is trusted. Wildcards, hop counts and any range that
+// would trust the whole internet are refused, so a typo cannot let a client choose its own address.
+export function trustedProxies(value: string | undefined) {
+  if (value === undefined || value.trim() === '') return undefined
+  const list = value.split(',').map((x) => x.trim())
+  for (const entry of list) {
+    const [addr, bits, ...rest] = entry.split('/')
+    const family = isIP(addr)
+    const limit = family === 4 ? 32 : 128
+    if (
+      !family ||
+      rest.length ||
+      (bits !== undefined && (!/^[0-9]{1,3}$/.test(bits) || Number(bits) > limit)) ||
+      (bits !== undefined && Number(bits) < 8)
+    )
+      throw Error('OPENPASSWORD_TRUST_PROXY must list proxy IP addresses or CIDR ranges of at least 8 bits')
+  }
+  return list
+}
+export function grantRate(value: string | undefined) {
+  if (value === undefined) return 600
+  if (!/^[0-9]{1,9}$/.test(value.trim()) || value !== value.trim())
+    throw Error('OPENPASSWORD_GRANT_RATE must be a whole number of requests per minute (0 disables it)')
+  const rate = Number(value)
+  if (rate === 0)
+    console.warn('OPENPASSWORD_GRANT_RATE=0: the per-grant request ceiling is disabled')
+  return rate
+}
+export type Limits = { trustProxy?: string; grantPerMinute?: number }
 export function service(
   dir: string,
   origin = 'http://localhost:3000',
   transport: typeof fetch = fetch,
   relay = process.env.OPENPASSWORD_YOUTUBE_RELAY === '1',
   initializeHostPolicy = false,
+  limits: Limits = {},
 ) {
+  // The per-grant ceiling counts authenticated /v1 requests per grant per minute (default 600; 0 turns it off).
+  // An empty or blank OPENPASSWORD_GRANT_RATE is refused: only an explicit 0 turns the ceiling off, and it says so.
+  const grantPerMinute = limits.grantPerMinute ?? grantRate(process.env.OPENPASSWORD_GRANT_RATE)
+  if (!Number.isSafeInteger(grantPerMinute) || grantPerMinute < 0)
+    throw Error('OPENPASSWORD_GRANT_RATE must be a whole number of requests per minute (0 disables it)')
+  const proxies = trustedProxies(limits.trustProxy ?? process.env.OPENPASSWORD_TRUST_PROXY)
   const web = new URL(origin)
   if (
     web.origin !== origin ||
@@ -80,7 +118,11 @@ export function service(
     )
   )
     throw Error('Set OPENPASSWORD_WEB_ORIGIN to the HTTPS console origin or a loopback HTTP origin')
-  const api = Fastify({ bodyLimit: 65536, routerOptions: { maxParamLength: 200 } })
+  const api = Fastify({
+    bodyLimit: 65536,
+    routerOptions: { maxParamLength: 200 },
+    ...(proxies ? { trustProxy: proxies } : {}),
+  })
   const { db, admin, seal, open } = store(dir)
   db.exec(
     'CREATE TABLE IF NOT EXISTS loops_created(conn TEXT,revision INTEGER,kind TEXT,remote TEXT,child TEXT,until INTEGER,PRIMARY KEY(conn,revision,kind,remote));',
@@ -373,6 +415,23 @@ export function service(
   }
   personalVault(api, db, session, event)
   const hostAccess = hosts(api, db, origin, session, event, initializeHostPolicy)
+  const grantWindows = new Map<string, { count: number; until: number }>()
+  const counted = new WeakSet<FastifyRequest>()
+  const swept = new WeakMap<object, number>()
+  // Expired windows are dropped so a flood of distinct sources cannot grow the maps without bound.
+  function sweep(map: Map<string, { count: number; until: number }>) {
+    if (now() < (swept.get(map) ?? 0)) return
+    swept.set(map, now() + 30000)
+    for (const [k, v] of map) if (v.until <= now()) map.delete(k)
+  }
+  function countGrant(r: FastifyRequest, id: string) {
+    if (!grantPerMinute || counted.has(r)) return
+    counted.add(r)
+    sweep(grantWindows)
+    const row = grantWindows.get(id)
+    if (!row || row.until <= now()) grantWindows.set(id, { count: 1, until: now() + 60000 })
+    else if (++row.count > grantPerMinute) fail(429, 'Try again in one minute')
+  }
   function grant(r: FastifyRequest) {
     if (!/^Bearer [A-Za-z0-9_-]+$/.test(r.headers.authorization || ''))
       fail(401, 'Device bearer required')
@@ -385,6 +444,7 @@ export function service(
       ) ?? fail(401, 'Device access expired')
     hostAccess.bound(r, g.id, g.tenant)
     checkIssuer(g)
+    countGrant(r, g.id)
     actor(g.id)
     return g
   }
@@ -498,6 +558,7 @@ export function service(
         r.url.startsWith('/v1/device/') && r.headers['openpassword-host']
           ? hostAccess.identity(r)
           : null
+      sweep(attempts)
       const k = (trusted ? 'host/' + trusted.id : r.ip) + r.url.split('?')[0],
         row = attempts.get(k)
       if (!row || row.until <= now()) attempts.set(k, { count: 1, until: now() + 60000 })
