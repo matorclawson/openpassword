@@ -10,7 +10,7 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 
 - Personal vault items have browser-encrypted names and secret values. Each profile unlocks its own vault with a separately saved recovery key. Hiding the page, navigating away or five minutes of inactivity locks it. Explicit delegation creates a personal provider connection with a gateway-readable copy. Editing the private item leaves copy rotation to its owner.
 - First administration, host enrollment and agent approval are separate. A CLI host registers an Ed25519 public key using a one-use web ticket. Its Unix socket service signs CLI and MCP requests. A human approves each agent request for a specific connection, operations and expiry. A different host cannot use the agent's token. Revoking a host blocks subsequent calls from its agents.
-- New workspaces on the deployed service require host-bound grants. Workspaces with existing grant history switch on first host enrollment. Re-pair agents at cutover and verify raw bearer-only clients have a signing integration first. The updater refuses a move to a release that predates signature enforcement while active host-bound grants or unredeemed host-bound enrollment tokens exist; revoke them first.
+- New workspaces on the deployed service require host-bound grants. Workspaces with existing grant history keep standalone access until their first successful host enrollment; when such a workspace switches, re-pair its existing standalone agents then, and make signing-compatible CLI, MCP or an equivalent integration available before it does. A raw bearer-only client has no signing integration and stops working at that point. The updater refuses a move to a release that predates signature enforcement while active host-bound grants or unredeemed host-bound enrollment tokens exist; revoke them first.
 
 ### Model and voice policy
 
@@ -22,7 +22,7 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 
 - Add SSH-backed CLI setup codes for first administration. Codes expire after ten minutes and issuing another supersedes the previous one. The web console can then authorize the agent host. Reject nonprivate or malformed host key files and invalidate pre-setup administrator sessions when the first owner is created.
 
-- Replace the Python updater and production build procedure with verified archive installation. The production host uses a small shell bootstrap, the archive’s own Node v24.19.0 and a TypeScript activation controller. Failed activation restores the old release and its systemd units, including the host-Node to bundled-Node transition. Retain the previous host runtime for rollback.
+- Replace the Python updater and production build procedure with verified archive installation. The production host uses a small shell bootstrap, the archive’s own Node v24.19.0 and a TypeScript activation controller. A failure before the commit restores the old release, its systemd units (including the host-Node to bundled-Node transition) and the verified vault copy where one was taken; a public startup or readiness failure after the commit is recovered forward with `--recover`. Retain the previous host runtime for rollback.
 
 ### Vault interface
 
@@ -45,7 +45,7 @@ The comparison starts at the published 0.2.0 source commit `6a7a4b6`, integrated
 
 ### Service and client updates
 
-- Added staged activation and explicit rollback for the supplied Linux systemd services. The updater preflights the candidate against a disposable vault, serializes switches, records interrupted activation and restores the previous application on failed live readiness.
+- Added staged activation and explicit rollback for the supplied Linux systemd services. The updater preflights the candidate against a disposable vault, serializes switches, records interrupted activation and restores the previous release before the commit; failures after the commit are recovered forward.
 - A supporting broker drains accepted requests before restart. New requests receive HTTP 503 and a retry hint. Activity watchers reconnect across temporary gateway failures.
 - Added a Mac/Linux CLI updater that supports an independently supplied release digest, checks the downloaded bundle against the broker’s SHA-256, runs an offline startup check and replaces the executable atomically. Existing profiles are reused. Running MCP processes pick up the update on restart.
 
