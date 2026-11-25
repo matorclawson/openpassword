@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { service, trustedProxies } from '../server/service.ts'
+import { service, trustedProxies, grantRate } from '../server/service.ts'
 
 const hdr = { 'openpassword-protocol-version': '1', 'content-type': 'application/json' }
 function setup(t: TestContext, limits: Parameters<typeof service>[5] = {}) {
@@ -121,6 +121,26 @@ test('the per-grant ceiling counts authenticated requests once, per grant, and n
     assert.equal((await call('GET', '/v1/connections', undefined, 'not-a-real-token')).statusCode, 401)
   for (let i = 0; i < 4; i++) assert.equal((await call('GET', '/v1/connections', undefined, second)).statusCode, 200)
   assert.equal((await call('GET', '/v1/connections', undefined, second)).statusCode, 429)
+})
+
+test('the grant rate setting refuses blank and malformed values and only an explicit 0 disables it', (t) => {
+  assert.equal(grantRate(undefined), 600)
+  assert.equal(grantRate('250'), 250)
+  for (const bad of ['', ' ', '\t', ' 600', '600 ', '-1', '1.5', 'abc', '1e3', '0x10', '+5', '1234567890'])
+    assert.throws(() => grantRate(bad), /OPENPASSWORD_GRANT_RATE/, JSON.stringify(bad))
+  const warnings: string[] = []
+  t.mock.method(console, 'warn', (m: string) => warnings.push(m))
+  assert.equal(grantRate('0'), 0)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /disabled/)
+  // The same refusal applies when the service reads the environment.
+  const before = process.env.OPENPASSWORD_GRANT_RATE
+  t.after(() => {
+    if (before === undefined) delete process.env.OPENPASSWORD_GRANT_RATE
+    else process.env.OPENPASSWORD_GRANT_RATE = before
+  })
+  process.env.OPENPASSWORD_GRANT_RATE = ''
+  assert.throws(() => service(mkdtempSync(join(tmpdir(), 'op-rate-blank-'))), /OPENPASSWORD_GRANT_RATE/)
 })
 
 test('the per-grant ceiling can be turned off and is validated', async (t) => {

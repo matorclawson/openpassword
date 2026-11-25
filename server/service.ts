@@ -85,6 +85,15 @@ export function trustedProxies(value: string | undefined) {
   }
   return list
 }
+export function grantRate(value: string | undefined) {
+  if (value === undefined) return 600
+  if (!/^[0-9]{1,9}$/.test(value.trim()) || value !== value.trim())
+    throw Error('OPENPASSWORD_GRANT_RATE must be a whole number of requests per minute (0 disables it)')
+  const rate = Number(value)
+  if (rate === 0)
+    console.warn('OPENPASSWORD_GRANT_RATE=0: the per-grant request ceiling is disabled')
+  return rate
+}
 export type Limits = { trustProxy?: string; grantPerMinute?: number }
 export function service(
   dir: string,
@@ -95,7 +104,8 @@ export function service(
   limits: Limits = {},
 ) {
   // The per-grant ceiling counts authenticated /v1 requests per grant per minute (default 600; 0 turns it off).
-  const grantPerMinute = limits.grantPerMinute ?? Number(process.env.OPENPASSWORD_GRANT_RATE ?? 600)
+  // An empty or blank OPENPASSWORD_GRANT_RATE is refused: only an explicit 0 turns the ceiling off, and it says so.
+  const grantPerMinute = limits.grantPerMinute ?? grantRate(process.env.OPENPASSWORD_GRANT_RATE)
   if (!Number.isSafeInteger(grantPerMinute) || grantPerMinute < 0)
     throw Error('OPENPASSWORD_GRANT_RATE must be a whole number of requests per minute (0 disables it)')
   const proxies = trustedProxies(limits.trustProxy ?? process.env.OPENPASSWORD_TRUST_PROXY)
