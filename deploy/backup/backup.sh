@@ -74,6 +74,8 @@ read_recipients() {
   (( (8#$perm & 8#022) == 0 )) || refuse "$f must not be writable by group or others"
   content=$(cat -- "$f") || refuse "cannot read $f"
   while IFS= read -r line || [ -n "$line" ]; do
+    # Private key material anywhere in the file, even in a comment, refuses the whole file.
+    case "$line" in *AGE-SECRET-KEY*|*AGE-PLUGIN-*|*'PRIVATE KEY'*) refuse "$f holds private key material; it must contain public keys only" ;; esac
     case "$line" in ''|'#'*) continue ;; esac
     [[ "$line" =~ ^age1[0-9a-z]{50,}$ ]] || refuse "$f must contain only age1 public keys and comments (never a private key)"
     RECIPS+=(-r "$line")

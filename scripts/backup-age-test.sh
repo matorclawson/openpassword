@@ -85,6 +85,8 @@ cp "$t/id.txt" "$t/withsecret"
 refuses "a private key in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/withsecret bash deploy/backup/backup.sh --encrypt --direct
 printf 'not-a-key\n' > "$t/junk"
 refuses "junk in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/junk bash deploy/backup/backup.sh --encrypt --direct
+printf '# AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLE\n%s\n' "$rcp" > "$t/commented"
+refuses "a commented private key in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/commented bash deploy/backup/backup.sh --encrypt --direct
 printf '%s\nnot-a-key\n' "$rcp" > "$t/mixed"
 refuses "a stray line in the recipient file" env OPENPASSWORD_BACKUP_RECIPIENT=$t/mixed bash deploy/backup/backup.sh --encrypt --direct
 : > "$t/empty"
@@ -113,18 +115,30 @@ mkdir "$t/bin"
 printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' > "$t/bin/age"; chmod 700 "$t/bin/age"
 refuses "an encryption failure" env OPENPASSWORD_BACKUP_AGE=$t/bin/age bash deploy/backup/backup.sh --encrypt --direct
 printf '#!/bin/sh\nsleep 30\n' > "$t/bin/age"
-OPENPASSWORD_BACKUP_AGE=$t/bin/age backup > "$t/o6" 2>/dev/null &
+# Terminate the whole process group, as Ctrl-C or a service stop does, without killing any child by hand.
+command -v setsid >/dev/null || fail "setsid is required"
+OPENPASSWORD_BACKUP_AGE=$t/bin/age setsid bash deploy/backup/backup.sh --encrypt --direct > "$t/o6" 2>/dev/null &
 pid=$!
 for _ in $(seq 1 100); do
   [ -s "$shm/stage"/*/vault.sqlite ] 2>/dev/null && break
   sleep 0.1
 done
 [ -s "$shm/stage"/*/vault.sqlite ] 2>/dev/null || fail "the snapshot was not staged in time to test termination"
-kill -TERM "$pid"; pkill -P "$pid" 2>/dev/null || true
+kill -TERM -- "-$pid"
 wait "$pid" 2>/dev/null || true
 sleep 0.5
 empty_stage || fail "the staged snapshot was left behind after termination"
 
 # 6. The host side needs no borg and no private key.
 ( unset BORG_REPO BORG_PASSCOMMAND; OPENPASSWORD_BACKUP_ENV=/nonexistent backup >/dev/null ) || fail "encrypt mode needs borg settings"
+# 7. The root path (snapshot and encryption inside one systemd unit) is part of this test. It needs root and systemd, and a
+# staging host's disposable vault (OPENPASSWORD_HOME); set OPENPASSWORD_SKIP_SYSTEMD_PATH=1 only to say, loudly, that it was NOT run.
+if [ "$(id -u)" = 0 ] && [ -d /run/systemd/system ]; then
+  env -u OPENPASSWORD_BACKUP_STAGE -u OPENPASSWORD_BACKUP_SWAPS_FILE -u OPENPASSWORD_BACKUP_RECIPIENT -u OPENPASSWORD_HOME \
+    OPENPASSWORD_HOME="${OPENPASSWORD_SYSTEMD_HOME:-/var/lib/openpassword}" bash scripts/backup-age-systemd-test.sh || fail "the root systemd path"
+elif [ "${OPENPASSWORD_SKIP_SYSTEMD_PATH:-}" = 1 ]; then
+  echo "backup-age-test: NOTE: the root systemd path was NOT tested (OPENPASSWORD_SKIP_SYSTEMD_PATH=1)" >&2
+else
+  fail "the root systemd path was not tested: run as root on a staging host with systemd, or set OPENPASSWORD_SKIP_SYSTEMD_PATH=1 to record that it was not run"
+fi
 echo "backup-age-test: ok"

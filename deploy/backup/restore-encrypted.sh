@@ -48,7 +48,9 @@ done <<< "$long"
 case " $seen " in *" vault.sqlite "*) ;; *) refuse "the backup lacks vault.sqlite" ;; esac
 case " $seen " in *" master.key "*) ;; *) refuse "the backup lacks master.key" ;; esac
 # 3. Extract into a scratch directory and check what landed there.
-tar -xf "$work/state.tar" -C "$work/out" --no-same-owner --no-same-permissions
+# Only the validated names are extracted, by exact name (the allowlist was enforced above).
+# shellcheck disable=SC2086
+tar -xf "$work/state.tar" -C "$work/out" --no-same-owner --no-same-permissions -- $seen
 rm -f -- "$work/state.tar"
 for f in vault.sqlite master.key; do
   [ -f "$work/out/$f" ] && [ ! -L "$work/out/$f" ] && [ -s "$work/out/$f" ] || refuse "the backup lacks a usable $f"
