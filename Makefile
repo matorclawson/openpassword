@@ -1,4 +1,4 @@
-.PHONY: help setup dev verify build start package checksum backup-test backup-age-test
+.PHONY: help setup dev verify build start package checksum backup-test backup-age-test backup-age-systemd-test
 help:
 	@echo "make setup     Install dependencies and compile the public packages"
 	@echo "make dev       Start the local console and broker"
@@ -9,6 +9,7 @@ help:
 	@echo "make checksum  Write the .sha256 sidecar for the archive"
 	@echo "make backup-test  Test the backup and restore scripts (Linux, needs borg)"
 	@echo "make backup-age-test  Test the operator-held-key encrypted backup (Linux, needs age)"
+	@echo "make backup-age-systemd-test  Test its root and systemd path (root, staging host, needs age)"
 setup:
 	npm ci
 	npm run packages
@@ -36,3 +37,5 @@ backup-test:
 	bash scripts/backup-test.sh
 backup-age-test:
 	bash scripts/backup-age-test.sh
+backup-age-systemd-test:
+	bash scripts/backup-age-systemd-test.sh
