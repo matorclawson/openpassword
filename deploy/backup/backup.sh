@@ -31,7 +31,8 @@ if [ "$stream" = 0 ]; then
     || { echo "backup: the env file must set BORG_REPO and BORG_PASSCOMMAND, and must not set BORG_PASSPHRASE" >&2; exit 1; }
 fi
 
-stage=$(mktemp -d)
+# The snapshot holds the vault and the master key in plain form. As root, stage it on /run (a tmpfs, never the disk).
+if [ "$(id -u)" = 0 ] && [ -d /run ] && [ -w /run ]; then stage=$(mktemp -d /run/openpassword-backup.XXXXXXXX); else stage=$(mktemp -d); fi
 trap 'rm -rf "$stage"' EXIT
 if [ "$mode" = --direct ]; then
   [ "$(stat -c '%u' "$DATA")" = "$(id -u)" ] \
