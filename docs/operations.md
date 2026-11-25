@@ -10,6 +10,13 @@ The broker binds to 127.0.0.1. The console unit binds to 127.0.0.1 explicitly (`
 
 Keep the SQLite database and master.key together in a protected backup. For an offline backup stop the service, copy the complete data directory including SQLite sidecars, and preserve file permissions. The default deployment uses a local master key and process-level trust. Use a dedicated service user with a private home. Protect the operator token during initial setup. The local launch and storage layout are designed for Linux including ARM64. The service has been tested on Linux x86-64.
 
+## Request limits
+
+Two limits protect the broker. Neither replaces a firewall: put per-source connection-rate limits (for example nftables) on ports 80 and 443 for flood protection.
+
+- **Per source address, on sign-in and pairing paths.** `/admin/login`, `/auth/*` starts and setup, `/v1/hosts/enroll`, `/v1/device/authorizations`, `/v1/device/token` and `/v1/delegation/check` allow 60 requests a minute per source address and path (a device path with a valid host proof is keyed by its host, 2400 a minute). Over the limit returns 429. Behind a reverse proxy every client reaches the broker from the proxy's address, so the limit would be shared by all clients. Set `OPENPASSWORD_TRUST_PROXY` to the proxy's address, for example `127.0.0.1` (comma-separated addresses or CIDR ranges of at least 8 bits; unset by default). The broker then reads the client address from `X-Forwarded-For` only when the connection comes from a listed proxy; a forwarded address from any other peer is ignored. Wildcards, hop counts and ranges that would trust the whole internet are refused at start. The proxy must overwrite, not pass through, a client-supplied `X-Forwarded-For`.
+- **Per grant, on every authenticated `/v1` request.** One grant may make `OPENPASSWORD_GRANT_RATE` authenticated requests a minute (default 600; `0` turns it off). Over the limit returns 429 `Try again in one minute`. A request with a bad or expired credential is refused as before and does not use a grant's budget. Counters are in memory and restart with the broker.
+
 ## Backups
 
 The data directory holds `vault.sqlite` (encrypted provider credentials, grants, history), `master.key` (the key for those credentials) and `operator.token`. A database copy alone retains readable metadata but cannot decrypt broker-sealed values without the associated master key, and a copy of both together must never be stored unencrypted off the host. `deploy/backup/backup.sh` therefore writes both into one **borg** archive, encrypted on the host before upload; only the encrypted archive leaves it.

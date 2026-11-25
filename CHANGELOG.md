@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 (unreleased)
+
+- Sign-in and pairing limits are per source address when `OPENPASSWORD_TRUST_PROXY` names the reverse proxy (off by default; forwarded addresses from other peers are ignored; wildcards and over-broad ranges are refused). Behind a proxy without it, all clients share one bucket.
+- Add a per-grant ceiling on authenticated `/v1` requests, 600 a minute by default (`OPENPASSWORD_GRANT_RATE`, `0` disables). Expired counters are swept so many sources cannot grow memory without bound.
+
 ## 0.4.0 (unreleased)
 
 ### Scope since 0.2.0
