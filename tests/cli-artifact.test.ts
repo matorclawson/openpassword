@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { execFile } from 'node:child_process'
+import { execFile, type ExecFileException } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 
 const id = 'art_123e4567-e89b-12d3-a456-426614174000'
@@ -18,10 +18,10 @@ function run(env: Record<string, string>, ...args: string[]) {
     execFile(
       process.execPath,
       [resolve('packages/cli/dist/index.js'), ...args],
-      { env, encoding: 'buffer' },
-      (error, stdout, stderr) =>
+      { env: { ...env, NODE_ENV: 'test' }, encoding: 'buffer' },
+      (error: ExecFileException | null, stdout: Buffer, stderr: Buffer) =>
         done({
-          code: error ? Number((error as { code?: number }).code ?? 1) : 0,
+          code: error ? Number(error.code ?? 1) : 0,
           stdout,
           stderr: stderr.toString(),
         }),
