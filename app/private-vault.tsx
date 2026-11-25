@@ -1,12 +1,22 @@
 'use client'
 import { useEffect, useState, type FormEvent } from 'react'
-import { newVaultKey, importVaultKey, encryptPrivate, decryptPrivate } from './private-crypto'
+import {
+  newVaultKey,
+  importVaultKey,
+  encryptPrivate,
+  decryptPrivate,
+  sealPrivateItem,
+  openPrivateValue,
+  derivePrivateKey,
+  privateScheme,
+} from './private-crypto'
 import { sealInput } from './intake'
 type Api = (path: string, body?: unknown, method?: string) => Promise<any>
 type Item = {
   id: string
   revision: number
   title: string
+  itemKey?: string
   protectedValue: string
   connections: { id: string; label: string }[]
 }
@@ -39,6 +49,7 @@ export function PrivateVault(props: Props) {
   return <PrivateSession key={epoch} {...props} lock={() => setEpoch((n) => n + 1)} />
 }
 function PrivateSession({ request, providers, lock }: Props & { lock: () => void }) {
+  const [ticket, setTicket] = useState('')
   const [revealed, showSecret] = useState('')
   const [page, P] = useState<any>(),
     [key, K] = useState<CryptoKey>(),
@@ -124,11 +135,22 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
           {page && (page.check || recovery) && (
             <form
               onSubmit={form(async (f) => {
+                if (page.check && page.scheme && !['raw-v1', privateScheme].includes(page.scheme))
+                  throw Error('Update the client to open this vault format')
                 const entered = String(f.get('key')).trim(),
-                  k = await importVaultKey(entered)
+                  k =
+                    !page.check || page.scheme === privateScheme
+                      ? await derivePrivateKey(
+                          entered,
+                          String(f.get('passphrase')),
+                          page.tenant,
+                          page.profile,
+                        )
+                      : await importVaultKey(entered)
                 if (!page.check) {
                   if (entered !== recovery) throw Error('Enter the key you saved')
                   await request('profile/vault', {
+                    scheme: privateScheme,
                     check: await encryptPrivate(
                       k,
                       context(page, 'unlock'),
@@ -143,6 +165,24 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
                 {recovery ? 'Confirm your saved key' : 'Private vault key'}
                 <input type="password" name="key" required autoComplete="off" />
               </label>
+              {(!page.check || page.scheme === privateScheme) && (
+                <label>
+                  Vault passphrase
+                  <input
+                    name="passphrase"
+                    type="password"
+                    autoComplete={page.check ? 'current-password' : 'new-password'}
+                    minLength={12}
+                    required
+                  />
+                </label>
+              )}
+              {(!page.check || page.scheme === privateScheme) && (
+                <p>
+                  Keep your vault passphrase and saved key separately. You need both to unlock this
+                  vault.
+                </p>
+              )}
               <button disabled={busy}>Unlock private vault</button>
             </form>
           )}
@@ -205,11 +245,7 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
                 onClick={() =>
                   act(async () => {
                     showSecret(
-                      await decryptPrivate(
-                        key,
-                        context(page, 'value/' + selected.id),
-                        selected.protectedValue,
-                      ),
+                      await openPrivateValue(key, context(page, 'value/' + selected.id), selected),
                     )
                     M('reveal')
                   })
@@ -222,11 +258,7 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
                 onClick={() =>
                   act(async () => {
                     showSecret(
-                      await decryptPrivate(
-                        key,
-                        context(page, 'value/' + selected.id),
-                        selected.protectedValue,
-                      ),
+                      await openPrivateValue(key, context(page, 'value/' + selected.id), selected),
                     )
                     M('edit')
                   })
@@ -275,23 +307,34 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
               </button>
             </>
           )}
+          {ticket && (
+            <section>
+              <p>
+                Give this receipt to the CLI operator. It can finish saving only this encrypted item
+                for five minutes. Keep this web session signed in.
+              </p>
+              <code>{ticket}</code>
+              <button onClick={() => setTicket('')}>Hide receipt</button>
+            </section>
+          )}
           {mode === 'edit' && (
             <form
               key={selected?.id || 'new'}
               onSubmit={form(async (f) => {
                 const id = selected?.id || crypto.randomUUID()
-                const value = await encryptPrivate(
+                const value = await sealPrivateItem(
                   key,
                   context(page, id),
-                  JSON.stringify({
-                    title: String(f.get('title')),
-                    protectedValue: await encryptPrivate(
-                      key,
-                      context(page, 'value/' + id),
-                      String(f.get('secret')),
-                    ),
-                  }),
+                  context(page, 'value/' + id),
+                  String(f.get('title')),
+                  String(f.get('secret')),
                 )
+                if (!selected && f.get('delivery') === 'cli') {
+                  const prepared = await request('profile/vault/deposits', { id, value })
+                  setTicket(prepared.ticket)
+                  M('')
+                  return
+                }
                 await request('profile/vault/items', {
                   id,
                   value,
@@ -316,6 +359,12 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
                   required
                 />
               </label>
+              {!selected && (
+                <label>
+                  <input type="checkbox" name="delivery" value="cli" />
+                  Prepare a one-time CLI deposit
+                </label>
+              )}
               <button disabled={busy}>Save private item</button>
             </form>
           )}
@@ -323,11 +372,7 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
             <form
               onSubmit={form(async (f) => {
                 const sealed = await sealInput(
-                  await decryptPrivate(
-                    key,
-                    context(page, 'value/' + selected.id),
-                    selected.protectedValue,
-                  ),
+                  await openPrivateValue(key, context(page, 'value/' + selected.id), selected),
                   await request('admin/intake', {}),
                 )
                 await request('admin/connections', {

@@ -36,6 +36,8 @@ Use the broker's configured public origin without a trailing slash. For JSON, th
 
 For example, this calls the deployed API with curl on an approved host. Supply the short-lived agent token as OPENPASSWORD_ACCESS_TOKEN through the calling service’s secret store. From the repository root, use Node 24 to request a proof and pass the headers to curl on stdin.
 
+**API client operator · enrolled client host · no sudo**
+
 ```sh
 (
   set -e

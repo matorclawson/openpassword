@@ -529,6 +529,8 @@ export function service(
       }
     }
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff')
+    if (!['GET','HEAD','OPTIONS'].includes(r.method) && r.headers['sec-fetch-site'] === 'cross-site')
+      fail(403, 'Cross-site request refused')
     if (r.headers.origin && r.headers.origin !== origin) fail(403, 'Origin refused')
     if (
       !['/v1/youtube/uploads:relay', '/delegate/confirm'].includes(r.url) &&
@@ -550,6 +552,7 @@ export function service(
         '/auth/apple/start',
         '/auth/github/start',
         '/auth/google/start',
+        '/v1/vault/deposits',
         '/v1/hosts/enroll',
         '/v1/device/authorizations',
         '/v1/device/token',
@@ -1815,6 +1818,12 @@ export function service(
       )
       event(g.tenant, 'Model request claimed', ex)
     })
+    function authorizeResult() {
+      grant(r)
+      checkDispatch(g.tenant, c.provider, c.provider + '.chat')
+      const live = conn(g.tenant, c.id)
+      if (!live.active || live.revision !== c.revision) fail(409, 'Connection changed')
+    }
     const abort = new AbortController()
     const onClose = () => abort.abort()
     reply.raw.once('close', onClose)
@@ -1864,8 +1873,7 @@ export function service(
                 done = true
                 break
               }
-              grant(r)
-              checkDispatch(g.tenant, c.provider, c.provider + '.chat')
+              authorizeResult()
               tail = (tail + Buffer.from(v.value).toString()).slice(-256)
               size += v.value.length
               if (size > 8388608) throw Error('Stream limit')
@@ -1895,6 +1903,7 @@ export function service(
         }
         chunks.push(Buffer.from(v.value))
       }
+      authorizeResult()
       const result = JSON.parse(Buffer.concat(chunks).toString())
       finish('confirmed', result.usage)
       return result

@@ -76,6 +76,19 @@ async function tokens(revoke = false) {
   })
 }
 async function main() {
+  if (cmd === 'vault-deposit') {
+    if (args.length || process.stdin.isTTY) throw Error('Supply only the one-time receipt on stdin')
+    let ticket = ''
+    for await (const part of process.stdin) {
+      if (part.length + ticket.length > 46) throw Error('Invalid deposit receipt')
+      ticket += part.toString('ascii')
+    }
+    ticket = ticket.trim()
+    if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) throw Error('Invalid deposit receipt')
+    await new OpenPassword(origin).request('/v1/vault/deposits', {ticket})
+    console.log('Private item saved')
+    return
+  }
   if (cmd === 'harness') {
     const { prepareHarness, targets } = await import('./harness.js')
     if (args.length === 1 && args[0] === 'list') {
@@ -279,7 +292,7 @@ async function main() {
     ].includes(cmd)
   )
     throw Error(
-      'Usage: openpassword harness list | harness prepare TARGET NEW_DIRECTORY [--standalone] | operation OPERATION_ID REQUEST_KEY | invoke-json | host connect | host serve | host status | setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | artifact ID [SHA256] | revoke',
+      'Usage: openpassword vault-deposit < receipt | harness list | harness prepare TARGET NEW_DIRECTORY [--standalone] | operation OPERATION_ID REQUEST_KEY | invoke-json | host connect | host serve | host status | setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | artifact ID [SHA256] | revoke',
     )
   if (cmd === 'watch') {
     let cursor: number | undefined = args.length ? Number(args[0]) : undefined

@@ -2,7 +2,7 @@
   "name": "@openpassword/client",
   "version": "0.2.0",
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "exports": {
     ".": "./dist/index.js",
     "./publishing": "./dist/publishing.js",

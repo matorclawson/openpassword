@@ -2,7 +2,7 @@
   "name": "@openpassword/connectors",
   "version": "0.2.0",
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "exports": {
     ".": "./dist/index.js",
     "./x-thread": "./dist/x-thread.js",

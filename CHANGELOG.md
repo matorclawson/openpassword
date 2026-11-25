@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased security review
+
+- New personal vaults use a separate vault passphrase and client-generated 256-bit key. New and edited items have random per-item encryption keys. Existing vaults and items remain readable.
+- Added owner-authorized, single-use CLI deposits. The owner seals the item in the browser; the CLI submits only a five-minute receipt.
+- The release gate validates dependency publication age and the signed standalone client. Workstation updates require independently provisioned trust. Root recovery checks its installed runtime and suppresses child stderr.
+- Added cross-site mutation rejection and reauthorization of buffered model responses and streaming chunks. See SECURITY.md for trust boundaries, remaining gaps and staging tests.
+
+### HTTP API
+
+- Published the core agent API contract at `GET /v1/openapi.json`. Added a direct HTTP walkthrough, a dependency-free Node fetch example for host-bound grants, and a TCP integration test covering approval, invocation, replay, rotation and revocation.
+
+### Native harness integrations
+
+- Generate a local, per-agent executable with `harness prepare`. It pins the broker, OS identity, agent profile and host signing socket and supports a remote deployment.
+- Added native coding-assistant skills, Python framework tools, Rasa custom actions and a TypeScript subprocess client. The [setup guide](examples/harnesses/README.md) covers all 16 adapter targets. MCP registration remains optional.
+- Added stdin JSON operations with idempotency keys and connection identity checks, plus regression coverage for authorization, revocation and profile pinning.
+
 ## 0.4.1 · 2026-11-25
 
 - Add `deploy/backup/operator-backup.sh`, one file the operator runs on his own computer: `init` creates his key pair and shows only the public line to hand over, `check FILE.age` proves a restore (table names and counts only, the opened copy deleted on exit).
@@ -12,16 +29,6 @@
 ## 0.4.0 · 2026-11-25
 
 The wording of this entry on host switching and rollback was corrected after the archive was built; the corrected text ships in the 0.4.1 source. The 0.4.0 archive was never published as a separate release and carries the earlier wording.
-
-### HTTP API
-
-- Published the core agent API contract at `GET /v1/openapi.json`. Added a direct HTTP walkthrough, a dependency-free Node fetch example for host-bound grants, and a TCP integration test covering approval, invocation, replay, rotation and revocation.
-
-### Native harness integrations
-
-- Generate a local, per-agent executable with `harness prepare`. It pins the broker, OS identity, agent profile and host signing socket and supports a remote deployment.
-- Added native coding-assistant skills, Python framework tools, Rasa custom actions and a TypeScript subprocess client. The [setup guide](examples/harnesses/README.md) covers all 16 adapter targets. MCP registration remains optional.
-- Added stdin JSON operations with idempotency keys and connection identity checks, plus regression coverage for authorization, revocation and profile pinning.
 
 ### Scope since 0.2.0
 

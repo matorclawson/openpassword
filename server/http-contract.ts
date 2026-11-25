@@ -123,6 +123,12 @@ export const httpContract = {
     },
   },
   paths: {
+    '/v1/vault/deposits': {
+      post: endpoint('depositPrivateItem', 'Commit one owner-prepared encrypted item using its five-minute receipt', {
+        security:[{}], body:schema(z.object({ticket:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict()),
+        result:schema(z.object({saved:z.literal(true)}))
+      })
+    },
     '/v1/device/authorizations': {
       post: endpoint('pair', 'Request approval for an agent', {
         security: pairing,

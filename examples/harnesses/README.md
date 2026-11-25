@@ -6,6 +6,8 @@ Use this path when the agent runs on an enrolled machine. A coding assistant run
 
 On Linux or macOS install the verified OpenPassword CLI with Node 24 on the machine where the harness actually executes. Enroll and start its host bridge once. For each agent, run the following as that agent's OS user, replacing the origin, socket, profile and target. The broker may be remote. The executable, signing socket and token store must be available on the execution host, including inside an SSH session, container or cloud workstation.
 
+**Agent OS user · agent execution host · no sudo**
+
 ```sh
 export OPENPASSWORD_BROKER=https://vault.example.com
 export OPENPASSWORD_HOST_SOCKET=/run/openpassword-host/bridge.sock
@@ -25,6 +27,8 @@ Choose `github.user.get` on a GitHub connection for the examples below. Replace 
 Older standalone workspaces can explicitly select `harness prepare TARGET DIRECTORY --standalone` after standalone enrollment, with OPENPASSWORD_HOST_SOCKET unset. A broken signing socket fails the call. The broker continues to enforce its workspace policy.
 
 ## Make a native call
+
+**Agent OS user · agent execution host · no sudo**
 
 ```sh
 export OPENPASSWORD_REQUEST_KEY="$(node -p 'crypto.randomUUID()')"
@@ -53,6 +57,8 @@ Generate the target in the first column. For project skills, copy the generated 
 | `opencode` | Copy `.opencode/skills/openpassword/`. Ask OpenCode to load the skill and run the operation. | [OpenCode agent skills](https://opencode.ai/docs/skills/) |
 
 For example, after preparing a Codex adapter and opening the target project:
+
+**Agent OS user · agent execution host · no sudo**
 
 ```sh
 mkdir -p .agents/skills

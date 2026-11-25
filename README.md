@@ -15,9 +15,13 @@ OpenPassword runs on your laptop or a Linux server. Applications and agents can 
 | Make a model request from my app | [Route a model request](#route-a-model-request) |
 | Run the server in the cloud and the agent on my laptop | [Deploy on a server](#deploy-on-a-server) |
 
+For vault key custody, signed releases, CLI deposits and the findings from the security review, see [SECURITY.md](SECURITY.md).
+
 ## Start locally
 
 From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, and **Make** installed:
+
+**Developer · local development machine · no sudo**
 
 ```sh
 make setup
@@ -32,7 +36,7 @@ You can now add a **connection**, a named provider account whose credential Open
 
 ## Personal vault and approved agent hosts
 
-For a personal password or API key, open **Private vault**, generate and confirm your recovery key, and add the item there. **Delegate to gateway** creates a separate provider connection only when you authorize a copy.
+For a personal password or API key, open **Private vault**, generate and confirm your saved key, choose a separate vault passphrase, and add the item there. **Delegate to gateway** creates a separate provider connection only when you authorize a copy.
 
 For a machine that runs several agents, issue a **host enrollment token** under Workspace, then run `openpassword host connect` on that machine and start its signing bridge. Each agent runs `openpassword pair` through the bridge. Approve each request under Access grants with its own connection, operations and expiry. New workspaces require host approval. Existing standalone workspaces switch when their first host enrolls. Follow the [host installation and agent enrollment instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents).
 
@@ -43,6 +47,8 @@ For a workspace using standalone grants, this walkthrough lets a coding agent re
 **1. Connect GitHub.** In **Integrations → GitHub → Connect account**, give the connection a recognizable name, enter your GitHub username as the account identity, and enter the provider token. Choose **Me** to keep the connection private. Save it.
 
 **2. Connect the local CLI.** The client machine needs Node.js 24 or newer. Your web server serves a standalone CLI, including its MCP tools. In the web app, open **Access grants → Issue grant**, choose the GitHub connection, select `github.user.get` and set an expiry. Choose **One-time CLI enrollment token**. On the client, run:
+
+**CLI user · agent workstation · no sudo**
 
 ```sh
 export OPENPASSWORD_BROKER=https://vault.example.com
@@ -70,6 +76,8 @@ The examples below assume one private harness configuration per agent. For a sha
 
 **Codex**
 
+**Codex user · agent workstation · no sudo**
+
 ```sh
 codex mcp add openpassword \
   --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
@@ -78,6 +86,8 @@ codex mcp add openpassword \
 ```
 
 **Claude Code**
+
+**Claude Code user · agent workstation · no sudo**
 
 ```sh
 claude mcp add --scope user --transport stdio openpassword \
@@ -103,6 +113,8 @@ On an enrolled host, use the [host-signed HTTP example](docs/http-api.md#try-the
 1. Add your provider under **Connections**. For this example, choose OpenAI and enter your provider API key.
 2. In **Access grants → Issue grant**, name the client, select the connection, and enable `openai.chat`. Under **Standing model access**, enter a model ID available to your provider account, permit at least one request, and allow at least 32 output tokens. You can also set a monetary budget using the provider’s rates.
 3. Choose **API access and refresh tokens**, leave the pairing code blank, issue the grant, and copy its **access token**. The following Python 3 example prompts for that token without echoing it, discovers the authorized model, and makes one request.
+
+**Application owner · client machine · no sudo**
 
 ```python
 import getpass
@@ -137,13 +149,12 @@ A successful call prints the model’s reply. Open **Consumption** to see the mo
 
 ## Deploy on a server
 
-The web console and broker run on the server. Codex, Claude Code, or your application can run on another machine. One HTTPS domain serves the console, pairing flow, and API.
+The Linux console and broker listen on loopback. Expose the required public API paths through your own HTTPS reverse proxy. Keep the console accessible through the operator's private route. Serve signed CLI assets to approved client machines. Set OPENPASSWORD_WEB_ORIGIN to the canonical HTTPS origin used in host proofs.
 
-1. On the server, run `make setup` and `make build`. Set `OPENPASSWORD_WEB_ORIGIN` to your public origin, such as `https://vault.example.com`, and run `make start` with that setting. For persistent Linux services, use the [systemd units](deploy/systemd/).
-2. Point your HTTPS reverse proxy at the web service on port **3000**. It forwards API calls to the broker on loopback port **4141**. From your laptop, run `openpassword setup-code --ssh user@server` using your verified SSH host alias. For a per-user install with the CLI on the remote PATH, append `--user`. Enter the code at the HTTPS address printed by the CLI.
-3. On your laptop, run `make setup` in a local copy of the project to build the agent CLI. Follow [Connect an agent](#connect-an-agent), using `https://vault.example.com` as `OPENPASSWORD_BROKER` for **both pairing and MCP registration**.
-
-For a private trial over SSH, forward the console with `ssh -N -L 3000:127.0.0.1:3000 user@server` and use the local quickstart URLs while the tunnel is open.
+1. **Release operator · gate host · no sudo.** Build and verify one exact commit, its signed CLI and its release digest. Follow the signing and packaging commands in [SECURITY.md](SECURITY.md).
+2. **Deployment operator · production server · sudo required.** Install the verified archive with the one-command updater in [operations](docs/operations.md#upgrade-a-running-systemd-installation).
+3. **First administrator · own workstation · no local sudo.** Run `openpassword setup-code --ssh user@server` with a verified SSH alias. A system service requires remote permission to read the operator credential. A per-user service supports `--user`. Open the private console, enter the short-lived code and create the account. Human onboarding works before any agent exists.
+4. **Host administrator · agent host · service account.** After account creation, generate a host ticket in Workspace and follow the [host enrollment instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents). Agents request separate grants.
 
 ## Share access and track usage
 
@@ -163,7 +174,7 @@ OpenPassword stores encrypted provider credentials, grants, and usage history in
 - [Contributing](CONTRIBUTING.md) — contribution terms and how to verify a change. Run `make verify` to build the packages, check types, run tests, and build the console.
 - [Changelog](CHANGELOG.md) — project release history.
 
-The server and console use [AGPL-3.0-only](LICENSE). The [client](packages/client/LICENSE), [CLI](packages/cli/LICENSE), [connectors](packages/connectors/LICENSE), and [schemas](packages/schemas/LICENSE) use the MIT license.
+This candidate distributes the server, console, first-party packages and examples under [AGPL-3.0-only](LICENSE). Package license files retain notices for previously MIT-licensed material. Third-party assets retain their own licenses.
 
 ## Update an existing installation
 

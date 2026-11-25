@@ -18,6 +18,8 @@ const inputs = [
   'next.config.ts',
   'postcss.config.mjs',
   '.gitignore',
+  '.npmrc',
+  'SECURITY.md',
   '.prettierrc.json',
 ]
 function collect(dir: string) {

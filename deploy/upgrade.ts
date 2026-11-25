@@ -24,7 +24,7 @@ function ensure(ok: unknown, message: string): asserts ok {
 }
 function run(cmd: string, args: string[], timeout = 180000) {
   const p = spawnSync(cmd, args, { encoding: 'utf8', timeout })
-  ensure(!p.error && p.status === 0, cmd + ' failed: ' + (p.error?.message || p.stderr.trim()))
+  ensure(!p.error && p.status === 0, cmd + ' failed (status ' + (p.status ?? 'unavailable') + ')')
   return p.stdout.trim()
 }
 function syncDir(dir: string) {
