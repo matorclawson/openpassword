@@ -43,6 +43,16 @@ init() {
   say "   bash $0 check THAT-FILE.age"
 }
 
+# The folder holding the opened copy. A script-global, set before it is created, so the exit handler can always find it
+# (a function-local variable would be gone by the time the handler runs).
+WORK=
+cleanup() {
+  trap - EXIT INT TERM HUP
+  if [ -n "$WORK" ]; then rm -rf -- "${WORK:?}"; fi
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
+
 check() {
   local file=${1:-}
   [ -n "$file" ] || die "usage: bash $0 check FILE.age"
@@ -53,28 +63,37 @@ check() {
   need tar ""
   local major; major=$(node -p 'process.versions.node.split(".")[0]')
   [ "$major" -ge 24 ] || die "Node 24 or newer is needed (found $(node --version))"
-  [ -x "$here/restore-encrypted.sh" ] || [ -f "$here/restore-encrypted.sh" ] || die "restore-encrypted.sh must sit next to this script"
-  local work; work=$(mktemp -d "$dir/restore-check.XXXXXXXX")
-  trap 'rm -rf -- "${work:?}"' EXIT
-  mkdir "$work/restored"
+  [ -f "$here/restore-encrypted.sh" ] || die "restore-encrypted.sh must sit next to this script"
+  WORK=$dir/restore-check.$$.$(date +%s)
+  mkdir -m 0700 -p "$dir"
+  mkdir -m 0700 "$WORK"
+  mkdir -m 0700 "$WORK/restored"
   say "Opening the backup with your key (nothing leaves this computer)."
   say "While it runs, the opened copy sits in a private folder under $dir/restore-check.* and is deleted when this ends, even on failure."
-  OPENPASSWORD_BACKUP_IDENTITY="$key" bash "$here/restore-encrypted.sh" "$file" "$work/restored" \
+  OPENPASSWORD_BACKUP_IDENTITY="$key" bash "$here/restore-encrypted.sh" "$file" "$WORK/restored" \
     || die "the restore check FAILED. Do not rely on this backup. Tell the server team exactly this message."
   say ""
   say "What the restored vault holds (names and counts only, no values):"
-  node --no-warnings --input-type=module -e '
-import { DatabaseSync } from "node:sqlite"
-const db = new DatabaseSync(process.argv[1] + "/vault.sqlite", { readOnly: true })
-const tables = db.prepare("SELECT name FROM sqlite_master WHERE type=\"table\" AND name NOT LIKE \"sqlite_%\" ORDER BY name").all()
+  RESTORED="$WORK/restored" node --no-warnings --input-type=module - <<'JS' || die "could not read the restored vault"
+import { DatabaseSync } from 'node:sqlite'
+const db = new DatabaseSync(process.env.RESTORED + '/vault.sqlite', { readOnly: true })
+const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
 for (const t of tables) {
-  const n = db.prepare("SELECT COUNT(*) AS n FROM \"" + String(t.name).replace(/"/g, "") + "\"").get()
-  console.log("  " + String(t.name).padEnd(32) + String(n.n))
+  const name = String(t.name)
+  const n = db.prepare('SELECT COUNT(*) AS n FROM "' + name.replaceAll('"', '""') + '"').get()
+  console.log('  ' + name.padEnd(32) + String(n.n))
 }
-db.close()' "$work/restored"
+db.close()
+JS
+  local print; print=$(shasum -a 256 "$file" 2>/dev/null | cut -d' ' -f1 || true)
+  [ -n "$print" ] || print=$(sha256sum "$file" | cut -d' ' -f1)
   say ""
-  say "Backup file fingerprint (SHA-256): $(shasum -a 256 "$file" 2>/dev/null | cut -d' ' -f1 || sha256sum "$file" | cut -d' ' -f1)"
-  say "RESTORE CHECK PASSED. The restored copy has been deleted from this computer."
+  say "Backup file fingerprint (SHA-256): $print"
+  # Delete the opened copy now, and say so only after it is verified gone.
+  rm -rf -- "${WORK:?}"
+  [ ! -e "$WORK" ] || die "could not delete the opened copy at $WORK. Delete that folder by hand now."
+  WORK=
+  say "RESTORE CHECK PASSED. The opened copy has been deleted from this computer."
   say "Send the server team: the line above that starts 'RESTORE CHECK PASSED', the fingerprint, and the table list."
 }
 

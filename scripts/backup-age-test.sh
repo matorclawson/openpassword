@@ -217,6 +217,8 @@ opbk init >/dev/null 2>&1 && fail "operator init replaced an existing key"
 env -i "${base_env[@]}" OPENPASSWORD_BACKUP_RECIPIENT="$op/public.txt" bash "$t/bk/backup.sh" --encrypt --direct > "$t/op.age" || fail "backup for the operator's key"
 opbk check "$t/op.age" > "$t/op-check.out" 2>&1 || fail "operator check: $(cat "$t/op-check.out")"
 grep -q 'RESTORE CHECK PASSED' "$t/op-check.out" || fail "operator check did not report success"
+grep -Eq '^  t +1$' "$t/op-check.out" || fail "operator check did not list the vault's table and its row count: $(cat "$t/op-check.out")"
+grep -q 'deleted' "$t/op-check.out" || fail "operator check did not say the opened copy was deleted"
 if grep -q 'sealed-value\|test-master-key\|AGE-SECRET-KEY' "$t/op-check.out"; then fail "operator check printed a value or key material"; fi
 grep -q 'ExperimentalWarning' "$t/op-check.out" && fail "operator check printed a Node warning"
 [ -z "$(ls -A "$op" | grep restore-check || true)" ] || fail "operator check left the opened copy behind"
