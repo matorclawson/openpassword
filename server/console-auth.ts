@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { DatabaseSync } from 'node:sqlite'
 import { randomBytes, scrypt, createHmac, timingSafeEqual, createHash } from 'node:crypto'
 import { promisify } from 'node:util'
+import { passkeys } from './passkeys.ts'
 import { z } from 'zod'
 import { digest, opaque } from './store.ts'
 
@@ -69,6 +70,16 @@ export function consoleAuth(
     if (!member) refuse(401, 'Membership revoked')
     login(reply, member)
   }
+  passkeys(api, db, origin, session, signIn, async (id, password) => {
+    const a = db.prepare('SELECT salt,hash FROM profile_password WHERE id=?').get(id)
+    return (
+      !!a &&
+      timingSafeEqual(
+        (await derive(password, String(a.salt), 64)) as Buffer,
+        Buffer.from(String(a.hash), 'hex'),
+      )
+    )
+  })
   function transaction(f: () => void) {
     db.exec('BEGIN IMMEDIATE')
     try {
@@ -145,7 +156,22 @@ export function consoleAuth(
   })
   api.post('/profile/password', async (r) => {
     const id = profile(r),
-      b = credentials.extend({ password: z.string().min(12).max(256) }).parse(r.body)
+      b = credentials
+        .extend({
+          password: z.string().min(12).max(256),
+          current_password: z.string().max(256).optional(),
+        })
+        .parse(r.body)
+    const previous = db.prepare('SELECT salt,hash FROM profile_password WHERE id=?').get(id)
+    if (
+      previous &&
+      (!b.current_password ||
+        !timingSafeEqual(
+          (await derive(b.current_password, String(previous.salt), 64)) as Buffer,
+          Buffer.from(String(previous.hash), 'hex'),
+        ))
+    )
+      refuse(403, 'Current sign-in password required')
     const salt = randomBytes(16).toString('hex'),
       hash = (await derive(b.password, salt, 64)) as Buffer
     if (profile(r) !== id) refuse(403, 'Session changed')
@@ -153,9 +179,14 @@ export function consoleAuth(
       db.prepare('SELECT id FROM profile_password WHERE username=? AND id!=?').get(b.username, id)
     )
       refuse(409, 'Username unavailable')
-    db.prepare(
-      'INSERT INTO profile_password VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,salt=excluded.salt,hash=excluded.hash',
-    ).run(id, b.username, salt, hash.toString('hex'))
+    const updated = previous
+      ? db
+          .prepare('UPDATE profile_password SET username=?,salt=?,hash=? WHERE id=? AND hash=?')
+          .run(b.username, salt, hash.toString('hex'), id, previous.hash)
+      : db
+          .prepare('INSERT OR IGNORE INTO profile_password VALUES(?,?,?,?)')
+          .run(id, b.username, salt, hash.toString('hex'))
+    if (!updated.changes) refuse(409, 'Sign-in settings changed')
     return { ok: true }
   })
   api.delete('/profile/:method', async (r) => {

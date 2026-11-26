@@ -15,7 +15,7 @@ probe.listen(0, '127.0.0.1')
 await once(probe, 'listening')
 const port = (probe.address() as { port: number }).port
 await new Promise<void>((ok) => probe.close(() => ok()))
-const origin = 'http://127.0.0.1:' + port
+const origin = 'http://localhost:' + port
 const broker = service(dir, origin)
 try {
   await broker.listen({ host: '127.0.0.1', port: Number(process.env.OPENPASSWORD_PORT || 4141) })
@@ -227,6 +227,123 @@ try {
       await p.getByRole('link', { name: 'Delegated fixture' }).waitFor()
       await p.getByRole('button', { name: 'Reveal secret' }).click()
       await p.getByText('synthetic-private-value', { exact: true }).waitFor()
+      const ownerCookies = await p.context().cookies()
+      const member = await p.request.post(origin + '/api/admin/members', {
+        data: { label: 'Jane', role: 'viewer' },
+      })
+      assert.equal(member.status(), 200)
+      await p.request.post(origin + '/api/admin/login', {
+        data: { token: (await member.json()).token },
+      })
+      const memberCookies = await p.context().cookies()
+      await p.goto(origin + '/private-vault')
+      await p.getByRole('button', { name: 'Create my private vault' }).click()
+      const janeKey = await p
+        .locator('label')
+        .filter({ hasText: 'Save this private vault key' })
+        .locator('code')
+        .innerText()
+      const unlock = async (key: string, creating = false) => {
+        await p
+          .getByLabel(creating ? 'Confirm your saved key' : 'Private vault key', { exact: true })
+          .fill(key)
+        await p.getByLabel('Vault passphrase', { exact: true }).fill('synthetic browser passphrase')
+        await p.getByRole('button', { name: 'Unlock private vault' }).click()
+      }
+      await unlock(janeKey, true)
+      await p.getByText('Human read access', { exact: true }).click()
+      await p.getByRole('button', { name: 'Show my recipient card' }).click()
+      const card = await p
+        .locator('p')
+        .filter({ hasText: 'Give this card to the owner' })
+        .locator('code')
+        .innerText()
+      await p.context().addCookies(ownerCookies)
+      await p.reload()
+      await unlock(recovery)
+      await p.getByRole('button', { name: 'Private synthetic credential' }).click()
+      await p.getByText('Human read access', { exact: true }).click()
+      await p.getByLabel('Verified recipient card', { exact: true }).fill(card)
+      await p.getByRole('button', { name: 'Grant read access' }).click()
+      await p.getByText('Read access granted.').waitFor()
+      await p.context().addCookies(memberCookies)
+      await p.reload()
+      await unlock(janeKey)
+      await p.getByText('Human read access', { exact: true }).click()
+      await p.getByRole('button', { name: 'List shared items' }).click()
+      await p.getByRole('button', { name: 'Reveal shared item' }).click()
+      await p
+        .getByText('Private synthetic credential — synthetic-private-value', { exact: true })
+        .waitFor()
+      await p.context().addCookies(ownerCookies)
+      await p.reload()
+      await unlock(recovery)
+      await p.getByText('Human read access', { exact: true }).click()
+      await p.getByRole('button', { name: 'List shared items' }).click()
+      await p.getByRole('button', { name: 'Revoke read access' }).click()
+      await p.getByText('Future reads revoked.').waitFor()
+      await p.getByRole('button', { name: 'Private synthetic credential' }).click()
+      await p.getByText('Human read access', { exact: true }).click()
+      await p.getByText('Read groups', { exact: true }).click()
+      await p.getByLabel('Group name', { exact: true }).fill('Review team')
+      await p.getByLabel('Verified recipient cards, one per line').fill(card)
+      await p.getByRole('button', { name: 'Save read group' }).click()
+      await p
+        .getByRole('button', { name: 'Share Private synthetic credential with Review team' })
+        .click()
+      await p.getByText('Read access granted to every group member.').waitFor()
+      await p.getByRole('button', { name: 'Remove group and revoke its shares' }).click()
+      await p.getByText('Group removed and future delivery revoked.').waitFor()
+      await p.getByText('Recovery and device unlock', { exact: true }).click()
+      await p.getByLabel('Confirm saved vault key').fill(recovery)
+      await p.getByLabel('Confirm vault passphrase').fill('synthetic browser passphrase')
+      const download = p.waitForEvent('download')
+      await p.getByRole('button', { name: 'Download recovery file' }).click()
+      const kit = join(dir, 'synthetic-recovery.json')
+      await (await download).saveAs(kit)
+      const code = await p
+        .locator('p')
+        .filter({ hasText: 'Save this recovery code separately' })
+        .locator('code')
+        .innerText()
+      await p.getByRole('button', { name: 'Lock private vault' }).click()
+      await p.getByText('Other ways to unlock', { exact: true }).click()
+      await p.getByLabel('Recovery file', { exact: true }).setInputFiles(kit)
+      await p.getByLabel('Offline recovery code').fill(code)
+      await p.getByRole('button', { name: 'Unlock with recovery kit' }).click()
+      await p.getByRole('button', { name: 'Private synthetic credential' }).waitFor()
+      const cdp = await p.context().newCDPSession(p)
+      await cdp.send('WebAuthn.enable')
+      await cdp.send('WebAuthn.addVirtualAuthenticator', {
+        options: {
+          protocol: 'ctap2',
+          ctap2Version: 'ctap2_1',
+          hasPrf: true,
+          transport: 'internal',
+          hasResidentKey: true,
+          hasUserVerification: true,
+          isUserVerified: true,
+          automaticPresenceSimulation: true,
+        },
+      })
+      await p.getByText('Recovery and device unlock', { exact: true }).click()
+      await p.getByLabel('Confirm saved vault key').fill(recovery)
+      await p.getByLabel('Confirm vault passphrase').fill('synthetic browser passphrase')
+      await p.getByLabel('Device name').fill('Synthetic device')
+      await p.getByRole('button', { name: 'Enable 30-day device unlock' }).click()
+      await p.getByText('Authenticator enabled on this browser for 30 days.').waitFor()
+      await p.getByRole('button', { name: 'Lock private vault' }).click()
+      await p.getByText('Other ways to unlock', { exact: true }).click()
+      await p.getByRole('button', { name: 'Unlock with enrolled authenticator' }).click()
+      await p.getByRole('button', { name: 'Private synthetic credential' }).waitFor()
+      await p.getByText('Recovery and device unlock', { exact: true }).click()
+      await p.getByRole('button', { name: 'Manage enrolled devices' }).click()
+      await p.getByRole('button', { name: 'Revoke device' }).click()
+      await p.getByText('Device revoked for future online unlocks.').waitFor()
+      await p.getByRole('button', { name: 'Lock private vault' }).click()
+      await p.getByText('Other ways to unlock', { exact: true }).click()
+      await p.getByRole('button', { name: 'Unlock with enrolled authenticator' }).click()
+      await p.getByText(/Could not verify unlock material/).waitFor()
       await p.goto(origin + '/workspace')
       await p.getByLabel('Host name').fill('Synthetic build host')
       await p.getByRole('button', { name: 'Issue host enrollment token' }).click()
@@ -241,6 +358,54 @@ try {
         .filter({ hasText: 'Synthetic build host' })
         .getByText('Connected', { exact: true })
         .waitFor()
+      await p.getByText('Sign-in passkeys', { exact: true }).click()
+      await p.getByLabel('Passkey name').fill('Review authenticator')
+      await p.getByLabel('Current sign-in password').fill('browser-only-fixture')
+      await p.getByRole('button', { name: 'Add passkey' }).click()
+      await p.getByRole('button', { name: 'Remove passkey' }).waitFor()
+      const blocked = await p.request.post(origin + '/api/admin/hosts', {
+        data: { label: 'Unapproved host' },
+      })
+      assert.equal(blocked.status(), 428)
+      const proof = await p.evaluate(
+        async ({ id, options }) => {
+          const pk = PublicKeyCredential as typeof PublicKeyCredential & {
+            parseRequestOptionsFromJSON(x: unknown): PublicKeyCredentialRequestOptions
+          }
+          const credential = (await navigator.credentials.get({
+            publicKey: pk.parseRequestOptionsFromJSON(options),
+          })) as PublicKeyCredential & { toJSON(): unknown }
+          const result = await fetch('/api/profile/passkeys/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, response: credential.toJSON() }),
+          })
+          return (await result.json()).proof
+        },
+        (await blocked.json()).approval,
+      )
+      assert.equal(typeof proof, 'string')
+      for (const label of ['Modified host', 'Unapproved host']) {
+        assert.equal(
+          (
+            await p.request.post(origin + '/api/admin/hosts', {
+              data: { label },
+              headers: { 'OpenPassword-Approval': proof },
+            })
+          ).status(),
+          403,
+        )
+      }
+      await p.getByLabel('Host name').fill('Passkey approved host')
+      await p.getByRole('button', { name: 'Issue host enrollment token' }).click()
+      await p.getByRole('button', { name: 'Hide token' }).waitFor()
+      await p.request.post(origin + '/api/admin/logout', { data: {} })
+      await p.goto(origin)
+      await p.getByRole('button', { name: 'Use a passkey' }).click()
+      await p.getByRole('button', { name: 'Lock workspace' }).waitFor()
+      console.log(
+        'Recovery kit, passkey registration, approval challenge, authenticator-approved host and passwordless login passed.',
+      )
       console.log(
         'Desktop login, sealed credential enrollment, scope selection, grant issuance, mobile search and details, source download, logout, private vault recovery and delegation, and host enrollment passed.',
       )

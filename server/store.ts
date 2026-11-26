@@ -103,6 +103,11 @@ export function wrapExistingMaster(dir: string, path: string) {
   }
 }
 export function store(dir: string, wrappingFile = process.env.OPENPASSWORD_WRAPPING_KEY_FILE) {
+  const policy = process.env.OPENPASSWORD_REQUIRE_WRAPPED_MASTER
+  if (policy !== undefined && !['0', '1'].includes(policy))
+    throw Error('OPENPASSWORD_REQUIRE_WRAPPED_MASTER must be 0 or 1')
+  if (policy === '1' && !wrappingFile)
+    throw Error('Gateway custody policy requires an external wrapping key file')
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   if (existsSync(join(dir, 'vault.sqlite')) && !existsSync(join(dir, 'master.key')))
     throw Error('Restore master.key before opening the vault')

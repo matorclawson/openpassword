@@ -20,6 +20,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "dependencies": {
+    "@simplewebauthn/server": "13.2.2",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",

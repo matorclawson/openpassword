@@ -1,3 +1,5 @@
+import { vaultDevices } from './vault-devices.ts'
+import { readShares } from './read-shares.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { DatabaseSync } from 'node:sqlite'
 import { privateMigration } from './private-migration.ts'
@@ -27,6 +29,8 @@ export function personalVault(
     const s = session(r)
     return [s.tenant, s.member || 'owner']
   }
+  vaultDevices(api, db, who, event)
+  readShares(api, db, who, event)
   const missing = () =>
     Object.assign(Error('Private item unavailable or changed'), { statusCode: 409 })
   api.get('/profile/vault', async (r) => {

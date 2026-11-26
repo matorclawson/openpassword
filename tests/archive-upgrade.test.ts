@@ -478,3 +478,14 @@ test('an upgraded vault prevents activation of a writer without generation check
     cleanup(f.dir)
   }
 })
+
+test('enrolled passkeys prevent an installer downgrade that drops action approvals', () => {
+  const f = fenceFixture()
+  try {
+    f.db.exec("CREATE TABLE passkeys(id TEXT);INSERT INTO passkeys VALUES('synthetic')")
+    assert.throws(() => refuseVaultDowngrade(f.older, f.data), /passkey approval/)
+  } finally {
+    f.db.close()
+    cleanup(f.dir)
+  }
+})

@@ -11,6 +11,8 @@ import {
   privateScheme,
 } from './private-crypto'
 import { upgradePrivateVault } from './upgrade-private-vault'
+import { VaultAccess } from './vault-access'
+import { ReadSharing } from './read-sharing'
 import { sealInput } from './intake'
 type Api = (path: string, body?: unknown, method?: string) => Promise<any>
 type Item = {
@@ -121,6 +123,16 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
   return (
     <section className="authentication">
       <h1>Private vault</h1>
+      {page?.scheme === privateScheme && page.check && (
+        <VaultAccess
+          vault={key}
+          api={request}
+          key={key ? 'open' : 'locked'}
+          page={page}
+          locked={!key}
+          open={async (k) => show(k, await request('profile/vault'))}
+        />
+      )}
       {!key ? (
         <>
           <p>
@@ -199,6 +211,20 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
       ) : (
         <>
           <button onClick={lock}>Lock private vault</button>{' '}
+          {page.scheme === privateScheme && (
+            <ReadSharing
+              key={selected?.id || 'directory'}
+              api={request}
+              vault={key}
+              tenant={page.tenant}
+              profile={page.profile}
+              item={selected}
+              secret={async () => {
+                if (!selected) throw Error()
+                return openPrivateValue(key, context(page, 'value/' + selected.id), selected)
+              }}
+            />
+          )}
           {page.scheme === 'raw-v1' && !upgradeKey && (
             <button
               onClick={() => {
@@ -514,6 +540,11 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
                     Provider account identity
                     <input name="account" required />
                   </label>
+                  <p>
+                    The running gateway can decrypt this delegated copy to call the provider.
+                    Revoking an agent stops its future calls. Rotate the provider credential if the
+                    gateway was compromised.
+                  </p>
                   <button disabled={busy}>Authorize gateway copy</button>
                   <button type="button" onClick={() => M('detail')}>
                     Cancel

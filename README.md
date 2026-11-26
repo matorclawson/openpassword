@@ -15,7 +15,7 @@ OpenPassword runs on your laptop or a Linux server. Applications and agents can 
 | Make a model request from my app | [Route a model request](#route-a-model-request) |
 | Run the server in the cloud and the agent on my laptop | [Deploy on a server](#deploy-on-a-server) |
 
-For vault key custody, signed releases, CLI deposits and the findings from the security review, see [SECURITY.md](SECURITY.md).
+For vault key custody, signed releases, CLI deposits and the findings from the security review, see [SECURITY.md](SECURITY.md). To set up passkeys, encrypted human sharing, recovery kits, device unlock or a separately hosted model gateway, follow [Security operations](docs/security-custody.md).
 
 ## Start locally
 

@@ -213,11 +213,23 @@ export function refuseHostProofDowngrade(fromDir: string | null, toDir: string |
   )
 }
 export function refuseVaultDowngrade(targetDir: string | null, stateDir: string | null) {
-  if (!targetDir || !stateDir || fs.existsSync(join(targetDir, 'server/private-migration.ts'))) return
+  if (!targetDir || !stateDir) return
   const vault = join(stateDir, 'vault.sqlite')
   if (!fs.existsSync(vault)) return
   const db = new DatabaseSync(vault, { readOnly: true })
   try {
+    if (!fs.existsSync(join(targetDir, 'server/passkeys.ts'))) {
+      const has = (name: string) =>
+        db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
+      const needsPolicy =
+        (has('passkeys') && db.prepare('SELECT 1 FROM passkeys LIMIT 1').get()) ||
+        (has('model_custodians') && db.prepare('SELECT 1 FROM model_custodians LIMIT 1').get())
+      ensure(
+        !needsPolicy,
+        'Refusing to activate a release without passkey approval or remote gateway custody support.',
+      )
+    }
+    if (fs.existsSync(join(targetDir, 'server/private-migration.ts'))) return
     const migrated = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_generations'").get()
       && db.prepare('SELECT 1 FROM private_generations LIMIT 1').get()
     ensure(!migrated, 'Refusing to activate a release that cannot safely write upgraded private vaults.')

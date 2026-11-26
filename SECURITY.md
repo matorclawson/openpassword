@@ -2,7 +2,9 @@
 
 Candidate based on release 0.4.1, commit 30663f9. The protected assets are human vault plaintext, gateway provider keys, host identities, agent grants, backups and release keys. The adversaries considered include a stolen database or backup, a stolen agent token, another agent on the same host, a compromised update origin and accidental disclosure during operations. A compromised unlocked endpoint or a malicious server supplying modified browser code can capture secrets entered there.
 
-## Findings and verification
+## Baseline findings through 0955152
+
+The human vault and gateway custody section below records the subsequent changes and their limits.
 
 | Area | Finding and candidate behavior | Evidence and residual exposure |
 | --- | --- | --- |
@@ -40,3 +42,16 @@ Each row identifies the operator, execution host and required privilege. Use the
 | Deployment operator | Production host | Yes | `sudo /trusted/upgrade.sh --install ARCHIVE SHA256 VERSION COMMIT` installs the gate artifact. The trusted updater and its digest record must already be available. Production performs no build. |
 | CLI user | Own workstation | No | Set OPENPASSWORD_BROKER and OPENPASSWORD_CLI_PUBLIC_KEY once to the intended origin and trusted local public key. Run `sh deploy/update-client.sh` from a trusted copy for one-command updates. |
 | Backup owner | Own computer | No | Use `operator-backup.sh init` and `operator-backup.sh check FILE.age` as documented. Only the recipient public key goes to the service host. |
+
+## Human vault and gateway custody review
+
+The new candidate adds the following protections. The operating procedures and acceptance criteria are in [Security operations](docs/security-custody.md).
+
+| Exposure | Protection | Remaining trust or limitation |
+| --- | --- | --- |
+| Stolen console session | Enrolled profiles must verify a passkey for designated mutations. The broker consumes a two-minute challenge and binds one approval to the session, workspace, method, route and body. Existing password replacement checks the current password. | Initial passkey enrollment requires a configured password. Profiles without passkeys retain the original approval flow. Password and social login remain available. No SRP or PAKE implementation. The authenticator verifies the origin and user presence/verification. The browser displays the action. |
+| Shared human credential | Fresh AES key per shared revision, wrapped with recipient RSA-OAEP/SHA-256. The recipient private key is encrypted under the personal vault key. Context binds the item, revision, owner, workspace, recipient, expiry and share ID. | The owner verifies the recipient card outside the service. Attribution of the sender still relies on the service. The server can see sharing relationships. Read access delivers a copy. Owner-managed read groups use an independently wrapped copy for each verified recipient. Roster changes end delivery of the previous group shares. Groups operate on item snapshots rather than a common evolving multi-writer vault. |
+| Forgotten vault factors | An offline code encrypts a recovery file in the browser. A custodian can receive an encrypted envelope containing only the recovery code. | The pair recovers the derived vault decryption key. The file contains neither the saved key nor the passphrase. Keep custody of the parts separate. A copied kit cannot be recalled. A restored vault must match the original origin, workspace, profile and vault check. This mechanism does not recover account sign-in. |
+| Lost device | Ciphertext on the browser is bound to a locally user-verified WebAuthn PRF, device enrollment, vault and expiry. The official client checks the active enrollment online before unlock. | A modified client on a compromised endpoint may bypass online policy if it has the local data and can invoke the authenticator. Browser storage deletion removes the local wrapper. No remote erase. Physical authenticator compatibility needs staging tests. |
+| Compromised model router | Optional separate upstream OpenPassword deployment holds the provider credential. Its own grant and metering restrict use by the router. The configured upstream HTTPS origin is pinned per connection. | The independent custodian remains trusted with provider plaintext. The router sees model traffic and can spend the remaining downstream lease. No enclave, attestation or split-key protocol. Other connector types retain their existing credential handling. |
+| Supply chain and browser delivery | Existing signed CLI, dependency-age gate and signed/digest-pinned deployment process; WebAuthn server verification uses a pinned library. | The web origin still supplies the code handling human unlock. A compromised web release can capture secrets. A gate signature gives provenance, not correctness. External cryptographic review, physical device tests and production ARM64 restore evidence remain outstanding. |

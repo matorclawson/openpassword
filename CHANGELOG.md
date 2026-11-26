@@ -2,6 +2,14 @@
 
 ## Unreleased security review
 
+### Human vault security and remote model custody (unreleased)
+
+- Added passkey sign-in and single-use approval bound to sensitive console requests for enrolled profiles. Changing an existing sign-in password also requires the current password.
+- Owners can share a readable item revision with a named recipient or a group using independently verified recipient cards. Group publication is atomic and roster changes withdraw prior group shares. Editing, deletion, expiry or owner revocation ends further delivery.
+- Added offline recovery kits, optional named recovery custodians, and browser unlock with a compatible user-verifying, device-bound PRF authenticator. Device enrollment expires after thirty days and can be revoked online.
+- Model connections can use a separately administered OpenPassword gateway. A scoped downstream access token replaces the provider key on the routing host. Both services enforce their own model lease. Generic operation invocation now rejects leased chat calls that must go through metering.
+- Added an opt-in external wrapping-key requirement and installer downgrade checks for active passkey or model custody records. See the security operations guide for limitations and review status.
+
 - Owners can upgrade existing single-key private vaults in the browser. The upgrade re-encrypts every item, preserves gateway connections and switches the vault atomically. Stale clients must unlock again and pending CLI deposit receipts expire.
 
 - New personal vaults use a separate vault passphrase and client-generated 256-bit key. New and edited items have random per-item encryption keys. Existing vaults and items remain readable.

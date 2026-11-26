@@ -30,7 +30,7 @@ import { authorize, exchange, oauthConfig, notionAuthorize, notionToken } from '
 import Fastify, { type FastifyRequest } from 'fastify'
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import { buildRequest, providers, sheetsResult } from '../packages/connectors/index.ts'
+import { buildRequest, providers as builtins, sheetsResult } from '../packages/connectors/index.ts'
 import { connectionInput, invocation, name } from '../packages/schemas/index.ts'
 import { store, digest, opaque } from './store.ts'
 
@@ -119,12 +119,39 @@ export function service(
     )
   )
     throw Error('Set OPENPASSWORD_WEB_ORIGIN to the HTTPS console origin or a loopback HTTP origin')
+  const remote = process.env.OPENPASSWORD_MODEL_CUSTODIAN_ORIGIN
+  const providers = { ...builtins }
+  if (remote) {
+    const url = new URL(remote)
+    if (url.protocol !== 'https:' || url.origin !== remote || remote === origin)
+      throw Error('Use a distinct HTTPS origin for the model custodian')
+  }
   const api = Fastify({
     bodyLimit: 65536,
     routerOptions: { maxParamLength: 200 },
     ...(proxies ? { trustProxy: proxies } : {}),
   })
   const { db, admin, seal, open } = store(dir)
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS model_custodians(connection TEXT PRIMARY KEY, origin TEXT NOT NULL)',
+  )
+  if (remote || db.prepare('SELECT 1 FROM model_custodians LIMIT 1').get()) {
+    providers.remote_gateway = {
+      name: 'Separate OpenPassword gateway (scoped access token)',
+      group: 'Model providers',
+      origin: remote ? remote + '/v1' : '',
+      actions: [
+        {
+          id: 'remote_gateway.chat',
+          method: 'POST',
+          path: '/chat/completions',
+          query: [],
+          body: [],
+          required: [],
+        },
+      ],
+    }
+  }
   db.exec(
     'CREATE TABLE IF NOT EXISTS loops_created(conn TEXT,revision INTEGER,kind TEXT,remote TEXT,child TEXT,until INTEGER,PRIMARY KEY(conn,revision,kind,remote));',
   )
@@ -547,6 +574,9 @@ export function service(
       [
         '/admin/login',
         '/auth/password',
+        '/auth/passkey/begin',
+        '/auth/passkey/finish',
+        '/profile/passkeys/begin',
         '/auth/setup',
         '/auth/setup-code',
         '/auth/apple/start',
@@ -1373,6 +1403,14 @@ export function service(
     const b = linked
       ? connectionInput.omit({ secret: true }).extend({ vault_item_id: name }).parse(input)
       : connectionInput.parse(input)
+    if (
+      b.provider === 'remote_gateway' &&
+      (!remote ||
+        !('secret' in b) ||
+        typeof b.secret !== 'string' ||
+        !/^[A-Za-z0-9_-]{43}$/.test(b.secret))
+    )
+      fail(422, 'Provide a scoped access token issued by the separate gateway')
     if (!Object.hasOwn(providers, b.provider)) fail(422, 'Unknown provider')
     const c = 'con_' + randomUUID()
     tx(() => {
@@ -1388,6 +1426,8 @@ export function service(
       )
       run('INSERT INTO resources VALUES(?,?)', c, JSON.stringify(b.resources || []))
       recordOwner(session(r), c, b.ownership, b.expires_at)
+      if (b.provider === 'remote_gateway')
+        run('INSERT INTO model_custodians VALUES(?,?)', c, remote!)
       if (privateSource)
         run('INSERT INTO personal_delegations VALUES(?,?)', c, String(privateSource))
       event(t, privateSource ? 'Private credential delegated' : 'Connection added', c)
@@ -1407,6 +1447,14 @@ export function service(
         z.object({ vault_item_id: name }).strict(),
       ])
       .parse(input)
+    if (
+      c.provider === 'remote_gateway' &&
+      (!remote ||
+        get('SELECT origin FROM model_custodians WHERE connection=?', c.id)?.origin !== remote ||
+        !('secret' in source) ||
+        !/^[A-Za-z0-9_-]{43}$/.test(source.secret))
+    )
+      fail(422, 'Recreate a connection for a changed custodian or rotate its scoped access token')
     tx(() => {
       run('DELETE FROM personal_delegations WHERE conn=?', c.id)
       if ('vault_item_id' in source) linkItem(principal, c.id, source.vault_item_id)
@@ -1531,7 +1579,7 @@ export function service(
       if (b.model_lease) {
         if (b.model_lease.tariff) meter.configure(g, b.model_lease.tariff)
         if (
-          !['openai', 'openrouter', 'moonshot'].includes(c.provider) ||
+          !['openai', 'openrouter', 'moonshot', 'remote_gateway'].includes(c.provider) ||
           !b.operations.includes(c.provider + '.chat')
         )
           fail(422, 'Model lease requires a chat operation')
@@ -1782,6 +1830,13 @@ export function service(
       b = chat.parse(r.body)
     if (!c.active || !JSON.parse(g.ops).includes(c.provider + '.chat'))
       fail(403, 'Model grant required')
+    const remoteModel = c.provider === 'remote_gateway'
+    if (
+      remoteModel &&
+      (!remote ||
+        get('SELECT origin FROM model_custodians WHERE connection=?', c.id)?.origin !== remote)
+    )
+      fail(403, 'Model custodian binding changed')
     checkDispatch(g.tenant, c.provider, c.provider + '.chat')
     const key =
       r.headers['idempotency-key'] === undefined
@@ -1846,7 +1901,9 @@ export function service(
         method: 'POST',
         redirect: 'error',
         headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' },
-        body: JSON.stringify(b.stream ? { ...b, stream_options: { include_usage: true } } : b),
+        body: JSON.stringify(
+          b.stream && !remoteModel ? { ...b, stream_options: { include_usage: true } } : b,
+        ),
         signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120000)]),
       })
       if (!response.ok || !response.body) {
@@ -2045,8 +2102,14 @@ export function service(
     if (operation !== b.operation_id + ':invoke') fail(400, 'Operation mismatch')
     if (b.connection_id !== g.connection_id || !JSON.parse(g.ops).includes(b.operation_id))
       fail(403, 'Outside grant')
-    const c = conn(g.tenant, b.connection_id),
-      a = providers[c.provider].actions.find((x) => x.id === b.operation_id)!
+    const c = conn(g.tenant, b.connection_id)
+    if (
+      c.provider === 'remote_gateway' ||
+      (b.operation_id === c.provider + '.chat' &&
+        get('SELECT 1 FROM model_leases WHERE grant_id=?', g.id))
+    )
+      fail(403, 'Use the metered chat endpoint for this grant')
+    const a = providers[c.provider].actions.find((x) => x.id === b.operation_id)!
     attribute(g, c, a.id)
     const revision = connectorRevision(c.provider, a.id)
     const legacyOne =

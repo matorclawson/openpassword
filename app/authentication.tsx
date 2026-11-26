@@ -1,4 +1,5 @@
 'use client'
+import { usePasskey } from './passkeys-client'
 import { useEffect, useState, type FormEvent } from 'react'
 type Request = (path: string, body?: unknown, method?: string) => Promise<any>
 const labels: Record<string, string> = { google: 'Google', github: 'GitHub', apple: 'Apple' }
@@ -55,6 +56,28 @@ export function ConsoleLogin({
         status && (
           <>
             <form onSubmit={submit} key={String(setup) + String(member)}>
+              {!setup && !member && (
+                <button
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    try {
+                      const { id, options } = await request('auth/passkey/begin', {})
+                      await request('auth/passkey/finish', {
+                        id,
+                        response: await usePasskey(options),
+                      })
+                      await done(false)
+                    } catch {
+                      setError('Passkey sign-in did not complete.')
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                >
+                  Use a passkey
+                </button>
+              )}
               {setup && (
                 <p>
                   Use the setup code from the machine running OpenPassword. This account will manage
@@ -319,8 +342,10 @@ export function Profile({ request }: { request: Request }) {
       providers: { provider: string; linked: number }[]
     }>(),
     [message, M] = useState('')
+  const [keys, setKeys] = useState<{ id: string; label: string }[]>([])
   async function load() {
     P(await request('profile'))
+    setKeys(await request('profile/passkeys'))
   }
   useEffect(() => {
     const refresh = () => load().catch((e) => M(e.message))
@@ -342,6 +367,50 @@ export function Profile({ request }: { request: Request }) {
       <h2>My profile</h2>
       <p>Workspace role · {profile?.role}</p>
       <details>
+        <summary>Sign-in passkeys</summary>
+        {keys.map((k) => (
+          <p key={k.id}>
+            {k.label}{' '}
+            <button
+              onClick={() =>
+                act(() =>
+                  request('profile/passkeys/' + encodeURIComponent(k.id), undefined, 'DELETE'),
+                )
+              }
+            >
+              Remove passkey
+            </button>
+          </p>
+        ))}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const f = new FormData(e.currentTarget)
+            e.currentTarget.reset()
+            void act(async () => {
+              const { id, options } = await request('profile/passkeys/begin', {
+                password: f.get('password'),
+              })
+              await request('profile/passkeys/finish', {
+                id,
+                label: f.get('label'),
+                response: await usePasskey(options, true),
+              })
+            })
+          }}
+        >
+          <label>
+            Passkey name
+            <input name="label" required maxLength={80} />
+          </label>
+          <label>
+            Current sign-in password
+            <input type="password" name="password" required autoComplete="current-password" />
+          </label>
+          <button>Add passkey</button>
+        </form>
+      </details>
+      <details>
         <summary>
           {profile?.username ? 'Change username or password' : 'Add username and password'}
         </summary>
@@ -360,6 +429,17 @@ export function Profile({ request }: { request: Request }) {
             Username
             <input name="username" defaultValue={profile?.username} required />
           </label>
+          {profile?.username && (
+            <label>
+              Current password
+              <input
+                name="current_password"
+                type="password"
+                required
+                autoComplete="current-password"
+              />
+            </label>
+          )}
           <label>
             New password
             <input

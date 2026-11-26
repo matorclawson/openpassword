@@ -61,7 +61,7 @@ export async function openPrivateValue(
 }
 
 export const privateScheme = 'PBKDF2-SHA256-600000-v1'
-export async function derivePrivateKey(
+async function unlockInputs(
   secretKey: string,
   passphrase: string,
   tenant: string,
@@ -71,16 +71,28 @@ export async function derivePrivateKey(
     throw Error('Both vault unlock factors are required')
   const password = await crypto.subtle.importKey('raw', bytes.encode(passphrase), 'PBKDF2', false, [
     'deriveKey',
+    'deriveBits',
   ])
   // The generated account secret supplies 256 random bits to the KDF, independent of the password.
   const salt = bytes.encode(
     JSON.stringify(['OpenPassword.vault.unlock', privateScheme, tenant, profile, secretKey]),
   )
-  return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt },
-    password,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
-  )
+  return { algorithm: { name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt }, password }
+}
+export async function derivePrivateKey(...args: Parameters<typeof unlockInputs>) {
+  const { algorithm, password } = await unlockInputs(...args)
+  return crypto.subtle.deriveKey(algorithm, password, { name: 'AES-GCM', length: 256 }, false, [
+    'encrypt',
+    'decrypt',
+  ])
+}
+// Expose key material only while explicitly provisioning a recovery or device wrapper.
+export async function deriveCustodyMaterial(...args: Parameters<typeof unlockInputs>) {
+  const { algorithm, password } = await unlockInputs(...args)
+  const raw = new Uint8Array(await crypto.subtle.deriveBits(algorithm, password, 256))
+  try {
+    return encode(raw)
+  } finally {
+    raw.fill(0)
+  }
 }
