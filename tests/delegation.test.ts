@@ -4,7 +4,9 @@ import { createHash, createPublicKey, verify } from 'node:crypto'
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { service } from '../server/service.ts'
+import { discardPending } from '../server/passkeys.ts'
 for (const action of [false, true])
   test(
     action
@@ -134,3 +136,62 @@ for (const action of [false, true])
       assert.equal((await post('/delegate/exchange', body)).statusCode, 401)
     },
   )
+
+test('consent to a new grant needs a passkey approval once one is enrolled', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'op-delegate-passkey-')),
+    origin = 'http://localhost:3000',
+    api = service(dir, origin)
+  t.after(async () => {
+    await api.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const post = (url: string, payload: object, headers: Record<string, string> = {}) =>
+    api.inject({ method: 'POST', url, payload, headers })
+  const auth = await post('/admin/login', { token: readFileSync(join(dir, 'operator.token'), 'utf8') }),
+    h = { cookie: String(auth.headers['set-cookie']).split(';')[0] }
+  const callback = 'https://app.example.invalid/callback'
+  const app = (
+    await post(
+      '/admin/apps',
+      { label: 'Example', callback, audience: 'app.example.invalid', days: 1, classes: [] },
+      h,
+    )
+  ).json().id
+  await post('/admin/apps/' + app, { active: true }, h)
+  const db = new DatabaseSync(join(dir, 'vault.sqlite'))
+  t.after(() => db.close())
+  db.prepare('INSERT INTO passkeys VALUES(?,?,?,?,?,?)').run(
+    'ZmFrZS1jcmVkZW50aWFs', 'owner', 'handle', new Uint8Array(1), 0, 'fixture',
+  )
+  const q = new URLSearchParams({
+    application_id: app,
+    redirect_uri: callback,
+    state: 's'.repeat(43),
+    code_challenge_method: 'S256',
+    classes: '',
+    code_challenge: createHash('sha256').update('v'.repeat(43)).digest('base64url'),
+  })
+  const jump = new URL(String((await api.inject({ url: '/delegate?' + q })).headers.location)),
+    page = await api.inject({ url: jump.pathname + jump.search, headers: h })
+  assert.match(String(page.headers['content-security-policy']), /script-src 'nonce-/)
+  const approval_id = /name="approval_id" value="([^"]+)"/.exec(page.body)![1],
+    csrf = /name="csrf" value="([^"]+)"/.exec(page.body)![1],
+    attempt = jump.searchParams.get('attempt')
+  for (const extra of [{}, { approval_id, approval: '{"id":"unknown","response":{}}' }]) {
+    const refused = await post('/delegate/confirm', { csrf, attempt, ...extra }, { ...h, origin })
+    assert.equal(refused.statusCode, 403)
+    assert.equal(refused.headers.location, undefined)
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM delegation_codes').get()!.n, 0)
+
+  // Retiring a credential drops that profile's pending approvals and nobody else's.
+  const session = String(db.prepare('SELECT token FROM sessions').get()!.token)
+  db.prepare('INSERT INTO sessions VALUES(?,?,?)').run('other-session', 'w', Date.now() + 60000)
+  db.prepare('INSERT INTO session_members VALUES(?,?)').run('other-session', 'other-member')
+  db.exec('DELETE FROM pk_attempts')
+  const add = db.prepare('INSERT INTO pk_attempts VALUES(?,?,?,?,?,?)')
+  add.run('a', 'proof', session, '', '', Date.now() + 60000)
+  add.run('b', 'proof', 'other-session', '', '', Date.now() + 60000)
+  discardPending(db, 'owner')
+  assert.deepEqual(db.prepare('SELECT id FROM pk_attempts').all().map((r) => r.id), ['b'])
+})

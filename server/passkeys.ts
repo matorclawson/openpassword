@@ -13,7 +13,8 @@ type Session = { token: string; member: string | null; tenant?: string }
 // Every console change under /admin/ and /profile/ needs a fresh passkey approval once a profile has a passkey. The
 // routes below are the only exceptions: session handling, the approval ceremony itself, routine private-vault writes
 // of client-encrypted data, and the sealing ticket that precedes an approved connection change. Add to this list only
-// with a reason. App sign-in confirmation (/delegate/confirm) is a script-free form and is not covered; see SECURITY.md.
+// with a reason. App sign-in confirmation (/delegate/confirm) is a form post outside these prefixes; it asks for the
+// same approval through the stepUp decorator below.
 export const approvalExempt: ReadonlySet<string> = new Set([
   '/admin/login',
   '/admin/logout',
@@ -27,6 +28,18 @@ export const approvalExempt: ReadonlySet<string> = new Set([
   '/profile/vault/upgrade',
   '/profile/vault/upgrade/:id/item',
 ])
+// Approval for a page that posts a plain form: the challenge goes out with the page and the assertion comes back in it.
+export type StepUp = {
+  offer(profile: string, session: string, binding: string): Promise<{ id: string; options: unknown } | null>
+  confirm(profile: string, session: string, binding: string, id?: string, assertion?: string): Promise<void>
+}
+// Pending approvals of one profile, in every session it holds. Other profiles keep theirs.
+export function discardPending(db: DatabaseSync, profile: string) {
+  db.prepare(
+    `DELETE FROM pk_attempts WHERE purpose IN ('action','proof') AND scope IN
+     (SELECT s.token FROM sessions s LEFT JOIN session_members m ON m.session=s.token WHERE COALESCE(m.member,'owner')=?)`,
+  ).run(profile)
+}
 export function passkeys(
   api: FastifyInstance,
   db: DatabaseSync,
@@ -115,13 +128,11 @@ export function passkeys(
     return { ok: true }
   })
   api.delete('/profile/passkeys/:id', async (r) => {
-    const { id } = z.object({ id: z.string() }).parse(r.params)
-    if (
-      !db.prepare('DELETE FROM passkeys WHERE profile=? AND id=?').run(user(session(r)), id).changes
-    )
-      fail()
-    // An approval given with a retired credential must not outlive it. Pending ones last two minutes; drop them all.
-    db.prepare("DELETE FROM pk_attempts WHERE purpose IN ('action','proof')").run()
+    const { id } = z.object({ id: z.string() }).parse(r.params),
+      p = user(session(r))
+    if (!db.prepare('DELETE FROM passkeys WHERE profile=? AND id=?').run(p, id).changes) fail()
+    // An approval given with a retired credential must not outlive it.
+    discardPending(db, p)
     return { ok: true }
   })
   const authOptions = (p?: string) =>
@@ -196,6 +207,28 @@ export function passkeys(
     if (session(r).token !== s.token) return fail()
     return { proof: issue('proof', s.token, '', String(a.binding)) }
   })
+  const stepUp: StepUp = {
+    async offer(profile, token, binding) {
+      if (!creds(profile).length) return null
+      const options = await authOptions(profile)
+      return { id: issue('action', token, options.challenge, binding), options }
+    },
+    async confirm(profile, token, binding, id, assertion) {
+      if (!creds(profile).length) return
+      if (!id || !assertion) return fail()
+      const a = take(id, 'action', token)
+      if (a.binding !== binding) return fail()
+      let credential: { id?: unknown }
+      try {
+        credential = JSON.parse(assertion)
+      } catch {
+        return fail()
+      }
+      if (typeof credential?.id !== 'string') return fail()
+      await verify(credential.id, String(a.challenge), credential, profile)
+    },
+  }
+  api.decorate('stepUp', stepUp)
   const bindingKey = randomBytes(32)
   api.addHook('preHandler', async (r, reply) => {
     if (!['POST', 'DELETE', 'PATCH', 'PUT'].includes(r.method)) return
