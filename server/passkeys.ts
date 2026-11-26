@@ -189,6 +189,8 @@ export function passkeys(
     '/profile/vault/read/groups/:id/share',
     '/profile/vault/devices',
     '/profile/vault/devices/:id',
+    // Replaces the vault's ciphertext and check value and drops pending deposits; it cannot be undone.
+    '/profile/vault/upgrade/:id/commit',
     '/admin/hosts',
     '/admin/connections',
     '/admin/connections/:id/sharing',
