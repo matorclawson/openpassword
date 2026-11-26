@@ -2,6 +2,8 @@
 
 ## Unreleased security review
 
+- Owners can upgrade existing single-key private vaults in the browser. The upgrade re-encrypts every item, preserves gateway connections and switches the vault atomically. Stale clients must unlock again and pending CLI deposit receipts expire.
+
 - New personal vaults use a separate vault passphrase and client-generated 256-bit key. New and edited items have random per-item encryption keys. Existing vaults and items remain readable.
 - Added owner-authorized, single-use CLI deposits. The owner seals the item in the browser; the CLI submits only a five-minute receipt.
 - The release gate validates dependency publication age and the signed standalone client. Workstation updates require independently provisioned trust. Root recovery checks its installed runtime and suppresses child stderr.

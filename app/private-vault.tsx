@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   newVaultKey,
   importVaultKey,
@@ -10,6 +10,7 @@ import {
   derivePrivateKey,
   privateScheme,
 } from './private-crypto'
+import { upgradePrivateVault } from './upgrade-private-vault'
 import { sealInput } from './intake'
 type Api = (path: string, body?: unknown, method?: string) => Promise<any>
 type Item = {
@@ -49,6 +50,14 @@ export function PrivateVault(props: Props) {
   return <PrivateSession key={epoch} {...props} lock={() => setEpoch((n) => n + 1)} />
 }
 function PrivateSession({ request, providers, lock }: Props & { lock: () => void }) {
+  const life = useRef<AbortController | null>(null)
+  useEffect(() => {
+    const c = new AbortController()
+    life.current = c
+    return () => c.abort()
+  }, [])
+  const [upgradeKey, setUpgradeKey] = useState('')
+  const [count, setCount] = useState(0)
   const [ticket, setTicket] = useState('')
   const [revealed, showSecret] = useState('')
   const [page, P] = useState<any>(),
@@ -190,231 +199,328 @@ function PrivateSession({ request, providers, lock }: Props & { lock: () => void
       ) : (
         <>
           <button onClick={lock}>Lock private vault</button>{' '}
-          <button
-            onClick={() => {
-              showSecret('')
-              S(undefined)
-              M('edit')
-            }}
-          >
-            Add private item
-          </button>
-          {items.map((i) => (
-            <article key={i.id}>
-              <button
-                onClick={() => {
-                  showSecret('')
-                  S(i)
-                  M('detail')
-                  N('')
-                }}
-              >
-                {i.title}
-              </button>
-              <small>
-                {i.connections.length
-                  ? i.connections.length + ' gateway connections'
-                  : 'Only in your private vault'}
-              </small>
-            </article>
-          ))}
-          {page.next && (
+          {page.scheme === 'raw-v1' && !upgradeKey && (
             <button
-              disabled={busy}
-              onClick={() =>
-                act(async () => show(key, await request('profile/vault?after=' + page.next)))
-              }
+              onClick={() => {
+                setUpgradeKey(newVaultKey())
+                setCount(0)
+                M('')
+                S(undefined)
+                showSecret('')
+              }}
             >
-              Next page
+              Upgrade vault protection
             </button>
           )}
-          {items.length > 0 && (
-            <button
-              disabled={busy}
-              onClick={() => act(async () => show(key, await request('profile/vault')))}
-            >
-              First page
-            </button>
-          )}
-          {selected && mode === 'detail' && (
-            <section>
-              <h2>{selected.title}</h2>
-              <p>••••••••</p>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  act(async () => {
-                    showSecret(
-                      await openPrivateValue(key, context(page, 'value/' + selected.id), selected),
-                    )
-                    M('reveal')
-                  })
-                }
-              >
-                Reveal secret
-              </button>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  act(async () => {
-                    showSecret(
-                      await openPrivateValue(key, context(page, 'value/' + selected.id), selected),
-                    )
-                    M('edit')
-                  })
-                }
-              >
-                Edit item
-              </button>
-              <button onClick={() => M('delegate')}>Delegate to gateway</button>
-              {selected.connections.map((c) => (
-                <a key={c.id} href={'/connections#' + c.id}>
-                  {c.label}
-                </a>
-              ))}
-              {!selected.connections.length && (
-                <button onClick={() => M('delete')}>Delete item…</button>
-              )}
-            </section>
-          )}
-          {selected && mode === 'delete' && (
-            <>
-              <p>Delete {selected.title} from your private vault?</p>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  act(async () => {
-                    await request('profile/vault/items/' + selected.id, undefined, 'DELETE')
-                    await show(key, await request('profile/vault'))
-                  })
-                }
-              >
-                Confirm deletion
-              </button>
-              <button onClick={() => M('detail')}>Cancel</button>
-            </>
-          )}
-          {selected && mode === 'reveal' && (
-            <>
-              <code>{revealed}</code>
-              <button
-                onClick={() => {
-                  showSecret('')
-                  M('detail')
-                }}
-              >
-                Hide secret
-              </button>
-            </>
-          )}
-          {ticket && (
-            <section>
-              <p>
-                Give this receipt to the CLI operator. It can finish saving only this encrypted item
-                for five minutes. Keep this web session signed in.
-              </p>
-              <code>{ticket}</code>
-              <button onClick={() => setTicket('')}>Hide receipt</button>
-            </section>
-          )}
-          {mode === 'edit' && (
+          {upgradeKey && (
             <form
-              key={selected?.id || 'new'}
               onSubmit={form(async (f) => {
-                const id = selected?.id || crypto.randomUUID()
-                const value = await sealPrivateItem(
-                  key,
-                  context(page, id),
-                  context(page, 'value/' + id),
-                  String(f.get('title')),
-                  String(f.get('secret')),
+                if (
+                  String(f.get('saved')).trim() !== upgradeKey ||
+                  f.get('password') !== f.get('confirm')
                 )
-                if (!selected && f.get('delivery') === 'cli') {
-                  const prepared = await request('profile/vault/deposits', { id, value })
-                  setTicket(prepared.ticket)
-                  M('')
-                  return
-                }
-                await request('profile/vault/items', {
-                  id,
-                  value,
-                  revision: selected?.revision || 0,
-                })
-                await show(key, await request('profile/vault'))
-                N('Private item saved')
+                  throw Error('The saved key or passphrase confirmation did not match')
+                await upgradePrivateVault(
+                  request,
+                  page,
+                  key,
+                  upgradeKey,
+                  String(f.get('password')),
+                  life.current!.signal,
+                  setCount,
+                )
+                lock()
               })}
             >
+              <h2>Upgrade vault protection</h2>
+              <p>
+                Save the new key and a separate passphrase. Keep the old key for earlier backups.
+                Upgrading expires pending CLI deposits. Keep this page open until the vault locks,
+                then unlock with both new factors.
+              </p>
               <label>
-                Item name
-                <input name="title" defaultValue={selected?.title} maxLength={200} required />
+                New private vault key<code>{upgradeKey}</code>
               </label>
               <label>
-                Secret
+                Confirm saved new key
+                <input disabled={busy} required name="saved" type="password" autoComplete="off" />
+              </label>
+              <label>
+                New vault passphrase
                 <input
-                  name="secret"
-                  type="password"
-                  defaultValue={revealed}
-                  maxLength={8000}
-                  autoComplete="new-password"
                   required
+                  minLength={12}
+                  disabled={busy}
+                  name="password"
+                  type="password"
+                  autoComplete="new-password"
                 />
               </label>
-              {!selected && (
-                <label>
-                  <input type="checkbox" name="delivery" value="cli" />
-                  Prepare a one-time CLI deposit
-                </label>
-              )}
-              <button disabled={busy}>Save private item</button>
-            </form>
-          )}
-          {mode === 'delegate' && selected && (
-            <form
-              onSubmit={form(async (f) => {
-                const sealed = await sealInput(
-                  await openPrivateValue(key, context(page, 'value/' + selected.id), selected),
-                  await request('admin/intake', {}),
-                )
-                await request('admin/connections', {
-                  private_source: selected.id,
-                  ownership: 'personal',
-                  provider: f.get('provider'),
-                  label: f.get('label'),
-                  external_identity: f.get('account'),
-                  sealed,
-                })
-                await show(key, await request('profile/vault'))
-                N('Gateway copy created. Issue a separate grant for each agent.')
-              })}
-            >
-              <h2>Delegate {selected.title}</h2>
-              <p>
-                The gateway will hold a decryptable copy for unattended use. Later edits to this
-                private item do not rotate that copy. Revoke it under Connections.
-              </p>
               <label>
-                Provider
-                <select aria-label="Provider" name="provider">
-                  {Object.entries(providers).map(([id, p]) => (
-                    <option key={id} value={id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+                Confirm new passphrase
+                <input
+                  disabled={busy}
+                  required
+                  name="confirm"
+                  type="password"
+                  autoComplete="new-password"
+                />
               </label>
-              <label>
-                Gateway connection name
-                <input name="label" required />
-              </label>
-              <label>
-                Provider account identity
-                <input name="account" required />
-              </label>
-              <button disabled={busy}>Authorize gateway copy</button>
-              <button type="button" onClick={() => M('detail')}>
+              <button disabled={busy}>Upgrade and lock vault</button>
+              <button type="button" disabled={busy} onClick={() => setUpgradeKey('')}>
                 Cancel
               </button>
+              {busy && <p role="status">{count} items prepared</p>}
             </form>
+          )}
+          {!upgradeKey && (
+            <>
+              <button
+                onClick={() => {
+                  showSecret('')
+                  S(undefined)
+                  M('edit')
+                }}
+              >
+                Add private item
+              </button>
+              {items.map((i) => (
+                <article key={i.id}>
+                  <button
+                    onClick={() => {
+                      showSecret('')
+                      S(i)
+                      M('detail')
+                      N('')
+                    }}
+                  >
+                    {i.title}
+                  </button>
+                  <small>
+                    {i.connections.length
+                      ? i.connections.length + ' gateway connections'
+                      : 'Only in your private vault'}
+                  </small>
+                </article>
+              ))}
+              {page.next && (
+                <button
+                  disabled={busy}
+                  onClick={() =>
+                    act(async () => show(key, await request('profile/vault?after=' + page.next)))
+                  }
+                >
+                  Next page
+                </button>
+              )}
+              {items.length > 0 && (
+                <button
+                  disabled={busy}
+                  onClick={() => act(async () => show(key, await request('profile/vault')))}
+                >
+                  First page
+                </button>
+              )}
+              {selected && mode === 'detail' && (
+                <section>
+                  <h2>{selected.title}</h2>
+                  <p>••••••••</p>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      act(async () => {
+                        showSecret(
+                          await openPrivateValue(
+                            key,
+                            context(page, 'value/' + selected.id),
+                            selected,
+                          ),
+                        )
+                        M('reveal')
+                      })
+                    }
+                  >
+                    Reveal secret
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      act(async () => {
+                        showSecret(
+                          await openPrivateValue(
+                            key,
+                            context(page, 'value/' + selected.id),
+                            selected,
+                          ),
+                        )
+                        M('edit')
+                      })
+                    }
+                  >
+                    Edit item
+                  </button>
+                  <button onClick={() => M('delegate')}>Delegate to gateway</button>
+                  {selected.connections.map((c) => (
+                    <a key={c.id} href={'/connections#' + c.id}>
+                      {c.label}
+                    </a>
+                  ))}
+                  {!selected.connections.length && (
+                    <button onClick={() => M('delete')}>Delete item…</button>
+                  )}
+                </section>
+              )}
+              {selected && mode === 'delete' && (
+                <>
+                  <p>Delete {selected.title} from your private vault?</p>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      act(async () => {
+                        await request(
+                          'profile/vault/items/' +
+                            selected.id +
+                            (page.generation ? '?generation=' + page.generation : ''),
+                          undefined,
+                          'DELETE',
+                        )
+                        await show(key, await request('profile/vault'))
+                      })
+                    }
+                  >
+                    Confirm deletion
+                  </button>
+                  <button onClick={() => M('detail')}>Cancel</button>
+                </>
+              )}
+              {selected && mode === 'reveal' && (
+                <>
+                  <code>{revealed}</code>
+                  <button
+                    onClick={() => {
+                      showSecret('')
+                      M('detail')
+                    }}
+                  >
+                    Hide secret
+                  </button>
+                </>
+              )}
+              {ticket && (
+                <section>
+                  <p>
+                    Give this receipt to the CLI operator. It can finish saving only this encrypted
+                    item for five minutes. Keep this web session signed in.
+                  </p>
+                  <code>{ticket}</code>
+                  <button onClick={() => setTicket('')}>Hide receipt</button>
+                </section>
+              )}
+              {mode === 'edit' && (
+                <form
+                  key={selected?.id || 'new'}
+                  onSubmit={form(async (f) => {
+                    const id = selected?.id || crypto.randomUUID()
+                    const value = await sealPrivateItem(
+                      key,
+                      context(page, id),
+                      context(page, 'value/' + id),
+                      String(f.get('title')),
+                      String(f.get('secret')),
+                    )
+                    if (!selected && f.get('delivery') === 'cli') {
+                      const prepared = await request('profile/vault/deposits', {
+                        id,
+                        value,
+                        generation: page.generation,
+                      })
+                      setTicket(prepared.ticket)
+                      M('')
+                      return
+                    }
+                    await request('profile/vault/items', {
+                      id,
+                      value,
+                      revision: selected?.revision || 0,
+                      generation: page.generation,
+                    })
+                    await show(key, await request('profile/vault'))
+                    N('Private item saved')
+                  })}
+                >
+                  <label>
+                    Item name
+                    <input name="title" defaultValue={selected?.title} maxLength={200} required />
+                  </label>
+                  <label>
+                    Secret
+                    <input
+                      name="secret"
+                      type="password"
+                      defaultValue={revealed}
+                      maxLength={8000}
+                      autoComplete="new-password"
+                      required
+                    />
+                  </label>
+                  {!selected && (
+                    <label>
+                      <input type="checkbox" name="delivery" value="cli" />
+                      Prepare a one-time CLI deposit
+                    </label>
+                  )}
+                  <button disabled={busy}>Save private item</button>
+                </form>
+              )}
+              {mode === 'delegate' && selected && (
+                <form
+                  onSubmit={form(async (f) => {
+                    const sealed = await sealInput(
+                      await openPrivateValue(key, context(page, 'value/' + selected.id), selected),
+                      await request('admin/intake', {}),
+                    )
+                    await request('admin/connections', {
+                      private_source: selected.id,
+                      ownership: 'personal',
+                      provider: f.get('provider'),
+                      label: f.get('label'),
+                      external_identity: f.get('account'),
+                      sealed,
+                    })
+                    await show(key, await request('profile/vault'))
+                    N('Gateway copy created. Issue a separate grant for each agent.')
+                  })}
+                >
+                  <h2>Delegate {selected.title}</h2>
+                  <p>
+                    The gateway will hold a decryptable copy for unattended use. Later edits to this
+                    private item do not rotate that copy. Revoke it under Connections.
+                  </p>
+                  <label>
+                    Provider
+                    <select aria-label="Provider" name="provider">
+                      {Object.entries(providers).map(([id, p]) => (
+                        <option key={id} value={id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Gateway connection name
+                    <input name="label" required />
+                  </label>
+                  <label>
+                    Provider account identity
+                    <input name="account" required />
+                  </label>
+                  <button disabled={busy}>Authorize gateway copy</button>
+                  <button type="button" onClick={() => M('detail')}>
+                    Cancel
+                  </button>
+                </form>
+              )}
+            </>
           )}
         </>
       )}

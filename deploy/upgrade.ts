@@ -212,6 +212,19 @@ export function refuseHostProofDowngrade(fromDir: string | null, toDir: string |
       ' unredeemed host-bound enrollment token(s) would become plain bearer credentials. Revoke them in the console first, then retry.',
   )
 }
+export function refuseVaultDowngrade(targetDir: string | null, stateDir: string | null) {
+  if (!targetDir || !stateDir || fs.existsSync(join(targetDir, 'server/private-migration.ts'))) return
+  const vault = join(stateDir, 'vault.sqlite')
+  if (!fs.existsSync(vault)) return
+  const db = new DatabaseSync(vault, { readOnly: true })
+  try {
+    const migrated = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_generations'").get()
+      && db.prepare('SELECT 1 FROM private_generations LIMIT 1').get()
+    ensure(!migrated, 'Refusing to activate a release that cannot safely write upgraded private vaults.')
+  } finally {
+    db.close()
+  }
+}
 function point(version: string | null) {
   const link = join(root, 'current')
   if (!version) {
@@ -564,12 +577,12 @@ async function main() {
     console.log('Already active: ' + old.version)
     return
   }
-  const fenceNow = () =>
-    refuseHostProofDowngrade(
-      old.version && releasePath(old.version),
-      target.version && releasePath(target.version),
-      dataDir(),
-    )
+  const fenceNow = () => {
+    const targetDir = target.version && releasePath(target.version)
+    const stateDir = dataDir()
+    refuseHostProofDowngrade(old.version && releasePath(old.version), targetDir, stateDir)
+    refuseVaultDowngrade(targetDir, stateDir)
+  }
   decisive = fenceNow
   fenceNow() // early refusal for the operator; the decisive check repeats with the services stopped
   preflight(target.version!)

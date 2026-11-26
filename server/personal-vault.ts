@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { DatabaseSync } from 'node:sqlite'
+import { privateMigration } from './private-migration.ts'
 import { z } from 'zod'
 import { digest, opaque } from './store.ts'
 type Principal = { tenant: string; member: string | null; token: string }
@@ -21,6 +22,7 @@ export function personalVault(
   db.exec(
     'CREATE TABLE IF NOT EXISTS private_formats(tenant TEXT, profile TEXT, scheme TEXT NOT NULL, PRIMARY KEY(tenant,profile))',
   )
+  const upgrade = privateMigration(api, db, session, event, ciphertext)
   function who(r: FastifyRequest): [string, string] {
     const s = session(r)
     return [s.tenant, s.member || 'owner']
@@ -46,6 +48,7 @@ export function personalVault(
     return {
       tenant,
       profile,
+      generation: upgrade.generation(tenant, profile),
       scheme:
         db
           .prepare('SELECT scheme FROM private_formats WHERE tenant=? AND profile=?')
@@ -85,50 +88,64 @@ export function personalVault(
         .object({
           id: z.string().uuid(),
           value: ciphertext,
+          generation: z.string().uuid().optional(),
           revision: z.number().int().nonnegative(),
         })
         .strict()
         .parse(r.body)
     if (!db.prepare('SELECT 1 FROM personal_vaults WHERE tenant=? AND profile=?').get(t, p))
       throw missing()
-    const result =
-      b.revision === 0
-        ? db
-            .prepare('INSERT OR IGNORE INTO personal_items VALUES(?,?,?,?,1)')
-            .run(b.id, t, p, b.value)
-        : db
-            .prepare(
-              'UPDATE personal_items SET value=?,revision=revision+1 WHERE id=? AND tenant=? AND profile=? AND revision=?',
-            )
-            .run(b.value, b.id, t, p, b.revision)
-    if (!result.changes) throw missing()
-    event(t, 'Private item saved', b.id)
-    return { ok: true }
+    return upgrade.transaction(() => {
+      upgrade.check(t, p, b.generation)
+      const result =
+        b.revision === 0
+          ? db
+              .prepare('INSERT OR IGNORE INTO personal_items VALUES(?,?,?,?,1)')
+              .run(b.id, t, p, b.value)
+          : db
+              .prepare(
+                'UPDATE personal_items SET value=?,revision=revision+1 WHERE id=? AND tenant=? AND profile=? AND revision=?',
+              )
+              .run(b.value, b.id, t, p, b.revision)
+      if (!result.changes) throw missing()
+      event(t, 'Private item saved', b.id)
+      return { ok: true }
+    })
   })
   db.exec(`CREATE TABLE IF NOT EXISTS private_deposits(ticket TEXT PRIMARY KEY,tenant TEXT,profile TEXT,session TEXT,item TEXT,value TEXT,expires INTEGER);
     CREATE INDEX IF NOT EXISTS private_deposit_expiry ON private_deposits(expires)`)
   api.post('/profile/vault/deposits', async (r) => {
     const s = session(r),
       profile = s.member || 'owner'
-    const b = z.object({ id: z.string().uuid(), value: ciphertext }).strict().parse(r.body)
-    if (
-      !db
-        .prepare('SELECT 1 FROM personal_vaults WHERE tenant=? AND profile=?')
-        .get(s.tenant, profile)
-    )
-      throw missing()
-    const ticket = opaque()
-    db.prepare('DELETE FROM private_deposits WHERE expires<=?').run(Date.now())
-    db.prepare('INSERT INTO private_deposits VALUES(?,?,?,?,?,?,?)').run(
-      digest(ticket),
-      s.tenant,
-      profile,
-      s.token,
-      b.id,
-      b.value,
-      Date.now() + 300000,
-    )
-    return { ticket }
+    const b = z
+      .object({
+        id: z.string().uuid(),
+        value: ciphertext,
+        generation: z.string().uuid().optional(),
+      })
+      .strict()
+      .parse(r.body)
+    return upgrade.transaction(() => {
+      upgrade.check(s.tenant, profile, b.generation)
+      if (
+        !db
+          .prepare('SELECT 1 FROM personal_vaults WHERE tenant=? AND profile=?')
+          .get(s.tenant, profile)
+      )
+        throw missing()
+      const ticket = opaque()
+      db.prepare('DELETE FROM private_deposits WHERE expires<=?').run(Date.now())
+      db.prepare('INSERT INTO private_deposits VALUES(?,?,?,?,?,?,?)').run(
+        digest(ticket),
+        s.tenant,
+        profile,
+        s.token,
+        b.id,
+        b.value,
+        Date.now() + 300000,
+      )
+      return { ticket }
+    })
   })
   api.post('/v1/vault/deposits', async (r) => {
     const { ticket } = z
@@ -163,15 +180,22 @@ export function personalVault(
   api.delete('/profile/vault/items/:id', async (r) => {
     const [t, p] = who(r),
       { id } = z.object({ id: z.string().uuid() }).parse(r.params)
-    if (
-      !db
-        .prepare(
-          'DELETE FROM personal_items WHERE tenant=? AND profile=? AND id=? AND NOT EXISTS(SELECT 1 FROM personal_delegations d JOIN connections c ON c.id=d.conn WHERE d.item=? AND c.active=1)',
-        )
-        .run(t, p, id, id).changes
-    )
-      throw missing()
-    event(t, 'Private item removed', id)
-    return { ok: true }
+    return upgrade.transaction(() => {
+      upgrade.check(
+        t,
+        p,
+        z.object({ generation: z.string().uuid().optional() }).parse(r.query).generation,
+      )
+      if (
+        !db
+          .prepare(
+            'DELETE FROM personal_items WHERE tenant=? AND profile=? AND id=? AND NOT EXISTS(SELECT 1 FROM personal_delegations d JOIN connections c ON c.id=d.conn WHERE d.item=? AND c.active=1)',
+          )
+          .run(t, p, id, id).changes
+      )
+        throw missing()
+      event(t, 'Private item removed', id)
+      return { ok: true }
+    })
   })
 }

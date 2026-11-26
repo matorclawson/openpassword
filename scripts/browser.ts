@@ -1,3 +1,4 @@
+import { newVaultKey, encryptPrivate, importVaultKey } from '../app/private-crypto.ts'
 import { chromium } from 'playwright-core'
 import { spawn, execFile } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -161,14 +162,33 @@ try {
       await p.getByRole('button', { name: 'Menu', exact: true }).waitFor()
       await p.setViewportSize({ width: 1280, height: 900 })
       await p.goto(origin + '/private-vault')
-      await p.getByRole('button', { name: 'Create my private vault' }).click()
-      const recovery = await p
-        .locator('label')
-        .filter({ hasText: 'Save this private vault key' })
-        .locator('code')
-        .innerText()
-      await p.getByLabel('Confirm your saved key').fill(recovery)
-      await p.getByLabel('Vault passphrase').fill('synthetic browser passphrase')
+      let recovery: string
+      const legacy = process.env.OPENPASSWORD_TEST_LEGACY === '1'
+      if (legacy) {
+        recovery = newVaultKey()
+        const api = origin + '/api/profile/vault'
+        const { tenant, profile } = await (await p.request.get(api)).json()
+        const check = await encryptPrivate(
+          await importVaultKey(recovery),
+          JSON.stringify(['OpenPassword.private.v1', tenant, profile, 'unlock']),
+          'OpenPassword private vault',
+        )
+        assert.equal(
+          (await p.request.post(api, { headers: { origin }, data: { check } })).status(),
+          200,
+        )
+        await p.reload()
+        await p.getByLabel('Private vault key', { exact: true }).fill(recovery)
+      } else {
+        await p.getByRole('button', { name: 'Create my private vault' }).click()
+        recovery = await p
+          .locator('label')
+          .filter({ hasText: 'Save this private vault key' })
+          .locator('code')
+          .innerText()
+        await p.getByLabel('Confirm your saved key').fill(recovery)
+        await p.getByLabel('Vault passphrase').fill('synthetic browser passphrase')
+      }
       await p.getByRole('button', { name: 'Unlock private vault' }).click()
       await p.getByRole('button', { name: 'Add private item' }).click()
       await p.getByLabel('Item name', { exact: true }).fill('Private synthetic credential')
@@ -184,12 +204,29 @@ try {
       await p.getByLabel('Provider account identity').fill('synthetic-account')
       await p.getByRole('button', { name: 'Authorize gateway copy' }).click()
       await p.getByText(/Gateway copy created/).waitFor()
-      await p.getByRole('button', { name: 'Lock private vault' }).click()
+      if (legacy) {
+        await p.getByRole('button', { name: 'Upgrade vault protection' }).click()
+        recovery = await p
+          .locator('label')
+          .filter({ hasText: 'New private vault key' })
+          .locator('code')
+          .innerText()
+        await p.getByLabel('Confirm saved new key').fill(recovery)
+        await p.getByLabel('New vault passphrase').fill('synthetic browser passphrase')
+        await p.getByLabel('Confirm new passphrase').fill('synthetic browser passphrase')
+        await p.getByRole('button', { name: 'Upgrade and lock vault' }).click()
+        await p.getByLabel('Private vault key', { exact: true }).waitFor()
+        await p.reload()
+      } else {
+        await p.getByRole('button', { name: 'Lock private vault' }).click()
+      }
       await p.getByLabel('Private vault key', { exact: true }).fill(recovery)
       await p.getByLabel('Vault passphrase').fill('synthetic browser passphrase')
       await p.getByRole('button', { name: 'Unlock private vault' }).click()
       await p.getByRole('button', { name: 'Private synthetic credential' }).click()
       await p.getByRole('link', { name: 'Delegated fixture' }).waitFor()
+      await p.getByRole('button', { name: 'Reveal secret' }).click()
+      await p.getByText('synthetic-private-value', { exact: true }).waitFor()
       await p.goto(origin + '/workspace')
       await p.getByLabel('Host name').fill('Synthetic build host')
       await p.getByRole('button', { name: 'Issue host enrollment token' }).click()
