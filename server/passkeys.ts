@@ -10,6 +10,23 @@ import { randomBytes, createHmac } from 'node:crypto'
 import { z } from 'zod'
 import { digest, opaque } from './store.ts'
 type Session = { token: string; member: string | null; tenant?: string }
+// Every console change under /admin/ and /profile/ needs a fresh passkey approval once a profile has a passkey. The
+// routes below are the only exceptions: session handling, the approval ceremony itself, routine private-vault writes
+// of client-encrypted data, and the sealing ticket that precedes an approved connection change. Add to this list only
+// with a reason. App sign-in confirmation (/delegate/confirm) is a script-free form and is not covered; see SECURITY.md.
+export const approvalExempt: ReadonlySet<string> = new Set([
+  '/admin/login',
+  '/admin/logout',
+  '/admin/switch',
+  '/admin/intake',
+  '/profile/passkeys/approve',
+  '/profile/passkeys/finish',
+  '/profile/vault',
+  '/profile/vault/items',
+  '/profile/vault/deposits',
+  '/profile/vault/upgrade',
+  '/profile/vault/upgrade/:id/item',
+])
 export function passkeys(
   api: FastifyInstance,
   db: DatabaseSync,
@@ -103,6 +120,8 @@ export function passkeys(
       !db.prepare('DELETE FROM passkeys WHERE profile=? AND id=?').run(user(session(r)), id).changes
     )
       fail()
+    // An approval given with a retired credential must not outlive it. Pending ones last two minutes; drop them all.
+    db.prepare("DELETE FROM pk_attempts WHERE purpose IN ('action','proof')").run()
     return { ok: true }
   })
   const authOptions = (p?: string) =>
@@ -177,37 +196,13 @@ export function passkeys(
     if (session(r).token !== s.token) return fail()
     return { proof: issue('proof', s.token, '', String(a.binding)) }
   })
-  const sensitive = new Set([
-    '/profile/password',
-    '/profile/:method',
-    '/profile/passkeys/begin',
-    '/profile/passkeys/:id',
-    '/profile/vault/read',
-    '/profile/vault/read/identity',
-    '/profile/vault/read/groups',
-    '/profile/vault/read/groups/:id',
-    '/profile/vault/read/groups/:id/share',
-    '/profile/vault/devices',
-    '/profile/vault/devices/:id',
-    // Replaces the vault's ciphertext and check value and drops pending deposits; it cannot be undone.
-    '/profile/vault/upgrade/:id/commit',
-    '/admin/hosts',
-    '/admin/connections',
-    '/admin/connections/:id/sharing',
-    '/admin/connections/:id/rotate',
-    '/admin/grants',
-    '/admin/approvals/:id',
-    '/admin/members',
-    '/admin/authentication/:provider',
-    '/admin/items/:id/reveal',
-  ])
   const bindingKey = randomBytes(32)
   api.addHook('preHandler', async (r, reply) => {
     if (!['POST', 'DELETE', 'PATCH', 'PUT'].includes(r.method)) return
     const path = r.routeOptions.url ?? ''
-
+    const isConsole = path.startsWith('/admin/') || path.startsWith('/profile/')
     if (
-      !sensitive.has(path) &&
+      !(isConsole && !approvalExempt.has(path)) &&
       !(path === '/auth/:provider/start' && (r.body as { link?: boolean })?.link)
     )
       return
