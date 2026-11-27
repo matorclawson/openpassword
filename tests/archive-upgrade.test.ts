@@ -258,6 +258,7 @@ test('interrupting the recovery itself never replays a restore over writes the o
     assert.equal(h.schema, 1)
     assert.equal(h.release, old.version)
     assert.ok(h.ingress)
+    assert.ok(!h.snapshots.has('snap'), 'interrupted at ' + crashAt + ': the restored copy is still deleted')
   }
 })
 

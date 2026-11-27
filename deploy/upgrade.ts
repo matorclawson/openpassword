@@ -21,7 +21,7 @@ const semver = /^\d+\.\d+\.\d+$/
 type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[]; provisional?: true }
 // Pending record: the old configuration plus the vault copy taken before the candidate first started.
 // `published`: the release answered its readiness checks; only the host's own units may still be down.
-// `discard`: a vault copy already restored from, to delete once the journal is cleared.
+// `discard`: a vault copy already restored from, to delete before the journal is cleared.
 type Pending = Snapshot & {
   store?: string | null
   data?: string
@@ -516,10 +516,12 @@ async function bringUp(record: Pending, release: Snapshot, ops: Ops) {
     ops.save({ ...record, published: true })
   }
   ops.revive(record.dependents ?? [])
+  // While the journal still names it, so that an interruption here leaves the next run able to delete it.
+  if (record.discard) ops.discard(record.discard)
   ops.clear()
 }
 // Put the old release back. Order matters across a crash: the journal says "restored" before the old service can
-// accept a write, and the vault copy is deleted only after the journal no longer names it.
+// accept a write, and the vault copy is deleted only after the journal no longer names it as the copy to restore from.
 export async function restoreOld(old: Pending, loc: Loc | null, ops: Ops) {
   let record = noteDependents(old, ops)
   ops.stop()
@@ -530,7 +532,6 @@ export async function restoreOld(old: Pending, loc: Loc | null, ops: Ops) {
     ops.save(record)
   }
   await bringUp(record, plain(record), ops)
-  if (record.discard) ops.discard(record.discard)
 }
 // The journal after an interruption. A committed activation is finished forward (and its metadata rewritten, which
 // is idempotent); anything else is rolled back, to the state directory path the journal recorded.
@@ -544,7 +545,6 @@ export async function recoverPending(p: Pending, ops: Ops) {
   // The old release was already back and ready: nothing is restored again.
   if (p.published) {
     await bringUp(p, plain(p), ops)
-    if (p.discard) ops.discard(p.discard)
     return 'rollback'
   }
   ensure(!p.store || p.data, 'The journal names a vault copy without its state directory')
