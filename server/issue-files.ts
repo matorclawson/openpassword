@@ -8,7 +8,17 @@ import sharp from 'sharp'
 import { z } from 'zod'
 import { digest } from './store.ts'
 export const bundleOperation = 'hubspot.files.upload_bundle'
-export const issueFolder = '/rasa-newsletter/'
+// A connection's upload folder is its one selected resource written as an absolute folder, such as
+// /newsletter-assets/. Template directories are relative, so the two cannot be confused.
+export function uploadFolder(resources: unknown): string | null {
+  const absolute = (Array.isArray(resources) ? resources : []).filter(
+    (r): r is string => typeof r === 'string' && r.startsWith('/'),
+  )
+  return absolute.length === 1 &&
+    /^\/(?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}\/){1,5}$/.test(absolute[0])
+    ? absolute[0]
+    : null
+}
 const sha = z.string().regex(/^[a-f0-9]{64}$/)
 const filename = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/)
 const mime = z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
@@ -39,7 +49,7 @@ const schema = z
       .nullish(),
   })
   .strict()
-type Scope = { tenant: string; actor: string; conn: string; revision: number }
+type Scope = { tenant: string; actor: string; conn: string; revision: number; folder: string }
 type Manifest = z.infer<typeof schema>
 const denied = (message: string): never => {
   throw new Refusal(422, message)
@@ -231,7 +241,7 @@ export function issueFiles(
       const bytes = Buffer.from(open(String(asset.content), f.artifact_id), 'base64')
       if (digest(bytes) !== f.sha256) denied('Artifact changed')
       const form = new FormData()
-      form.set('folderPath', issueFolder + b.issue_id)
+      form.set('folderPath', s.folder + b.issue_id)
       form.set('fileName', f.file_name)
       form.set(
         'options',
