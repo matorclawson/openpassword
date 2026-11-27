@@ -156,6 +156,8 @@ The Linux console and broker listen on loopback. Expose the required public API 
 3. **First administrator · own workstation · no local sudo.** Run `openpassword setup-code --ssh user@server` with a verified SSH alias. A system service requires remote permission to read the operator credential. A per-user service supports `--user`. Open the private console, enter the short-lived code and create the account. Human onboarding works before any agent exists.
 4. **Host administrator · agent host · service account.** After account creation, generate a host ticket in Workspace and follow the [host enrollment instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents). Agents request separate grants.
 
+For a private trial over SSH, on your laptop as your own account (no sudo), forward the console with `ssh -N -L 3000:127.0.0.1:3000 user@server` and use the local quickstart URLs while the tunnel is open.
+
 ## Share access and track usage
 
 | Control | How it works |
