@@ -5,7 +5,7 @@
 ### Before you upgrade from 0.4.1
 
 - **Take an encrypted backup and prove that it restores first** (`backup.sh --encrypt` on the server, then `operator-backup.sh check FILE.age` on the operator's own computer). Once a private vault has been upgraded, a passkey enrolled or a model custodian configured, the updater refuses to move back to a release that cannot handle it.
-- **Check every HubSpot connection that publishes issue bundles:** exactly one of its selected resources must start and end with `/`. That entry is now the upload folder.
+- **Check every HubSpot connection that publishes issue bundles:** exactly one of its selected resources may begin with `/`, and it must be a valid absolute folder ending in `/` (up to five segments of letters, digits, `_`, `.` and `-`, each starting with a letter, digit or `_`). That entry is now the upload folder.
 
 ### Human vault security and remote model custody
 
