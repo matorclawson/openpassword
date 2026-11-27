@@ -21,7 +21,7 @@ For vault key custody, signed releases, CLI deposits and the findings from the s
 
 From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, and **Make** installed:
 
-**Developer · local development machine · no sudo**
+**Run as:** your own account · **Where:** the project root on your computer; leave `make dev` running · **sudo:** no
 
 ```sh
 make setup
@@ -29,7 +29,7 @@ make dev
 ```
 
 1. Open **http://localhost:3000**. The first visit shows **Create your administrator account**.
-2. Run `node public/openpassword-cli.cjs setup-code` in a second terminal. The ten-minute code is for creating the first administrator.
+2. As the same account, in the project root, run `node public/openpassword-cli.cjs setup-code` in a second terminal (no sudo). The ten-minute code is for creating the first administrator.
 3. Enter the code, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
 
 You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Choose either walkthrough below.
@@ -38,7 +38,7 @@ You can now add a **connection**, a named provider account whose credential Open
 
 For a personal password or API key, open **Private vault**, generate and confirm your saved key, choose a separate vault passphrase, and add the item there. **Delegate to gateway** creates a separate provider connection only when you authorize a copy.
 
-For a machine that runs several agents, issue a **host enrollment token** under Workspace, then run `openpassword host connect` on that machine and start its signing bridge. Each agent runs `openpassword pair` through the bridge. Approve each request under Access grants with its own connection, operations and expiry. New workspaces require host approval. Existing standalone workspaces switch when their first host enrolls. Follow the [host installation and agent enrollment instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents).
+Run `openpassword host connect` as the dedicated host service account on the agent machine, and `openpassword pair` as each agent's own account; the [host instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents) say which steps need sudo. For a machine that runs several agents, issue a **host enrollment token** under Workspace, then run `openpassword host connect` on that machine and start its signing bridge. Each agent runs `openpassword pair` through the bridge. Approve each request under Access grants with its own connection, operations and expiry. New workspaces require host approval. Existing standalone workspaces switch when their first host enrolls. Follow the [host installation and agent enrollment instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents).
 
 ## Connect an agent
 
@@ -48,7 +48,7 @@ For a workspace using standalone grants, this walkthrough lets a coding agent re
 
 **2. Connect the local CLI.** The client machine needs Node.js 24 or newer. Your web server serves a standalone CLI, including its MCP tools. In the web app, open **Access grants → Issue grant**, choose the GitHub connection, select `github.user.get` and set an expiry. Choose **One-time CLI enrollment token**. On the client, run:
 
-**CLI user · agent workstation · no sudo**
+**Run as:** the OS account that runs the agent · **Where:** the client machine, in a verified release checkout · **sudo:** no
 
 ```sh
 export OPENPASSWORD_BROKER=https://vault.example.com
@@ -76,8 +76,8 @@ The examples below assume one private harness configuration per agent. For a sha
 
 **Codex**
 
-**Codex user · agent workstation · no sudo**
 
+**Run as:** the same account · **Where:** the same terminal on the client machine · **sudo:** no (both commands below)
 ```sh
 codex mcp add openpassword \
   --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
@@ -114,7 +114,7 @@ On an enrolled host, use the [host-signed HTTP example](docs/http-api.md#try-the
 2. In **Access grants → Issue grant**, name the client, select the connection, and enable `openai.chat`. Under **Standing model access**, enter a model ID available to your provider account, permit at least one request, and allow at least 32 output tokens. You can also set a monetary budget using the provider’s rates.
 3. Choose **API access and refresh tokens**, leave the pairing code blank, issue the grant, and copy its **access token**. The following Python 3 example prompts for that token without echoing it, discovers the authorized model, and makes one request.
 
-**Application owner · client machine · no sudo**
+**Run as:** any account · **Where:** the machine running your application · **sudo:** no
 
 ```python
 import getpass
@@ -171,11 +171,11 @@ The Linux console and broker listen on loopback. Expose the required public API 
 OpenPassword stores encrypted provider credentials, grants, and usage history in SQLite. The encryption key lives in a separate file on the server. For a restorable offline backup, stop the service and copy the **entire data directory**, including `master.key`, preserving permissions. The default location is `~/.openpassword`; use `OPENPASSWORD_HOME` to choose another.
 
 - [Provider and deployment reference](docs/operations.md) — OAuth callbacks, connector setup, backups, service configuration, and integration workflows.
-- [Contributing](CONTRIBUTING.md) — contribution terms and how to verify a change. Run `make verify` to build the packages, check types, run tests, and build the console.
+- [Contributing](CONTRIBUTING.md) — contribution terms and how to verify a change. In the project root, as your own account (no sudo), run `make verify` to build the packages, check types, run tests, and build the console.
 - [Changelog](CHANGELOG.md) — project release history.
 
 This candidate distributes the server, console, first-party packages and examples under [AGPL-3.0-only](LICENSE). Package license files retain notices for previously MIT-licensed material. Third-party assets retain their own licenses.
 
 ## Update an existing installation
 
-For the supplied Linux services, install the exact gate-built archive using `deploy/upgrade.sh --install ARCHIVE SHA256 VERSION COMMIT`. The updater checks readiness and restores the previous build on failure. On each workstation, `sh deploy/update-client.sh` updates the installed CLI using its configured broker address. [Upgrade and rollback instructions](docs/operations.md#upgrade-a-running-systemd-installation)
+For the supplied Linux services, on the server as root, install the exact gate-built archive using `sudo sh deploy/upgrade.sh --install ARCHIVE SHA256 VERSION COMMIT`. The updater checks readiness and restores the previous build on failure. On each workstation, as the account that uses the CLI (no sudo), `sh deploy/update-client.sh` updates the installed CLI using its configured broker address. [Upgrade and rollback instructions](docs/operations.md#upgrade-a-running-systemd-installation)
