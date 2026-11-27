@@ -108,6 +108,11 @@ test('HubSpot issue stages bound images, approves once, substitutes the returned
   const pending = (await req('POST', url, body)).json()
   assert.equal(pending.status, 'approval_required')
   assert.equal(uploads, 0)
+  // The approver is shown the folder the dispatch below uploads to.
+  const shown = (await req('GET', '/admin/workspace'))
+    .json()
+    .approvals.find((a: { id: string }) => a.id === pending.execution_id)
+  assert.equal(shown.preview.folder, '/example-assets/issue-one')
   await req('POST', '/admin/approvals/' + pending.execution_id, { approve: true })
   const result = (await req('POST', url, body)).json()
   assert.equal(result.result?.state, 'complete', JSON.stringify(result))
