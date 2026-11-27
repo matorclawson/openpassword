@@ -4,6 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { service } from '../server/service.ts'
+import { approvalExempt } from '../server/passkeys.ts'
+import { DatabaseSync } from 'node:sqlite'
 import { upgradePrivateVault } from '../app/upgrade-private-vault.ts'
 import {
   importVaultKey,
@@ -180,4 +182,106 @@ test('owner upgrades a paginated legacy vault atomically and fences obsolete cli
     value: valid.value,
     generation: migrated.generation,
   })
+})
+
+test('committing a vault upgrade needs a passkey approval once a passkey is enrolled', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'private-upgrade-passkey-')),
+    api = service(dir)
+  t.after(async () => {
+    await api.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const login = await api.inject({
+    url: '/admin/login',
+    method: 'POST',
+    payload: { token: readFileSync(join(dir, 'operator.token'), 'utf8') },
+  })
+  const headers = { cookie: String(login.headers['set-cookie']).split(';')[0] }
+  const call = (url: string, payload?: object) =>
+    api.inject({ url, method: payload ? 'POST' : 'GET', payload, headers })
+  const key = await importVaultKey(newVaultKey())
+  const { tenant, profile } = (await call('/profile/vault')).json()
+  const check = await encryptPrivate(
+    key,
+    JSON.stringify(['OpenPassword.private.v1', tenant, profile, 'unlock']),
+    'OpenPassword private vault',
+  )
+  assert.equal((await call('/profile/vault', { check })).statusCode, 200)
+  const attempt = (await call('/profile/vault/upgrade', {})).json().id
+  // An enrolled credential is enough to require approval; no authenticator ceremony is needed to see the refusal.
+  const db = new DatabaseSync(join(dir, 'vault.sqlite'))
+  db.prepare('INSERT INTO passkeys VALUES(?,?,?,?,?,?)').run(
+    'ZmFrZS1jcmVkZW50aWFs',
+    'owner',
+    'handle',
+    new Uint8Array(1),
+    0,
+    'fixture',
+  )
+  db.close()
+  const refused = await call('/profile/vault/upgrade/' + attempt + '/commit', { check })
+  assert.equal(refused.statusCode, 428)
+  assert.ok(refused.json().approval.id)
+  assert.equal((await call('/profile/vault')).json().check, check)
+})
+
+test('every high-impact console change needs approval once a passkey is enrolled', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'passkey-coverage-')),
+    api = service(dir)
+  t.after(async () => {
+    await api.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const login = await api.inject({
+    url: '/admin/login',
+    method: 'POST',
+    payload: { token: readFileSync(join(dir, 'operator.token'), 'utf8') },
+  })
+  const headers = { cookie: String(login.headers['set-cookie']).split(';')[0] }
+  const db = new DatabaseSync(join(dir, 'vault.sqlite'))
+  db.prepare('INSERT INTO passkeys VALUES(?,?,?,?,?,?)').run(
+    'ZmFrZS1jcmVkZW50aWFs',
+    'owner',
+    'handle',
+    new Uint8Array(1),
+    0,
+    'fixture',
+  )
+  db.close()
+  // The refusal comes before validation and lookup, so placeholder identifiers and empty bodies are enough.
+  for (const [method, url] of [
+    ['POST', '/admin/apps'],
+    ['POST', '/admin/apps/x'],
+    ['POST', '/admin/delegation/signing-key/rotate'],
+    ['DELETE', '/admin/delegation/grants/x'],
+    ['DELETE', '/admin/connections/x'],
+    ['POST', '/admin/connections/x/oauth-refresh'],
+    ['POST', '/admin/oauth/google'],
+    ['DELETE', '/admin/grants/x'],
+    ['DELETE', '/admin/hosts/x'],
+    ['DELETE', '/admin/members/x'],
+    ['DELETE', '/admin/items/x'],
+    ['POST', '/admin/webhooks'],
+    ['POST', '/admin/dispatch'],
+    ['DELETE', '/profile/vault/items/x'],
+  ] as const) {
+    const response = await api.inject({ method, url, headers, payload: {} })
+    assert.equal(response.statusCode, 428, method + ' ' + url)
+  }
+  assert.deepEqual(
+    [...approvalExempt].sort(),
+    [
+      '/admin/intake',
+      '/admin/login',
+      '/admin/logout',
+      '/admin/switch',
+      '/profile/passkeys/approve',
+      '/profile/passkeys/finish',
+      '/profile/vault',
+      '/profile/vault/deposits',
+      '/profile/vault/items',
+      '/profile/vault/upgrade',
+      '/profile/vault/upgrade/:id/item',
+    ],
+  )
 })
