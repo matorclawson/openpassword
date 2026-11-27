@@ -4,11 +4,46 @@ Start OpenPassword first ([quick start](../README.md#quick-start)).
 
 ## Connect an agent
 
-For a workspace using standalone grants, this walkthrough lets a coding agent read your GitHub profile. You need a GitHub token that can read the authenticated user, plus Codex or Claude Code installed on the machine where you run the agent.
+This walkthrough lets a coding agent read your GitHub profile. You need a GitHub token that can read the authenticated user, plus Codex or Claude Code installed on the machine where you run the agent.
 
 **1. Connect GitHub.** In **Integrations → GitHub → Connect account**, give the connection a recognizable name, enter your GitHub username as the account identity, and enter the provider token. Choose **Me** to keep the connection private. Save it.
 
-**2. Connect the local CLI.** The client machine needs Node.js 24 or newer. Your web server serves a standalone CLI, including its MCP tools. In the web app, open **Access grants → Issue grant**, choose the GitHub connection, select `github.user.get` and set an expiry. Choose **One-time CLI enrollment token**. On the client, run:
+**2. Connect the agent.** How depends on the workspace. A **new installation** binds every grant to an enrolled host: use 2a. A workspace that still allows **standalone grants** (one that already had grants and has not enrolled a host) offers a one-time token: use 2b.
+
+### 2a. New installation: enroll the machine, then pair
+
+These commands are for a trial on the machine that runs OpenPassword, from the project root. For a separate or shared agent machine, follow the [host instructions](operations.md#enroll-an-agent-host-and-approve-its-agents), which run the signing bridge as its own service account.
+
+In the web app, open **Workspace → CLI hosts**, name the machine and choose **Issue host enrollment token**. Then:
+
+**Run as:** your own account · **Where:** the project root, in a second terminal; leave `host serve` running · **sudo:** no
+
+```sh
+export OPENPASSWORD_BROKER=http://localhost:3000
+export OPENPASSWORD_HOST_HOME="$HOME/.openpassword-host"
+export OPENPASSWORD_HOST_SOCKET="$HOME/.openpassword-host/bridge.sock"
+node public/openpassword-cli.cjs host connect   # paste the token at the hidden prompt
+node public/openpassword-cli.cjs host serve
+```
+
+**Run as:** the same account · **Where:** the project root, in a third terminal · **sudo:** no
+
+```sh
+make install-cli
+export PATH="$HOME/.local/bin:$PATH"
+export OPENPASSWORD_BROKER=http://localhost:3000
+export OPENPASSWORD_HOST_SOCKET="$HOME/.openpassword-host/bridge.sock"
+export OPENPASSWORD_AGENT=my-codex
+openpassword pair
+openpassword whoami
+openpassword capabilities
+```
+
+While `pair` waits, open **Access grants → Issue grant**, name the agent, choose the GitHub connection, select `github.user.get`, set an expiry and pick the waiting request under **Requesting agent and approved host**. Refresh the page if the request is not listed. Keep the bridge running while the agent works, and add `--env OPENPASSWORD_HOST_SOCKET="$OPENPASSWORD_HOST_SOCKET"` to the registration command in step 3 (before the `--`). Agents under one OS account share a trust boundary.
+
+### 2b. Standalone workspace: one-time token
+
+The client machine needs Node.js 24 or newer. Your web server serves a standalone CLI, including its MCP tools. In the web app, open **Access grants → Issue grant**, choose the GitHub connection, select `github.user.get` and set an expiry. Choose **One-time CLI enrollment token**. On the client, run:
 
 **Run as:** the OS account that runs the agent · **Where:** the client machine, in a verified release checkout · **sudo:** no
 
@@ -31,6 +66,8 @@ Use your installation’s HTTPS address, or `http://localhost:3000` when the ser
 **Fetch an artifact.** An operation that returns its result as an artifact (for example a Gmail page read) reports an `artifact_id` and a `content_sha256`. Run `openpassword artifact ART_ID [SHA256]` to write the artifact's exact bytes to standard output; with the digest it verifies them first and writes nothing on a mismatch. The artifact is valid for fifteen minutes and only for the grant that produced it.
 
 **Watch activity.** Open **Activity** at `/activity` for live workspace activity visible to you. Use `openpassword watch` for events from this CLI grant, or `openpassword activity` for a snapshot. MCP exposes `whoami` and `activity` through the same profile.
+
+### Register and try it
 
 **3. Register the tool server.** Run the command for your client in the same terminal, after pairing finishes.
 
@@ -70,7 +107,9 @@ The MCP connection gives the agent tools. The coding client continues to use its
 
 OpenPassword routes each model grant to **one provider connection and one exact model ID**. Supported upstreams are OpenAI, OpenRouter, and Moonshot. Clients can discover their authorized model through `GET /v1/models` and use `POST /v1/chat/completions` for text, streaming responses, and tool calls.
 
-On an enrolled host, use the [host-signed HTTP example](http-api.md#try-the-api) and run `node examples/http/agent.ts chat`. The bearer-only Python walkthrough below applies to workspaces that allow standalone grants.
+**On a new installation** (host-bound grants), a copied token alone is refused. Enroll the machine and run `openpassword pair` as in [2a](#2a-new-installation-enroll-the-machine-then-pair), approving a grant for `openai.chat` with a model, then use `openpassword models` and `openpassword chat`, or the [host-signed HTTP example](http-api.md#try-the-api) with `node examples/http/agent.ts chat`.
+
+**The steps below** use a bearer token with Python and apply only to workspaces that allow standalone grants.
 
 1. Add your provider under **Connections**. For this example, choose OpenAI and enter your provider API key.
 2. In **Access grants → Issue grant**, name the client, select the connection, and enable `openai.chat`. Under **Standing model access**, enter a model ID available to your provider account, permit at least one request, and allow at least 32 output tokens. You can also set a monetary budget using the provider’s rates.

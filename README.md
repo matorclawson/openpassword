@@ -13,10 +13,10 @@ OpenPassword is a self-hosted credential manager and model router. Your provider
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/approvals-dark.png">
-  <img src="docs/img/approvals-light.png" alt="Two newsletter drafts waiting for approval with their exact arguments">
+  <img src="docs/img/approvals-light.png" alt="Two newsletter drafts waiting for approval, each showing its arguments">
 </picture>
 
-*A write waits for you, with the exact arguments it will send.*
+*Two drafts waiting for a person, each with the arguments it would send.*
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/consumption-dark.png">
@@ -27,7 +27,7 @@ OpenPassword is a self-hosted credential manager and model router. Your provider
 
 <img src="docs/img/phone-approvals-light.png" alt="Pending approvals on a phone" width="320">
 
-<sub>Screenshots are from a throwaway installation with made-up accounts and agents; no provider was contacted (<code>scripts/screenshots.ts</code>).</sub>
+<sub>Screenshots are from a throwaway installation with made-up accounts and agents; no provider was contacted (<code>scripts/screenshots.ts</code>). They show standalone grants; on a new installation each grant is also bound to an enrolled host.</sub>
 
 ## How it fits
 
@@ -48,14 +48,14 @@ make dev
 2. As the same account, in the project root, run `node public/openpassword-cli.cjs setup-code` in a second terminal (no sudo). The ten-minute code is for creating the first administrator.
 3. Enter the code, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
 
-You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Next: [connect a coding agent](docs/walkthroughs.md#connect-an-agent) or [route a model request](docs/walkthroughs.md#route-a-model-request).
+You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Next: [connect a coding agent](docs/walkthroughs.md#connect-an-agent), which on a new installation starts by enrolling the agent's machine, or [route a model request](docs/walkthroughs.md#route-a-model-request).
 
 ## What makes it different
 
 - **The key stays put.** A client holds a grant token for chosen operations on one connection. The provider key is used by the server and is not sent to the client.
 - **Narrow and temporary.** Grants name their operations and expire. Revoking one stops later calls.
-- **You approve writes.** Operations that need approval wait, showing the exact arguments.
-- **Model access with limits.** A model grant is fixed to one connection and one model, with a call limit, a token limit and an optional budget.
+- **You approve writes.** Operations that need approval wait for a person, with a preview of the request. If you give a grant a standing draft allowance, drafts within it do not wait.
+- **Model access with limits.** A model grant is fixed to one connection and one model, with a call limit, a cap on output tokens per request and an optional budget.
 - **Bound to a host.** New workspaces require agent requests to be signed by an enrolled host, so a copied token is not enough on another machine.
 - **A private vault for people.** Personal items are encrypted in the browser. Handing one to the gateway is an explicit step that creates a separate copy.
 - **HTTP, CLI and MCP.** Use it from a script, a coding assistant or an application. Chat Completions is OpenAI-compatible.
