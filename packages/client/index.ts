@@ -103,7 +103,13 @@ export class OpenPassword {
     })
     if (r.headers.get('openpassword-protocol-version') !== '1')
       throw Object.assign(Error('Broker protocol unavailable'), { status: r.status })
-    if (!r.ok) throw await refusal(r)
+    if (!r.ok) {
+      const error = await refusal(r)
+      // A pairing that ran out gets its own instruction.
+      if (path === '/v1/device/token' && error.message === 'Broker returned 400: Expired pairing')
+        error.message = 'Pairing expired. Start a new pairing request.'
+      throw error
+    }
     return r.status === 204 ? (undefined as T) : ((await r.json()) as T)
   }
   /** Fetch an artifact's exact bytes (not re-serialized, so a content digest can be checked). */
@@ -148,8 +154,18 @@ export class OpenPassword {
   pair(device_name: string) {
     return this.request<DevicePair>('/v1/device/authorizations', { device_name })
   }
-  redeem(device_code: string) {
-    return this.request<DeviceTokens>('/v1/device/token', { device_code })
+  async redeem(device_code: string, attempt = crypto.randomUUID()) {
+    const send = () => this.request<DeviceTokens>('/v1/device/token', { device_code }, attempt)
+    try {
+      return await send()
+    } catch (error) {
+      if (
+        !(error instanceof TypeError) &&
+        !(error instanceof DOMException && error.name === 'TimeoutError')
+      )
+        throw error
+      return send()
+    }
   }
   refresh(refresh_token: string) {
     return this.request<DeviceTokens>('/v1/device/token/refresh', { refresh_token })

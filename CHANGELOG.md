@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — company onboarding
+
+- First administrators choose local or remote setup, confirm installation control with a CLI code, and land in Team overview.
+- Owners can save a shared login, issue a workspace member token, and follow a real teammate reveal to item history. The same screen supports offboarding.
+- Added a repeatable two-browser company demonstration with synthetic credentials and a presenter guide.
+
+## 0.5.0 candidate — durable activity and workflows
+
+### Stream delivery and recoverable operator backups
+
+- Batches up to 64 ordered event references in one journal record. Broker writes wake the publisher and workflow scheduler. Lightweight shell supervisors release engine processes on broker exit.
+- Adds operator-side backup jobs with durable progress, resumable encrypted delivery, checksums, and a restore check using the operator’s key. See [engine operations](docs/engine-operations.md).
+- Adds a 60-agent streaming workload, per-process idle measurements, and backup interruption cases to native acceptance.
+
+### Initial engine integration
+
+- The console and CLI now read activity carried by a private Dostoevsky gateway. Existing activity cursors survive restarts. Usage and metering transitions have a transactional delivery queue.
+- Ephemeral drives enrollment expiry, approval decisions, revocation and credential-rotation propagation, the backup snapshot step, and offline rotation of the vault wrapping key.
+- The local client can retry a lost device-token response. An expired pairing now reports the reason to the operator.
+- Gate builds include both pinned engine binaries. See [engine operations](docs/engine-operations.md) for retention, rollback, recovery and verification.
+
 ## Unreleased security review
 
 ### Human vault security and remote model custody (unreleased)

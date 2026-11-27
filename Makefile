@@ -1,8 +1,9 @@
-.PHONY: help setup dev verify build start package checksum backup-test backup-age-test backup-age-systemd-test
+.PHONY: help setup dev verify acceptance build start package checksum backup-test backup-age-test backup-age-systemd-test
 help:
 	@echo "make setup     Install dependencies and compile the public packages"
 	@echo "make dev       Start the local console and broker"
 	@echo "make verify    Compile packages, check types, run tests and build Next.js"
+	@echo "make acceptance  Verify, then the streaming load, backup interruption and (Linux) idle cost checks"
 	@echo "make build     Build the production console and packages"
 	@echo "make start     Run the production console and broker"
 	@echo "make package COMMIT=<sha>  Build that exact commit and archive it into dist-release/"
@@ -11,12 +12,18 @@ help:
 	@echo "make backup-age-test  Test the operator-held-key encrypted backup (Linux, needs age)"
 	@echo "make backup-age-systemd-test  Test its root and systemd path (root, staging host, needs age)"
 setup:
+	sh scripts/build-engines.sh
 	npm ci
 	npm run packages
 dev:
 	npm run dev
 verify:
+	sh scripts/build-engines.sh
 	npm run verify
+acceptance: verify
+	node --import tsx scripts/agent-load.ts
+	bash scripts/backup-job-test.sh
+	if [ "$$(uname -s)" = Linux ]; then node --import tsx scripts/engine-cost.ts; fi
 build:
 	npm run packages
 	npm run build

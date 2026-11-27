@@ -5,6 +5,9 @@ import { gzipSync } from 'node:zlib'
 import { join } from 'node:path'
 const inputs = [
   'public/appearance.js',
+  'server/dostoevsky/index.js',
+  'engines/go.mod',
+  'engines/go.sum',
   'README.md',
   'CHANGELOG.md',
   'CONTRIBUTING.md',
