@@ -4,7 +4,7 @@ import { hosts } from './hosts.ts'
 import releasePackage from '../package.json' with { type: 'json' }
 import { activity } from './activity.ts'
 import { consoleAuth } from './console-auth.ts'
-import { issueFiles, issueFolder, bundleOperation } from './issue-files.ts'
+import { issueFiles, uploadFolder, bundleOperation } from './issue-files.ts'
 import { templatePlan, writeTemplate } from './template.ts'
 import { templateOps } from './template-preview.ts'
 import { approvalSnapshot, snapshotDigest } from './snapshot.ts'
@@ -1988,16 +1988,17 @@ export function service(
     const resources = JSON.parse(
       get('SELECT labels FROM resources WHERE conn=?', c.id)?.labels ?? '[]',
     )
+    const folder = uploadFolder(resources)
     if (
       connection !== c.id ||
       c.provider !== 'hubspot' ||
       !c.active ||
       !JSON.parse(g.ops).includes(bundleOperation) ||
-      !resources.includes(issueFolder)
+      !folder
     )
       fail(403, 'Issue publication unavailable')
     checkDispatch(g.tenant, c.provider, bundleOperation)
-    return { tenant: g.tenant, actor: g.id, conn: c.id, revision: c.revision }
+    return { tenant: g.tenant, actor: g.id, conn: c.id, revision: c.revision, folder: folder! }
   }
   api.addContentTypeParser(
     ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
@@ -2273,11 +2274,11 @@ export function service(
           effect && !reserve ? 'pending' : 'running',
           seal(
             (() => {
-              if (bundle)
+              if (scope && bundle)
                 return {
                   schema: 'hubspot-issue/1',
                   ...bundle,
-                  folder: issueFolder + bundle.issue_id,
+                  folder: scope.folder + bundle.issue_id,
                 }
               const snapshot = approvalSnapshot(a.id, b.arguments, {
                 device_id: g.id,
