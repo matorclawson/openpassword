@@ -35,6 +35,13 @@ const approvalScript = (nonce: string, options: unknown) =>
   '">const o=' +
   JSON.stringify(options).replace(/</g, '\\u003c') +
   ';const f=document.querySelector("form");f.addEventListener("submit",async e=>{e.preventDefault();try{const c=await navigator.credentials.get({publicKey:PublicKeyCredential.parseRequestOptionsFromJSON(o)});f.elements.approval.value=JSON.stringify(c.toJSON());f.submit()}catch{document.getElementById("failed").textContent="Passkey approval did not complete. Reload to try again."}})</script>'
+// Confirming is answered with a redirect to the application, and form-action governs that redirect too.
+// Only the registered callback's origin is added. A host that is not a plain CSP source (it could end
+// the directive, or is an IP literal in brackets) adds nothing.
+export function formTarget(callback: string) {
+  const { origin } = new URL(callback)
+  return /^https:\/\/[a-z0-9-]+(\.[a-z0-9-]+)*\.?(:\d{1,5})?$/.test(origin) ? ' ' + origin : ''
+}
 export function delegation(
   api: FastifyInstance,
   db: DatabaseSync,
@@ -316,7 +323,9 @@ export function delegation(
       .type('text/html')
       .header(
         'Content-Security-Policy',
-        "default-src 'none'; frame-ancestors 'none'; form-action 'self'; style-src 'unsafe-inline'" +
+        "default-src 'none'; frame-ancestors 'none'; form-action 'self'" +
+          formTarget(String(a.callback)) +
+          "; style-src 'unsafe-inline'" +
           (approval ? "; script-src 'nonce-" + nonce + "'" : ''),
       )
       .send(
