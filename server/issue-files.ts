@@ -1,3 +1,4 @@
+import { Refusal } from './refusal.ts'
 import { templatePlan, writeTemplate } from './template.ts'
 import { bundleHash, templateOps } from './template-preview.ts'
 import { buildRequest } from '../packages/connectors/index.ts'
@@ -41,7 +42,7 @@ const schema = z
 type Scope = { tenant: string; actor: string; conn: string; revision: number }
 type Manifest = z.infer<typeof schema>
 const denied = (message: string): never => {
-  throw Object.assign(Error(message), { statusCode: 422 })
+  throw new Refusal(422, message)
 }
 export function issueFiles(
   db: DatabaseSync,
@@ -185,7 +186,7 @@ export function issueFiles(
         .prepare('INSERT OR IGNORE INTO issue_runs VALUES(?,?,?,?,?,?,?)')
         .run(s.conn, b.issue_id, s.tenant, s.actor, s.revision, ex, b.bundle_sha256).changes
     )
-      throw Object.assign(Error('Issue already reserved'), { statusCode: 409 })
+      throw new Refusal(409, 'Issue already reserved')
   }
   function inspect(s: Scope, issue: string) {
     const row = db
@@ -193,7 +194,7 @@ export function issueFiles(
         'SELECT execution,hash FROM issue_runs WHERE conn=? AND issue=? AND tenant=? AND actor=? AND rev=?',
       )
       .get(s.conn, issue, s.tenant, s.actor, s.revision)
-    if (!row) throw Object.assign(Error('Issue unavailable'), { statusCode: 404 })
+    if (!row) throw new Refusal(404, 'Issue unavailable')
     return {
       issue_id: issue,
       approval_id: row.execution,

@@ -13,19 +13,42 @@ export type DevicePair = {
   interval_seconds: number
   expires_at: string
 }
-// The broker says why it refused in `detail`. Keep it to one short line of printable text.
-async function refusal(r: Response) {
-  let detail = ''
+// The broker says why it refused in `detail`. Only a detail it marks public is passed on, as one short
+// line of printable text. The read is bounded; anything else leaves the status alone.
+async function explanation(r: Response) {
+  const reader = r.body?.getReader()
+  if (!reader) return ''
+  const stop = () => void reader.cancel().catch(() => {})
+  const timer = setTimeout(stop, 2000)
   try {
-    const body = (await r.json()) as { detail?: unknown } | null
-    if (typeof body?.detail === 'string')
-      detail = body.detail
-        .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
-        .trim()
-        .slice(0, 200)
+    const decoder = new TextDecoder()
+    let text = '',
+      size = 0
+    for (;;) {
+      const part = await reader.read()
+      if (part.done) break
+      size += part.value.length
+      if (size > 4096) return ''
+      text += decoder.decode(part.value, { stream: true })
+    }
+    const body = JSON.parse(text + decoder.decode()) as {
+      detail?: unknown
+      public?: unknown
+    } | null
+    if (body?.public !== true || typeof body.detail !== 'string') return ''
+    return body.detail
+      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+      .trim()
+      .slice(0, 200)
   } catch {
-    // No readable explanation: the status alone is reported.
+    return ''
+  } finally {
+    clearTimeout(timer)
+    stop()
   }
+}
+async function refusal(r: Response) {
+  const detail = await explanation(r)
   const message = 'Broker returned ' + r.status + (detail ? ': ' + detail : '')
   return Object.assign(Error(message), { status: r.status })
 }

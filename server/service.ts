@@ -1,3 +1,4 @@
+import { Refusal } from './refusal.ts'
 import { isIP } from 'node:net'
 import { personalVault } from './personal-vault.ts'
 import { hosts } from './hosts.ts'
@@ -34,7 +35,7 @@ import { connectionInput, invocation, name } from '../packages/schemas/index.ts'
 import { store, digest, opaque } from './store.ts'
 
 const fail = (statusCode: number, message: string): never => {
-  throw Object.assign(Error(message), { statusCode })
+  throw new Refusal(statusCode, message)
 }
 const now = () => Date.now(),
   iso = (n: number) => new Date(n).toISOString()
@@ -188,7 +189,7 @@ export function service(
         .code(503)
         .header('Retry-After', '1')
         .header('OpenPassword-Protocol-Version', '1')
-        .send({ detail: 'Broker is updating' })
+        .send({ detail: 'Broker is updating', public: true })
     inFlight++
     const finish = () => {
       reply.raw.off('close', finish)
@@ -574,6 +575,8 @@ export function service(
           : err instanceof z.ZodError
             ? 'Invalid input'
             : err.message,
+      // Clients show agents only a detail marked public.
+      ...(err instanceof Refusal && status < 500 ? { public: true } : {}),
     })
   })
   api.addHook('onClose', async () => db.close())
