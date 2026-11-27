@@ -17,13 +17,15 @@ OpenPassword runs on your laptop or a Linux server. It exposes two interfaces: a
 
 From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, and **Make** installed:
 
+**Run as:** your own account · **Where:** the project root on your computer; leave `make dev` running · **sudo:** no
+
 ```sh
 make setup
 make dev
 ```
 
 1. Open **http://localhost:3000**. The first visit shows **Create your administrator account**.
-2. Run `node public/openpassword-cli.cjs setup-code` in a second terminal. The ten-minute code is for creating the first administrator.
+2. As the same account, in the project root, run `node public/openpassword-cli.cjs setup-code` in a second terminal (no sudo). The ten-minute code is for creating the first administrator.
 3. Enter the code, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
 
 You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Choose either walkthrough below.
@@ -32,7 +34,7 @@ You can now add a **connection**, a named provider account whose credential Open
 
 For a personal password or API key, open **Private vault**, generate and confirm your recovery key, and add the item there. **Delegate to gateway** creates a separate provider connection only when you authorize a copy.
 
-For a machine that runs several agents, issue a **host enrollment token** under Workspace, then run `openpassword host connect` on that machine and start its signing bridge. Each agent runs `openpassword pair` through the bridge. Approve each request under Access grants with its own connection, operations and expiry. New workspaces require host approval. Existing standalone workspaces switch when their first host enrolls. Follow the [host installation and agent enrollment instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents).
+Run `openpassword host connect` as the dedicated host service account on the agent machine, and `openpassword pair` as each agent's own account; the [host instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents) say which steps need sudo. For a machine that runs several agents, issue a **host enrollment token** under Workspace, then run `openpassword host connect` on that machine and start its signing bridge. Each agent runs `openpassword pair` through the bridge. Approve each request under Access grants with its own connection, operations and expiry. New workspaces require host approval. Existing standalone workspaces switch when their first host enrolls. Follow the [host installation and agent enrollment instructions](docs/operations.md#enroll-an-agent-host-and-approve-its-agents).
 
 ## Connect an agent
 
@@ -41,6 +43,8 @@ For a workspace using standalone grants, this walkthrough lets a coding agent re
 **1. Connect GitHub.** In **Integrations → GitHub → Connect account**, give the connection a recognizable name, enter your GitHub username as the account identity, and enter the provider token. Choose **Me** to keep the connection private. Save it.
 
 **2. Connect the local CLI.** The client machine needs Node.js 24 or newer. Your web server serves a standalone CLI, including its MCP tools. In the web app, open **Access grants → Issue grant**, choose the GitHub connection, select `github.user.get` and set an expiry. Choose **One-time CLI enrollment token**. On the client, run:
+
+**Run as:** the OS account that runs the agent · **Where:** the client machine, in a verified release checkout · **sudo:** no
 
 ```sh
 export OPENPASSWORD_BROKER=https://vault.example.com
@@ -68,6 +72,8 @@ The examples below assume one private harness configuration per agent. For a sha
 
 **Codex**
 
+
+**Run as:** the same account · **Where:** the same terminal on the client machine · **sudo:** no (both commands below)
 ```sh
 codex mcp add openpassword \
   --env OPENPASSWORD_BROKER="$OPENPASSWORD_BROKER" \
@@ -99,6 +105,8 @@ OpenPassword routes each model grant to **one provider connection and one exact 
 1. Add your provider under **Connections**. For this example, choose OpenAI and enter your provider API key.
 2. In **Access grants → Issue grant**, name the client, select the connection, and enable `openai.chat`. Under **Standing model access**, enter a model ID available to your provider account, permit at least one request, and allow at least 32 output tokens. You can also set a monetary budget using the provider’s rates.
 3. Choose **API access and refresh tokens**, leave the pairing code blank, issue the grant, and copy its **access token**. The following Python 3 example prompts for that token without echoing it, discovers the authorized model, and makes one request.
+
+**Run as:** any account · **Where:** the machine running your application · **sudo:** no
 
 ```python
 import getpass
@@ -135,11 +143,11 @@ A successful call prints the model’s reply. Open **Consumption** to see the mo
 
 The web console and broker run on the server. Codex, Claude Code, or your application can run on another machine. One HTTPS domain serves the console, pairing flow, and API.
 
-1. On the server, run `make setup` and `make build`. Set `OPENPASSWORD_WEB_ORIGIN` to your public origin, such as `https://vault.example.com`, and run `make start` with that setting. For persistent Linux services, use the [systemd units](deploy/systemd/).
-2. Point your HTTPS reverse proxy at the web service on port **3000**. It forwards API calls to the broker on loopback port **4141**. From your laptop, run `openpassword setup-code --ssh user@server` using your verified SSH host alias. For a per-user install with the CLI on the remote PATH, append `--user`. Enter the code at the HTTPS address printed by the CLI.
-3. On your laptop, run `make setup` in a local copy of the project to build the agent CLI. Follow [Connect an agent](#connect-an-agent), using `https://vault.example.com` as `OPENPASSWORD_BROKER` for **both pairing and MCP registration**.
+1. On the server, in the project root, as the account that will own the service (no sudo), run `make setup` and `make build`. Set `OPENPASSWORD_WEB_ORIGIN` to your public origin, such as `https://vault.example.com`, and run `make start` with that setting. For persistent Linux services, use the [systemd units](deploy/systemd/).
+2. Point your HTTPS reverse proxy at the web service on port **3000**. It forwards API calls to the broker on loopback port **4141**. From your laptop, as your own account (no local sudo; the server account needs noninteractive sudo to read the service token), run `openpassword setup-code --ssh user@server` using your verified SSH host alias. For a per-user install with the CLI on the remote PATH, append `--user`. Enter the code at the HTTPS address printed by the CLI.
+3. On your laptop, as your own account (no sudo), run `make setup` in a local copy of the project to build the agent CLI. Follow [Connect an agent](#connect-an-agent), using `https://vault.example.com` as `OPENPASSWORD_BROKER` for **both pairing and MCP registration**.
 
-For a private trial over SSH, forward the console with `ssh -N -L 3000:127.0.0.1:3000 user@server` and use the local quickstart URLs while the tunnel is open.
+For a private trial over SSH, on your laptop as your own account (no sudo), forward the console with `ssh -N -L 3000:127.0.0.1:3000 user@server` and use the local quickstart URLs while the tunnel is open.
 
 ## Share access and track usage
 
@@ -156,11 +164,11 @@ For a private trial over SSH, forward the console with `ssh -N -L 3000:127.0.0.1
 OpenPassword stores encrypted provider credentials, grants, and usage history in SQLite. The encryption key lives in a separate file on the server. For a restorable offline backup, stop the service and copy the **entire data directory**, including `master.key`, preserving permissions. The default location is `~/.openpassword`; use `OPENPASSWORD_HOME` to choose another.
 
 - [Provider and deployment reference](docs/operations.md) — OAuth callbacks, connector setup, backups, service configuration, and integration workflows.
-- [Contributing](CONTRIBUTING.md) — contribution terms and how to verify a change. Run `make verify` to build the packages, check types, run tests, and build the console.
+- [Contributing](CONTRIBUTING.md) — contribution terms and how to verify a change. In the project root, as your own account (no sudo), run `make verify` to build the packages, check types, run tests, and build the console.
 - [Changelog](CHANGELOG.md) — project release history.
 
 The server and console use [AGPL-3.0-only](LICENSE). The [client](packages/client/LICENSE), [CLI](packages/cli/LICENSE), [connectors](packages/connectors/LICENSE), and [schemas](packages/schemas/LICENSE) use the MIT license.
 
 ## Update an existing installation
 
-For the supplied Linux services, install the exact gate-built archive using `deploy/upgrade.sh --install ARCHIVE SHA256 VERSION COMMIT`. The updater checks readiness and restores the previous build on failure. On each workstation, `sh deploy/update-client.sh` updates the installed CLI using its configured broker address. [Upgrade and rollback instructions](docs/operations.md#upgrade-a-running-systemd-installation)
+For the supplied Linux services, on the server as root, install the exact gate-built archive using `sudo sh deploy/upgrade.sh --install ARCHIVE SHA256 VERSION COMMIT`. The updater checks readiness and restores the previous build on failure. On each workstation, as the account that uses the CLI (no sudo), `sh deploy/update-client.sh` updates the installed CLI using its configured broker address. [Upgrade and rollback instructions](docs/operations.md#upgrade-a-running-systemd-installation)
