@@ -70,5 +70,10 @@ export class EngineCli {
   close() {
     this.child.stdin.end()
     this.child.kill()
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return
+    // An engine that ignores the request would keep the broker's process alive: end it.
+    const reaper = setTimeout(() => this.kill(), 2000)
+    reaper.unref()
+    this.child.once('exit', () => clearTimeout(reaper))
   }
 }
