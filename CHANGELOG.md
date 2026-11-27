@@ -1,8 +1,13 @@
 # Changelog
 
-## Unreleased security review
+## 0.5.0 · unreleased
 
-### Human vault security and remote model custody (unreleased)
+### Before you upgrade from 0.4.1
+
+- **Take an encrypted backup and prove that it restores first** (`backup.sh --encrypt` on the server, then `operator-backup.sh check FILE.age` on the operator's own computer). Once a private vault has been upgraded, a passkey enrolled or a model custodian configured, the updater refuses to move back to a release that cannot handle it.
+- **Check every HubSpot connection that publishes issue bundles:** exactly one of its selected resources must start and end with `/`. That entry is now the upload folder.
+
+### Human vault security and remote model custody
 
 - Added passkey sign-in and single-use approval bound to sensitive console requests for enrolled profiles. Changing an existing sign-in password also requires the current password.
 - Owners can share a readable item revision with a named recipient or a group using independently verified recipient cards. Group publication is atomic and roster changes withdraw prior group shares. Editing, deletion, expiry or owner revocation ends further delivery.
@@ -17,8 +22,9 @@
 - The release gate validates dependency publication age and the signed standalone client. Workstation updates require independently provisioned trust. Root recovery checks its installed runtime and suppresses child stderr.
 - Added cross-site mutation rejection and reauthorization of buffered model responses and streaming chunks. See SECURITY.md for trust boundaries, remaining gaps and staging tests.
 
-### Fixes since the review (unreleased)
+### Fixes since the review
 
+- `openpassword version` reports the release that carries it; 0.3.x and 0.4.x printed `0.2.0`.
 - The updater starts again the host units that systemd stops together with the broker and console, such as a reverse proxy that requires the web service. A unit that was already stopped is left alone. If one fails to start, the command fails and `--recover` retries it without stopping healthy services.
 - The CLI and MCP report why the broker refused a request, for example `Broker returned 400: Expired pairing`. Only text the broker marks as public is shown, so both the broker and the client need this version.
 - App sign-in confirmation now reaches the application: the page's content security policy blocked the redirect to the callback in Chrome. Registration refuses a callback whose host is not a domain name or IPv4 address; applications registered earlier are not re-checked.
