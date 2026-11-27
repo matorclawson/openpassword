@@ -298,7 +298,8 @@ test('a drain that fails still journals the dependents before the rollback stops
 })
 
 for (const [path, candidate] of [['forward', 'ok'], ['rollback', 'fail-after-migration']] as const)
-  test('a dependent that fails to start is retried without stopping what is healthy: ' + path, async () => {
+  test('a dependent that fails to start is retried without stopping what is healthy: ' + path, async (t) => {
+    const said = t.mock.method(console, 'error', () => undefined)
     const { h, ops } = host({ candidate })
     let sibling = true
     let broken = true
@@ -320,6 +321,8 @@ for (const [path, candidate] of [['forward', 'ok'], ['rollback', 'fail-after-mig
       },
     }
     await assert.rejects(activate(old, next, two), /edge failed to start/)
+    if (path === 'rollback')
+      assert.match(String(said.mock.calls[0]?.arguments[0]), /candidate not ready/, 'the first error is not lost')
     assert.ok(h.pending?.published, 'the journal says the services themselves are up')
     assert.ok(sibling)
     // Still failing: another recovery stops and republishes nothing.

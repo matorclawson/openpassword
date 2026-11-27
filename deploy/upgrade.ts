@@ -15,7 +15,8 @@ const units = ['openpassword-broker.service', 'openpassword-web.service']
 const unitDir = '/etc/systemd/system'
 const dataLink = '/var/lib/openpassword'
 const semver = /^\d+\.\d+\.\d+$/
-// `dependents` is journal data: other units that were running and that systemd stops along with ours.
+// `dependents`: other units that were running and that systemd stops along with ours. The journal acts on it;
+// previous.json carries it too, where nothing reads it.
 type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[] }
 // Pending record: the old configuration plus the vault copy taken before the candidate first started.
 // `published`: the release answered its readiness checks; only the host's own units may still be down.
@@ -545,6 +546,8 @@ export async function activate(current: Snapshot, target: Snapshot, ops: Ops) {
     }
     await ops.prove(target)
   } catch (error) {
+    // Said first: if the rollback fails too, its error is the one that reaches the caller.
+    console.error('Activation failed, restoring the previous release: ' + (error as Error).message)
     await restoreOld(old, loc, ops)
     throw error
   }
