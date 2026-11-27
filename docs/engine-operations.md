@@ -27,11 +27,12 @@ The 0.5.0 candidate builds on the 0.4.1 store. The gate builds both executables 
 **Verification.** A developer or reviewer runs these commands at the checkout root on the gate host without sudo. The cost probe requires Linux. The release build also needs its independently signed CLI. The encrypted backup test requires age, age-keygen and Linux tmpfs. The staging root/systemd branch has a separate acceptance run.
 
 ```sh
-npm ci && make verify
+npm ci && make acceptance
 node scripts/check-dependency-age.ts
-node --import tsx scripts/engine-cost.ts
 OPENPASSWORD_SKIP_SYSTEMD_PATH=1 make backup-age-test
 ```
+
+`make acceptance` runs `make verify`, the streaming load with a worker restart (`scripts/agent-load.ts`), the backup interruption and restore check (`scripts/backup-job-test.sh`) and, on Linux only, the idle CPU and memory probe (`scripts/engine-cost.ts`). The backup check needs `age` and `age-keygen` on the PATH; `go install filippo.io/age/cmd/...@v1.2.1` provides them. The repository runs no hosted workflow, so run it on each platform you rely on.
 
 The build compiles the two MIT-licensed engines from the module versions pinned in `engines/go.mod`, after `go mod verify` checks every module against `engines/go.sum`. Dostoevsky is pinned to 93870fe2322df80636f824d0a39fe7872e0b8bf8. Ephemeral is pinned to v0.3.0 (c2e078a2b30481e3df2300c24891befebf688c4c). The TypeScript application uses the upstream JavaScript HTTP client and a serialized JSON-lines adapter for the Ephemeral CLI. A failed request closes that CLI. The next epoch reconstructs outstanding work from committed intents.
 
