@@ -13,6 +13,22 @@ export type DevicePair = {
   interval_seconds: number
   expires_at: string
 }
+// The broker says why it refused in `detail`. Keep it to one short line of printable text.
+async function refusal(r: Response) {
+  let detail = ''
+  try {
+    const body = (await r.json()) as { detail?: unknown } | null
+    if (typeof body?.detail === 'string')
+      detail = body.detail
+        .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+        .trim()
+        .slice(0, 200)
+  } catch {
+    // No readable explanation: the status alone is reported.
+  }
+  const message = 'Broker returned ' + r.status + (detail ? ': ' + detail : '')
+  return Object.assign(Error(message), { status: r.status })
+}
 export class OpenPassword {
   readonly origin: string
   constructor(
@@ -64,7 +80,7 @@ export class OpenPassword {
     })
     if (r.headers.get('openpassword-protocol-version') !== '1')
       throw Object.assign(Error('Broker protocol unavailable'), { status: r.status })
-    if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
+    if (!r.ok) throw await refusal(r)
     return r.status === 204 ? (undefined as T) : ((await r.json()) as T)
   }
   /** Fetch an artifact's exact bytes (not re-serialized, so a content digest can be checked). */
@@ -89,7 +105,7 @@ export class OpenPassword {
     })
     if (r.headers.get('openpassword-protocol-version') !== '1')
       throw Object.assign(Error('Broker protocol unavailable'), { status: r.status })
-    if (!r.ok) throw Object.assign(Error('Broker returned ' + r.status), { status: r.status })
+    if (!r.ok) throw await refusal(r)
     return new Uint8Array(await r.arrayBuffer())
   }
   chat(model: string, prompt: string, maxTokens: number, key: string) {
