@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, refuseHostProofDowngrade, enforcesHostProof, dependentsOf } from '../deploy/upgrade.ts'
+import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, refuseHostProofDowngrade, refuseVaultDowngrade, enforcesHostProof, dependentsOf } from '../deploy/upgrade.ts'
 
 type Snap = { version: string | null; units: (string | null)[] }
 const old: Snap = { version: '0.3.1', units: ['old-broker', 'old-web'] }
@@ -591,6 +591,33 @@ test('recovery restores through the resolved path after an interruption between 
     assert.equal(schema(join(f.data, 'vault.sqlite')).version, 1)
     assert.ok(!fs.existsSync(f.data + '.replaced'))
   } finally {
+    cleanup(f.dir)
+  }
+})
+
+test('an upgraded vault prevents activation of a writer without generation checks', () => {
+  const f = fenceFixture()
+  try {
+    refuseVaultDowngrade(f.older, f.data)
+    f.db.exec('CREATE TABLE private_generations(id TEXT)')
+    refuseVaultDowngrade(f.older, f.data)
+    f.db.exec("INSERT INTO private_generations VALUES('synthetic')")
+    assert.throws(() => refuseVaultDowngrade(f.older, f.data), /upgraded private vaults/)
+    fs.writeFileSync(join(f.newer, 'server/private-migration.ts'), '// migration support')
+    refuseVaultDowngrade(f.newer, f.data)
+  } finally {
+    f.db.close()
+    cleanup(f.dir)
+  }
+})
+
+test('enrolled passkeys prevent an installer downgrade that drops action approvals', () => {
+  const f = fenceFixture()
+  try {
+    f.db.exec("CREATE TABLE passkeys(id TEXT);INSERT INTO passkeys VALUES('synthetic')")
+    assert.throws(() => refuseVaultDowngrade(f.older, f.data), /passkey approval/)
+  } finally {
+    f.db.close()
     cleanup(f.dir)
   }
 })

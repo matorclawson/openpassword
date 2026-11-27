@@ -1,6 +1,8 @@
 #!/bin/sh
 # Install or update the standalone client in place. The next invocation uses it.
 set -eu
+umask 077
+unset NODE_OPTIONS NODE_PATH
 origin=${OPENPASSWORD_BROKER:?Set OPENPASSWORD_BROKER to the installation origin}
 origin=$(node -e '
 const u=new URL(process.argv[1]);
@@ -13,10 +15,24 @@ stage=$(mktemp -d "$bin/.openpassword-update.XXXXXXXX")
 trap 'rm -rf "$stage"' EXIT
 curl -fsS --max-time 60 "$origin/openpassword-cli.cjs" -o "$stage/client.cjs"
 curl -fsS --max-time 15 "$origin/openpassword-cli.sha256" -o "$stage/digest"
+if [ -n "${OPENPASSWORD_CLI_PUBLIC_KEY:-}" ]; then
+  curl -fsS --max-time 15 "$origin/openpassword-cli.sig" -o "$stage/signature"
+elif [ -z "${OPENPASSWORD_CLI_SHA256:-}" ]; then
+  echo "Set an independently provisioned OPENPASSWORD_CLI_PUBLIC_KEY or exact OPENPASSWORD_CLI_SHA256." >&2
+  exit 1
+fi
 node - "$stage" <<'JS'
 const {readFileSync}=require('node:fs'),{createHash}=require('node:crypto');
 const dir=process.argv[2];
 const actual=createHash('sha256').update(readFileSync(dir+'/client.cjs')).digest('hex');
+const pub=process.env.OPENPASSWORD_CLI_PUBLIC_KEY;
+if (pub) {
+  const {createPublicKey,verify}=require('node:crypto');
+  const key=createPublicKey(readFileSync(pub));
+  const signature=readFileSync(dir+'/signature');
+  if (key.asymmetricKeyType!=='ed25519' || signature.length!==64 ||
+      !verify(null,readFileSync(dir+'/client.cjs'),key,signature)) throw Error('CLI signature rejected');
+}
 const pin=process.env.OPENPASSWORD_CLI_SHA256;
 if (pin!==undefined && (!/^[0-9a-f]{64}$/.test(pin) || pin!==actual))
   throw Error('CLI differs from the independently supplied release digest.');

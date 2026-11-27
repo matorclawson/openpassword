@@ -4,13 +4,30 @@ set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
-unset NODE_OPTIONS NODE_PATH TAR_OPTIONS
+unset NODE_OPTIONS NODE_PATH NODE_EXTRA_CA_CERTS TAR_OPTIONS BASH_ENV ENV
 die() { echo "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "Run as root."
 root=/opt/openpassword
-install -d -m 0755 "$root" "$root/releases"
-install -d -m 0700 "$root/upgrade-state"
-exec 9>"$root/upgrade-state/lock"
+root_owned() {
+  [ ! -L "$1" ] && [ "$(stat -c %u -- "$1")" = 0 ] &&
+    [ -z "$(find "$1" -maxdepth 0 -perm /022 -print)" ] || die "Unsafe updater path"
+}
+ensure_dir() {
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then install -d -m "$2" "$1"; fi
+  [ -d "$1" ] || die "Expected updater directory"
+  root_owned "$1"
+}
+root_owned /opt
+ensure_dir "$root" 0755
+ensure_dir "$root/releases" 0755
+ensure_dir "$root/upgrade-state" 0700
+[ "$(stat -c %a -- "$root/upgrade-state")" = 700 ] || die "Upgrade state must be root private"
+lock="$root/upgrade-state/lock"
+if [ -e "$lock" ] || [ -L "$lock" ]; then
+  root_owned "$lock"
+  [ -f "$lock" ] && [ "$(stat -c %h -- "$lock")" = 1 ] || die "Unsafe activation lock"
+fi
+exec 9>>"$lock"
 flock -n 9 || die "An activation is already running."
 case "${1:-}" in
   --recover|--rollback)
@@ -18,6 +35,9 @@ case "${1:-}" in
     case "$2" in *[!0-9.]*) die "Invalid installed version" ;; esac
     printf '%s\n' "$2" | grep -Exq '[0-9]+\.[0-9]+\.[0-9]+' || die "Invalid installed version"
     runtime="$root/releases/$2"
+    for path in "$root" "$root/releases" "$runtime" "$runtime/node" "$runtime/node/bin" "$runtime/node/bin/node" "$runtime/deploy" "$runtime/deploy/upgrade.ts"; do
+      root_owned "$path"
+    done
     exec "$runtime/node/bin/node" "$runtime/deploy/upgrade.ts" "$1"
     ;;
   --install)

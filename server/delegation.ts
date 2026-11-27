@@ -11,6 +11,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { DatabaseSync } from 'node:sqlite'
 import { z } from 'zod'
 import { opaque, digest } from './store.ts'
+import type { StepUp } from './passkeys.ts'
 const actionClass = z.enum(['conversation.read', 'conversation.write', 'attention.write'])
 const classList = z
   .array(actionClass)
@@ -27,6 +28,13 @@ const esc = (v: string) =>
     /[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   )
+// Asks the authenticator when the form is submitted, then posts the same form with the assertion in it.
+const approvalScript = (nonce: string, options: unknown) =>
+  '<script nonce="' +
+  nonce +
+  '">const o=' +
+  JSON.stringify(options).replace(/</g, '\\u003c') +
+  ';const f=document.querySelector("form");f.addEventListener("submit",async e=>{e.preventDefault();try{const c=await navigator.credentials.get({publicKey:PublicKeyCredential.parseRequestOptionsFromJSON(o)});f.elements.approval.value=JSON.stringify(c.toJSON());f.submit()}catch{document.getElementById("failed").textContent="Passkey approval did not complete. Reload to try again."}})</script>'
 export function delegation(
   api: FastifyInstance,
   db: DatabaseSync,
@@ -299,11 +307,17 @@ export function delegation(
       digest(csrf),
       attempt,
     )
+    // With an enrolled passkey, consent to a new grant needs a fresh approval, as console changes do.
+    const approval = await api
+      .getDecorator<StepUp>('stepUp')
+      .offer(s.member || 'owner', s.token, 'delegate:' + attempt)
+    const nonce = approval ? opaque() : ''
     return reply
       .type('text/html')
       .header(
         'Content-Security-Policy',
-        "default-src 'none'; frame-ancestors 'none'; form-action 'self'; style-src 'unsafe-inline'",
+        "default-src 'none'; frame-ancestors 'none'; form-action 'self'; style-src 'unsafe-inline'" +
+          (approval ? "; script-src 'nonce-" + nonce + "'" : ''),
       )
       .send(
         '<!doctype html><meta name="viewport" content="width=device-width"><title>Confirm sign-in · OpenPassword</title><main style="max-width:34rem;margin:12vh auto;padding:2rem;font:1rem system-ui;color:#25221e"><strong>OpenPassword</strong><h1>Sign in to ' +
@@ -316,21 +330,41 @@ export function delegation(
           esc(attempt) +
           '"><input type="hidden" name="csrf" value="' +
           csrf +
-          '"><button style="padding:.7rem 1rem">Confirm sign-in</button></form></main>',
+          '">' +
+          (approval
+            ? '<input type="hidden" name="approval_id" value="' +
+              esc(approval.id) +
+              '"><input type="hidden" name="approval">'
+            : '') +
+          '<button style="padding:.7rem 1rem">Confirm sign-in</button></form>' +
+          (approval ? '<p role="alert" id="failed"></p>' : '') +
+          '</main>' +
+          (approval ? approvalScript(nonce, approval.options) : ''),
       )
   })
   api.addContentTypeParser(
     'application/x-www-form-urlencoded',
-    { parseAs: 'string', bodyLimit: 4096 },
+    // Room for a passkey assertion beside the consent fields.
+    { parseAs: 'string', bodyLimit: 16384 },
     (_r, b, done) => done(null, Object.fromEntries(new URLSearchParams(String(b)))),
   )
   api.post('/delegate/confirm', async (r, reply) => {
     const s = session(r)
     if (r.headers.origin !== origin) return reply.code(403).send({ error: 'application_refused' })
-    const { attempt, csrf } = z
-      .object({ attempt: z.string(), csrf: strictCode })
+    const { attempt, csrf, approval_id, approval } = z
+      .object({
+        attempt: z.string(),
+        csrf: strictCode,
+        approval_id: z.string().max(128).optional(),
+        approval: z.string().max(12000).optional(),
+      })
       .strict()
       .parse(r.body)
+    await api
+      .getDecorator<StepUp>('stepUp')
+      .confirm(s.member || 'owner', s.token, 'delegate:' + attempt, approval_id, approval)
+    if (session(r).token !== s.token)
+      return reply.code(403).send({ error: 'application_refused' })
     const t = get(
         'SELECT * FROM delegation_attempts WHERE id=? AND session=? AND csrf=? AND expires>?',
         attempt,

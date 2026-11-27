@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased security review
+
+### Human vault security and remote model custody (unreleased)
+
+- Added passkey sign-in and single-use approval bound to sensitive console requests for enrolled profiles. Changing an existing sign-in password also requires the current password.
+- Owners can share a readable item revision with a named recipient or a group using independently verified recipient cards. Group publication is atomic and roster changes withdraw prior group shares. Editing, deletion, expiry or owner revocation ends further delivery.
+- Added offline recovery kits, optional named recovery custodians, and browser unlock with a compatible user-verifying, device-bound PRF authenticator. Device enrollment expires after thirty days and can be revoked online.
+- Model connections can use a separately administered OpenPassword gateway. A scoped downstream access token replaces the provider key on the routing host. Both services enforce their own model lease. Generic operation invocation now rejects leased chat calls that must go through metering.
+- Added an opt-in external wrapping-key requirement and installer downgrade checks for active passkey or model custody records. See the security operations guide for limitations and review status.
+
+- Owners can upgrade existing single-key private vaults in the browser. The upgrade re-encrypts every item, preserves gateway connections and switches the vault atomically. Stale clients must unlock again and pending CLI deposit receipts expire.
+
+- New personal vaults use a separate vault passphrase and client-generated 256-bit key. New and edited items have random per-item encryption keys. Existing vaults and items remain readable.
+- Added owner-authorized, single-use CLI deposits. The owner seals the item in the browser; the CLI submits only a five-minute receipt.
+- The release gate validates dependency publication age and the signed standalone client. Workstation updates require independently provisioned trust. Root recovery checks its installed runtime and suppresses child stderr.
+- Added cross-site mutation rejection and reauthorization of buffered model responses and streaming chunks. See SECURITY.md for trust boundaries, remaining gaps and staging tests.
+
+### HTTP API
+
+- Published the core agent API contract at `GET /v1/openapi.json`. Added a direct HTTP walkthrough, a dependency-free Node fetch example for host-bound grants, and a TCP integration test covering approval, invocation, replay, rotation and revocation.
+
+### Native harness integrations
+
+- Generate a local, per-agent executable with `harness prepare`. It pins the broker, OS identity, agent profile and host signing socket and supports a remote deployment.
+- Added native coding-assistant skills, Python framework tools, Rasa custom actions and a TypeScript subprocess client. The [setup guide](examples/harnesses/README.md) covers all 16 adapter targets. MCP registration remains optional.
+- Added stdin JSON operations with idempotency keys and connection identity checks, plus regression coverage for authorization, revocation and profile pinning.
+
 ## 0.4.1 · 2026-11-25
 
 - Add `deploy/backup/operator-backup.sh`, one file the operator runs on his own computer: `init` creates his key pair and shows only the public line to hand over, `check FILE.age` proves a restore (table names and counts only, the opened copy deleted on exit).

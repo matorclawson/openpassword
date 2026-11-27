@@ -90,7 +90,10 @@ test(
     )
     assert.equal(result.statusCode, 200, result.body)
     assert.equal((await paired)[0], 0)
-    const check = cli('whoami'),
+    const dest = join(dir, 'codex-launcher')
+    const prepared = cli('harness', 'prepare', 'codex', dest)
+    assert.equal((await once(prepared, 'exit'))[0], 0)
+    const check = spawn(join(dest, 'openpassword-agent'), ['whoami'], { env }),
       done = once(check, 'exit')
     const [who] = await once(check.stdout, 'data')
     assert.equal(JSON.parse(String(who)).device_id, result.json().device_id)

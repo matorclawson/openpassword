@@ -74,11 +74,22 @@ case "$machine" in aarch64|arm64) arch=arm64 ;; x86_64) arch=x64 ;; *) arch=$mac
 name="openpassword-$version-linux-$arch"
 (
   cd "$build"
+  node scripts/check-dependency-age.ts
   npm ci
   npm run packages
   npm run build
   npm prune --omit=dev
 )
+# Release operations supplies only a detached signature and the independently trusted public key.
+: "${OPENPASSWORD_CLI_SIGNATURE:?Set the gate-approved CLI signature file}"
+: "${OPENPASSWORD_CLI_PUBLIC_KEY:?Set the release signing public key file}"
+install -m 0644 "$OPENPASSWORD_CLI_SIGNATURE" "$build/public/openpassword-cli.sig"
+node --input-type=module - "$OPENPASSWORD_CLI_PUBLIC_KEY" "$build/public/openpassword-cli.cjs" "$build/public/openpassword-cli.sig" <<'JS'
+import {readFileSync} from 'node:fs'
+import {createPublicKey,verify} from 'node:crypto'
+const [pub,cli,sig]=process.argv.slice(2),key=createPublicKey(readFileSync(pub))
+if(key.asymmetricKeyType!=='ed25519' || !verify(null,readFileSync(cli),key,readFileSync(sig))) throw Error('Gate CLI signature mismatch')
+JS
 dev_only=$(node -e "const p=require(process.argv[1]);for(const k of Object.keys(p.devDependencies||{}))if(require(process.argv[2]).packages['node_modules/'+k]?.dev===true)console.log(k)" "$build/package.json" "$build/package-lock.json")
 for k in $dev_only; do
   [ ! -e "$build/node_modules/$k" ] || { echo "package: development dependency $k survived the prune" >&2; exit 1; }
@@ -91,7 +102,7 @@ for f in $script_refs; do
 done
 
 # 2. Stage an explicit runtime payload.
-payload=(package.json package-lock.json tsconfig.json next.config.ts next-env.d.ts LICENSE README.md CHANGELOG.md PARITY.md app brand registry deploy docs public server packages .next node_modules)
+payload=(SECURITY.md package.json package-lock.json tsconfig.json next.config.ts next-env.d.ts LICENSE README.md CHANGELOG.md PARITY.md app brand registry deploy docs public server packages .next node_modules)
 for p in "${payload[@]}"; do [ -e "$build/$p" ] || { echo "package: missing $p in the build" >&2; exit 1; }; done
 tar -C "$build" --exclude=.next/cache --exclude=.next/trace --exclude='.next/trace-*' --exclude=.next/diagnostics --exclude='.env*' --exclude='packages/*/node_modules' -cf - "${payload[@]}" | tar -xf - -C "$out/stage"
 rm -rf "$out/stage/.next/cache" "$out/stage/.next/diagnostics" "$out/stage/.next/trace" "$out/stage"/.next/trace-*

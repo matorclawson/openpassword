@@ -23,8 +23,8 @@ import { DatabaseSync } from 'node:sqlite'
 const db = new DatabaseSync(process.argv[2] + '/vault.sqlite', { readOnly: true })
 console.log(db.prepare('SELECT a FROM t').get().a)
 JS
+"$node_bin" --import tsx scripts/backup-human-fixture.ts seed "$t/data" "$t/recovery-fixture"
 "$node_bin" "$t/seed.mjs" "$t/data"
-printf 'test-master-key\n' > "$t/data/master.key"; printf 'test-token\n' > "$t/data/operator.token"
 age-keygen -o "$t/id.txt" >/dev/null 2>&1; chmod 600 "$t/id.txt"
 age-keygen -y "$t/id.txt" > "$t/recipient"
 # The copy under test carries a .test-seams file, which turns on the test substitutes. The real directory never has one.
@@ -48,6 +48,7 @@ empty_stage || fail "the staged snapshot was left behind after success"
 mkdir -m 0700 "$t/restored"
 restore "$t/out.age" "$t/restored" >/dev/null || fail "restore"
 [ "$("$node_bin" "$t/read.mjs" "$t/restored")" = sealed-value ] || fail "restored row differs"
+"$node_bin" --import tsx scripts/backup-human-fixture.ts verify "$t/restored" "$t/recovery-fixture"
 cmp -s "$t/data/master.key" "$t/restored/master.key" || fail "restored master.key differs"
 cmp -s "$t/data/operator.token" "$t/restored/operator.token" || fail "restored operator.token differs"
 

@@ -36,7 +36,7 @@ function ensure(ok: unknown, message: string): asserts ok {
 }
 function run(cmd: string, args: string[], timeout = 180000) {
   const p = spawnSync(cmd, args, { encoding: 'utf8', timeout })
-  ensure(!p.error && p.status === 0, cmd + ' failed: ' + (p.error?.message || p.stderr.trim()))
+  ensure(!p.error && p.status === 0, cmd + ' failed (status ' + (p.status ?? 'unavailable') + ')')
   return p.stdout.trim()
 }
 function syncDir(dir: string) {
@@ -223,6 +223,31 @@ export function refuseHostProofDowngrade(fromDir: string | null, toDir: string |
       ' active host-bound grant(s) and ' + pairs +
       ' unredeemed host-bound enrollment token(s) would become plain bearer credentials. Revoke them in the console first, then retry.',
   )
+}
+export function refuseVaultDowngrade(targetDir: string | null, stateDir: string | null) {
+  if (!targetDir || !stateDir) return
+  const vault = join(stateDir, 'vault.sqlite')
+  if (!fs.existsSync(vault)) return
+  const db = new DatabaseSync(vault, { readOnly: true })
+  try {
+    if (!fs.existsSync(join(targetDir, 'server/passkeys.ts'))) {
+      const has = (name: string) =>
+        db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)
+      const needsPolicy =
+        (has('passkeys') && db.prepare('SELECT 1 FROM passkeys LIMIT 1').get()) ||
+        (has('model_custodians') && db.prepare('SELECT 1 FROM model_custodians LIMIT 1').get())
+      ensure(
+        !needsPolicy,
+        'Refusing to activate a release without passkey approval or remote gateway custody support.',
+      )
+    }
+    if (fs.existsSync(join(targetDir, 'server/private-migration.ts'))) return
+    const migrated = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_generations'").get()
+      && db.prepare('SELECT 1 FROM private_generations LIMIT 1').get()
+    ensure(!migrated, 'Refusing to activate a release that cannot safely write upgraded private vaults.')
+  } finally {
+    db.close()
+  }
 }
 function point(version: string | null) {
   const link = join(root, 'current')
@@ -658,12 +683,12 @@ async function main() {
     console.log('Already active: ' + old.version)
     return
   }
-  const fenceNow = () =>
-    refuseHostProofDowngrade(
-      old.version && releasePath(old.version),
-      target.version && releasePath(target.version),
-      dataDir(),
-    )
+  const fenceNow = () => {
+    const targetDir = target.version && releasePath(target.version)
+    const stateDir = dataDir()
+    refuseHostProofDowngrade(old.version && releasePath(old.version), targetDir, stateDir)
+    refuseVaultDowngrade(targetDir, stateDir)
+  }
   decisive = fenceNow
   fenceNow() // early refusal for the operator; the decisive check repeats with the services stopped
   preflight(target.version!)
