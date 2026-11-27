@@ -9,7 +9,7 @@ import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, 
 type Snap = { version: string | null; units: (string | null)[] }
 const old: Snap = { version: '0.3.1', units: ['old-broker', 'old-web'] }
 const next: Snap = { version: '0.4.0', units: ['new-broker', 'new-web'] }
-type Rec = Snap & { dependents?: string[]; listed?: true; published?: true; store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
+type Rec = Snap & { dependents?: string[]; provisional?: true; published?: true; discard?: string; store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
 
 // A model of the host: the journal, the vault copy, the store schema and what is running. Every operation can
 // be interrupted before it runs (`crashAt`), and the candidate can fail at any of its boundaries.
@@ -232,7 +232,7 @@ test('interrupting the recovery itself never replays a restore over writes the o
     h.schema = 2
     h.running = 'none'
     h.ingress = false
-    h.pending = { ...old, dependents: ['edge.service'], listed: true, store: 'snap', data: '/state/openpassword' }
+    h.pending = { ...old, dependents: ['edge.service'], store: 'snap', data: '/state/openpassword' }
     let n = 0
     const crashy = Object.fromEntries(
       Object.entries(ops).map(([k, f]) => [
@@ -359,7 +359,18 @@ for (const [path, candidate] of [['forward', 'ok'], ['rollback', 'fail-after-mig
     assert.ok(h.ingress && sibling)
     assert.equal(h.pending, null)
     assert.equal(h.release, path === 'forward' ? next.version : old.version)
+    assert.equal(h.snapshots.has('snap'), path === 'forward', 'a copy that was restored from is deleted; the other stays')
   })
+
+test('a recorded dependent list without the provisional mark is kept while the unit is down', async () => {
+  const { h, ops } = host({ candidate: 'ok' })
+  Object.assign(h, { release: next.version, schema: 2, running: 'none', ingress: false })
+  h.snapshots.add('snap')
+  h.pending = { ...old, dependents: ['edge.service'], store: 'snap', data: '/state/openpassword', phase: 'forward', target: next }
+  assert.equal(await recoverPending(h.pending, ops), 'forward')
+  assert.ok(h.ingress)
+  assert.equal(h.pending, null)
+})
 
 // Store helpers against real SQLite files.
 function fixture() {

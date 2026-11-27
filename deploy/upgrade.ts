@@ -17,11 +17,19 @@ const dataLink = '/var/lib/openpassword'
 const semver = /^\d+\.\d+\.\d+$/
 // `dependents`: other units that were running and that systemd stops along with ours. The journal acts on it;
 // previous.json carries it too, where nothing reads it.
-// `listed`: the list was settled just before the first stop and is not read again.
-type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[]; listed?: true }
+// `provisional`: read before the drain, to be read again before the first stop. A list without the mark is final.
+type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[]; provisional?: true }
 // Pending record: the old configuration plus the vault copy taken before the candidate first started.
 // `published`: the release answered its readiness checks; only the host's own units may still be down.
-type Pending = Snapshot & { store?: string | null; data?: string; phase?: 'forward'; target?: Snapshot; published?: true }
+// `discard`: a vault copy already restored from, to delete once the journal is cleared.
+type Pending = Snapshot & {
+  store?: string | null
+  data?: string
+  phase?: 'forward'
+  target?: Snapshot
+  published?: true
+  discard?: string
+}
 type Loc = { store: string; data: string }
 function ensure(ok: unknown, message: string): asserts ok {
   if (!ok) throw Error(message)
@@ -482,12 +490,12 @@ type Ops = {
   finish: (s: Snapshot, store: string | null) => void
   clear: () => void
 }
-const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units, dependents: s.dependents, listed: s.listed })
-// Read as late as possible, just before the first stop, and journaled before it. Once listed it is kept: after a stop
+const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units, dependents: s.dependents })
+// Read as late as possible, just before the first stop, and journaled before it. A final list is kept: after a stop
 // the running set no longer says what has to come back. An activation requires the reading; a rollback or recovery
 // must get the services back even if it keeps failing, so it falls back to the list taken before the drain.
 function noteDependents(record: Pending, ops: Ops, required = false): Pending {
-  if (record.listed) return record
+  if (record.dependents && !record.provisional) return record
   let dependents = record.dependents ?? []
   try {
     dependents = ops.dependents()
@@ -495,7 +503,8 @@ function noteDependents(record: Pending, ops: Ops, required = false): Pending {
     if (required) throw error
     console.error('Could not list the units that depend on the services; check them afterwards: ' + (error as Error).message)
   }
-  const noted: Pending = { ...record, dependents, listed: true }
+  const noted: Pending = { ...record, dependents }
+  delete noted.provisional
   ops.save(noted)
   return noted
 }
@@ -516,11 +525,12 @@ export async function restoreOld(old: Pending, loc: Loc | null, ops: Ops) {
   ops.stop()
   if (loc) {
     ops.restore(loc)
-    record = { ...plain(record), store: null }
+    // The journal stops naming the copy as a store, and keeps its path so that whichever run finishes deletes it.
+    record = { ...plain(record), store: null, discard: loc.store }
     ops.save(record)
   }
   await bringUp(record, plain(record), ops)
-  if (loc) ops.discard(loc.store)
+  if (record.discard) ops.discard(record.discard)
 }
 // The journal after an interruption. A committed activation is finished forward (and its metadata rewritten, which
 // is idempotent); anything else is rolled back, to the state directory path the journal recorded.
@@ -534,6 +544,7 @@ export async function recoverPending(p: Pending, ops: Ops) {
   // The old release was already back and ready: nothing is restored again.
   if (p.published) {
     await bringUp(p, plain(p), ops)
+    if (p.discard) ops.discard(p.discard)
     return 'rollback'
   }
   ensure(!p.store || p.data, 'The journal names a vault copy without its state directory')
@@ -542,7 +553,7 @@ export async function recoverPending(p: Pending, ops: Ops) {
 }
 export async function activate(current: Snapshot, target: Snapshot, ops: Ops) {
   // A first reading while nothing has changed yet: if it fails here, the activation stops with nothing to undo.
-  let old: Pending = { ...current, dependents: ops.dependents() }
+  let old: Pending = { ...current, dependents: ops.dependents(), provisional: true }
   ops.save(old)
   let loc: Loc | null = null
   try {
