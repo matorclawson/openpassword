@@ -176,7 +176,15 @@ export function delegation(
       .strict()
       .parse(r.body)
     const uri = new URL(b.callback)
-    if (uri.protocol !== 'https:' || uri.username || uri.password || uri.hash || uri.search)
+    // A host the confirmation page cannot name as a form target could never complete a sign-in.
+    if (
+      uri.protocol !== 'https:' ||
+      uri.username ||
+      uri.password ||
+      uri.hash ||
+      uri.search ||
+      !formTarget(b.callback)
+    )
       return reply.code(422).send({ error: 'invalid_uri' })
     const id = 'app_' + randomUUID()
     run(

@@ -216,3 +216,28 @@ test('only a plain callback origin is added as a form target', () => {
   ])
     assert.equal(formTarget(callback), '', callback)
 })
+
+test('an application whose callback the confirmation page cannot reach is not registered', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'op-callback-host-')),
+    api = service(dir)
+  t.after(async () => {
+    await api.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const login = await api.inject({
+    url: '/admin/login',
+    method: 'POST',
+    payload: { token: readFileSync(join(dir, 'operator.token'), 'utf8') },
+  })
+  const cookie = String(login.headers['set-cookie']).split(';')[0]
+  const register = (callback: string) =>
+    api.inject({
+      url: '/admin/apps',
+      method: 'POST',
+      headers: { cookie },
+      payload: { label: 'Example', callback, audience: 'app.example.com', days: 1 },
+    })
+  for (const callback of ['https://[::1]/callback', 'https://my_app.example.com/callback'])
+    assert.equal((await register(callback)).statusCode, 422, callback)
+  assert.equal((await register('https://app.example.com:8443/callback')).statusCode, 200)
+})
