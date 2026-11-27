@@ -9,7 +9,7 @@ import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, 
 type Snap = { version: string | null; units: (string | null)[] }
 const old: Snap = { version: '0.3.1', units: ['old-broker', 'old-web'] }
 const next: Snap = { version: '0.4.0', units: ['new-broker', 'new-web'] }
-type Rec = Snap & { dependents?: string[]; store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
+type Rec = Snap & { dependents?: string[]; published?: true; store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
 
 // A model of the host: the journal, the vault copy, the store schema and what is running. Every operation can
 // be interrupted before it runs (`crashAt`), and the candidate can fail at any of its boundaries.
@@ -94,6 +94,10 @@ function host(
         if (opts.candidate === 'fail-public') throw Error('public start failed')
         h.running = 'public'
       }
+    },
+    healthy: async (t: Snap) => {
+      tick('healthy')
+      return h.running === 'public' && h.release === t.version
     },
     restore: (loc: { store: string; data: string }) => {
       const store = loc.store
@@ -272,6 +276,62 @@ test('running units that systemd stops with ours are found, through chains, and 
   )
   assert.deepEqual(dependentsOf(['broker.service'], () => 'ActiveState=inactive\nRequiredBy='), [])
 })
+
+for (const [drained, expected] of [['started', true], ['stopped', false]] as const)
+  test('the dependent set is read after the drain: a unit ' + drained + ' during it', async () => {
+    const { h, ops } = host({ candidate: 'ok' })
+    h.ingress = !expected
+    await activate(old, next, { ...ops, drain: async () => void (h.ingress = expected) })
+    assert.equal(h.ingress, expected)
+  })
+
+test('a drain that fails still journals the dependents before the rollback stops anything', async () => {
+  const { h, ops } = host({ candidate: 'ok' })
+  h.ingress = false
+  const drain = async () => {
+    h.ingress = true
+    throw Error('drain failed')
+  }
+  await assert.rejects(activate(old, next, { ...ops, drain }), /drain failed/)
+  assert.ok(h.ingress)
+  assert.equal(h.pending, null)
+})
+
+for (const [path, candidate] of [['forward', 'ok'], ['rollback', 'fail-after-migration']] as const)
+  test('a dependent that fails to start is retried without stopping what is healthy: ' + path, async () => {
+    const { h, ops } = host({ candidate })
+    let sibling = true
+    let broken = true
+    const two = {
+      ...ops,
+      dependents: () => ['edge.service', 'sidecar.service'],
+      stop: () => {
+        ops.stop()
+        sibling = false
+      },
+      publish: async (t: Snap) => {
+        sibling = false
+        await ops.publish(t)
+      },
+      revive: (names: string[]) => {
+        if (names.includes('sidecar.service')) sibling = true
+        if (broken) throw Error('edge failed to start')
+        ops.revive(names)
+      },
+    }
+    await assert.rejects(activate(old, next, two), /edge failed to start/)
+    assert.ok(h.pending?.published, 'the journal says the services themselves are up')
+    assert.ok(sibling)
+    // Still failing: another recovery stops and republishes nothing.
+    const seen = h.log.length
+    await assert.rejects(recoverPending(h.pending!, two), /edge failed to start/)
+    broken = false
+    assert.equal(await recoverPending(h.pending!, two), path)
+    assert.ok(!h.log.slice(seen).some((x) => x === 'stop' || x === 'restore' || x.startsWith('publish')))
+    assert.ok(h.ingress && sibling)
+    assert.equal(h.pending, null)
+    assert.equal(h.release, path === 'forward' ? next.version : old.version)
+  })
 
 // Store helpers against real SQLite files.
 function fixture() {

@@ -15,10 +15,11 @@ const units = ['openpassword-broker.service', 'openpassword-web.service']
 const unitDir = '/etc/systemd/system'
 const dataLink = '/var/lib/openpassword'
 const semver = /^\d+\.\d+\.\d+$/
-// `dependents` lives in the journal only: other units that were running and that systemd stops along with ours.
+// `dependents` is journal data: other units that were running and that systemd stops along with ours.
 type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[] }
 // Pending record: the old configuration plus the vault copy taken before the candidate first started.
-type Pending = Snapshot & { store?: string | null; data?: string; phase?: 'forward'; target?: Snapshot }
+// `published`: the release answered its readiness checks; only the host's own units may still be down.
+type Pending = Snapshot & { store?: string | null; data?: string; phase?: 'forward'; target?: Snapshot; published?: true }
 type Loc = { store: string; data: string }
 function ensure(ok: unknown, message: string): asserts ok {
   if (!ok) throw Error(message)
@@ -473,46 +474,69 @@ type Ops = {
   backup: () => Loc
   prove: (s: Snapshot) => Promise<void>
   publish: (s: Snapshot) => Promise<void>
+  healthy: (s: Snapshot) => Promise<boolean>
   restore: (loc: Loc) => void
   discard: (store: string) => void
   finish: (s: Snapshot, store: string | null) => void
   clear: () => void
 }
-const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units, dependents: s.dependents ?? [] })
+const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units, dependents: s.dependents })
+// Read as late as possible, just before the first stop, and journaled before it. A journal that already names them
+// is kept: after a stop the running set no longer says what has to come back.
+function noteDependents(record: Pending, ops: Ops): Pending {
+  if (record.dependents) return record
+  const noted = { ...record, dependents: ops.dependents() }
+  ops.save(noted)
+  return noted
+}
+// The services first, then a checkpoint, then the host's own units. A retry after one of those failed to start must
+// not stop services that are already healthy, which would take the others down again.
+async function bringUp(record: Pending, release: Snapshot, ops: Ops) {
+  if (!(record.published && (await ops.healthy(release)))) {
+    await ops.publish(release)
+    ops.save({ ...record, published: true })
+  }
+  ops.revive(record.dependents ?? [])
+  ops.clear()
+}
 // Put the old release back. Order matters across a crash: the journal says "restored" before the old service can
 // accept a write, and the vault copy is deleted only after the journal no longer names it.
-export async function restoreOld(old: Snapshot, loc: Loc | null, ops: Ops) {
+export async function restoreOld(old: Pending, loc: Loc | null, ops: Ops) {
+  let record = noteDependents(old, ops)
   ops.stop()
   if (loc) {
     ops.restore(loc)
-    ops.save({ ...plain(old), store: null })
+    record = { ...plain(record), store: null }
+    ops.save(record)
   }
-  await ops.publish(plain(old))
-  ops.revive(old.dependents ?? [])
-  ops.clear()
+  await bringUp(record, plain(record), ops)
   if (loc) ops.discard(loc.store)
 }
 // The journal after an interruption. A committed activation is finished forward (and its metadata rewritten, which
 // is idempotent); anything else is rolled back, to the state directory path the journal recorded.
 export async function recoverPending(p: Pending, ops: Ops) {
   if (p.phase === 'forward' && p.target) {
-    ops.finish(plain(p), p.store ?? null)
-    await ops.publish(p.target)
-    ops.revive(p.dependents ?? [])
-    ops.clear()
+    const record = noteDependents(p, ops)
+    ops.finish(plain(record), p.store ?? null)
+    await bringUp(record, p.target, ops)
     return 'forward'
+  }
+  // The old release was already back and ready: nothing is restored again.
+  if (p.published) {
+    await bringUp(p, plain(p), ops)
+    return 'rollback'
   }
   ensure(!p.store || p.data, 'The journal names a vault copy without its state directory')
   await restoreOld(p, p.store ? { store: p.store, data: p.data! } : null, ops)
   return 'rollback'
 }
 export async function activate(current: Snapshot, target: Snapshot, ops: Ops) {
-  // Read before anything stops, and journaled so that a recovery after a crash still knows what to start.
-  const old: Snapshot = { ...current, dependents: ops.dependents() }
+  let old: Pending = current
   ops.save(old)
   let loc: Loc | null = null
   try {
     if (old.version) await ops.drain()
+    old = noteDependents(old, ops)
     ops.stop()
     ops.fence() // the decisive downgrade check, with the writer stopped
     if (old.version) {
@@ -527,11 +551,10 @@ export async function activate(current: Snapshot, target: Snapshot, ops: Ops) {
   // Proven against the real store on a private port. Rollback is disarmed before any public traffic: from here a
   // failure is fixed forward. The record keeps the old configuration and the copy so that recovery can rewrite
   // previous.json; it is never restored from in this phase.
-  ops.save({ ...old, store: loc?.store ?? null, data: loc?.data, phase: 'forward', target })
+  const record: Pending = { ...old, store: loc?.store ?? null, data: loc?.data, phase: 'forward', target }
+  ops.save(record)
   ops.finish(old, loc?.store ?? null)
-  await ops.publish(target)
-  ops.revive(old.dependents ?? [])
-  ops.clear()
+  await bringUp(record, target, ops)
 }
 async function main() {
   ensure(process.getuid?.() === 0, 'Requires root and the upgrade.sh lock')
@@ -561,6 +584,13 @@ async function main() {
     },
     prove,
     publish,
+    healthy: async (s) => {
+      if (!s.version || active() !== s.version) return false
+      return ready(s.version).then(
+        () => true,
+        () => false,
+      )
+    },
     restore: (loc) => restoreStore(loc.data, loc.store),
     discard: (store) => fs.rmSync(store, { recursive: true, force: true }),
     // previous.json names the vault copy for the operator. --rollback never restores it: the newer release has written since.
