@@ -137,6 +137,16 @@ test('Apple first admin can add a password and a viewer can manage an independen
   ).split(';')[0]
   const creds = { username: 'reader', password: 'a-viewer-password' }
   assert.equal((await post('/profile/password', creds, viewer)).statusCode, 200)
+  assert.equal(
+    (
+      await post(
+        '/profile/password',
+        { username: 'reader', password: 'changed-by-session' },
+        viewer,
+      )
+    ).statusCode,
+    403,
+  )
   const cookie = String((await post('/auth/password', creds)).headers['set-cookie']).split(';')[0]
   assert.equal((await api.inject({ url: '/profile', headers: { cookie } })).json().role, 'viewer')
   assert.equal(

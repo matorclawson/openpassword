@@ -1,0 +1,9 @@
+flows:
+  check_github_access:
+    description: Check whether this assistant can look up the connected GitHub profile.
+    steps:
+      - action: action_check_github_access
+  read_github_login:
+    description: Look up the GitHub username connected to this assistant.
+    steps:
+      - action: action_read_github_login

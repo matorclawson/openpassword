@@ -115,3 +115,17 @@ test('external key protects new and migrated vault snapshots, including after re
     }
   }
 })
+
+test('operator custody policy refuses to initialize a broker without its external wrapping key', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'wrapped-policy-'))
+  const previous = process.env.OPENPASSWORD_REQUIRE_WRAPPED_MASTER
+  process.env.OPENPASSWORD_REQUIRE_WRAPPED_MASTER = '1'
+  t.after(() => {
+    if (previous === undefined) delete process.env.OPENPASSWORD_REQUIRE_WRAPPED_MASTER
+    else process.env.OPENPASSWORD_REQUIRE_WRAPPED_MASTER = previous
+    rmSync(dir, { recursive: true, force: true })
+  })
+  assert.throws(() => store(dir, ''), /external wrapping key/)
+  process.env.OPENPASSWORD_REQUIRE_WRAPPED_MASTER = 'true'
+  assert.throws(() => store(dir, ''), /must be 0 or 1/)
+})

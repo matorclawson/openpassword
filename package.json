@@ -20,6 +20,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "dependencies": {
+    "@simplewebauthn/server": "13.3.3",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
@@ -27,9 +28,9 @@
     "ajv": "^8.20.0",
     "concurrently": "^10.0.7",
     "fastify": "^5.12.8",
-    "jose": "^6.2.18",
+    "jose": "^6.2.17",
     "jsonc-parser": "^3.3.1",
-    "lucide-react": "^1.77.0",
+    "lucide-react": "^1.72.0",
     "next": "^16.4.6",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
@@ -48,6 +49,6 @@
   ],
   "devDependencies": {
     "esbuild": "0.28.2",
-    "playwright-core": "^1.65.1"
+    "playwright-core": "^1.65.0"
   }
 }

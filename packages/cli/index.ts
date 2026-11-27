@@ -76,6 +76,35 @@ async function tokens(revoke = false) {
   })
 }
 async function main() {
+  if (cmd === 'vault-deposit') {
+    if (args.length || process.stdin.isTTY) throw Error('Supply only the one-time receipt on stdin')
+    let ticket = ''
+    for await (const part of process.stdin) {
+      if (part.length + ticket.length > 46) throw Error('Invalid deposit receipt')
+      ticket += part.toString('ascii')
+    }
+    ticket = ticket.trim()
+    if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) throw Error('Invalid deposit receipt')
+    await new OpenPassword(origin).request('/v1/vault/deposits', {ticket})
+    console.log('Private item saved')
+    return
+  }
+  if (cmd === 'harness') {
+    const { prepareHarness, targets } = await import('./harness.js')
+    if (args.length === 1 && args[0] === 'list') {
+      console.log(targets.join('\n'))
+      return
+    }
+    if (
+      !(args.length === 3 || (args.length === 4 && args[3] === '--standalone')) ||
+      args[0] !== 'prepare'
+    )
+      throw Error(
+        'Usage: openpassword harness list | harness prepare TARGET NEW_DIRECTORY [--standalone]',
+      )
+    console.log(prepareHarness(args[1], args[2], args[3] === '--standalone'))
+    return
+  }
   if (cmd === 'version') {
     console.log('OpenPassword CLI 0.2.0 · protocol 1')
     return
@@ -251,6 +280,8 @@ async function main() {
       'connections',
       'invoke',
       'artifact',
+      'invoke-json',
+      'operation',
       'revoke',
       'whoami',
       'activity',
@@ -261,7 +292,7 @@ async function main() {
     ].includes(cmd)
   )
     throw Error(
-      'Usage: openpassword host connect | host serve | host status | setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | artifact ID [SHA256] | revoke',
+      'Usage: openpassword vault-deposit < receipt | harness list | harness prepare TARGET NEW_DIRECTORY [--standalone] | operation OPERATION_ID REQUEST_KEY | invoke-json | host connect | host serve | host status | setup-code | connect | whoami | activity | watch | capabilities | models | chat MODEL MAX_TOKENS KEY < prompt.txt | pair [name] | mcp | connections | invoke CONNECTION OPERATION KEY JSON | artifact ID [SHA256] | revoke',
     )
   if (cmd === 'watch') {
     let cursor: number | undefined = args.length ? Number(args[0]) : undefined
@@ -293,6 +324,74 @@ async function main() {
   const t = await tokens(cmd === 'revoke')
   if (cmd === 'revoke') return
   const bound = agentClient(t.access_token)
+  if (cmd === 'invoke-json' || cmd === 'operation') {
+    if (process.stdin.isTTY || (cmd === 'invoke-json' ? args.length !== 0 : args.length !== 2))
+      throw Error(
+        'Use invoke-json < request.json or operation OPERATION_ID REQUEST_KEY < arguments.json',
+      )
+    const { z } = await import('zod')
+    const chunks: Buffer[] = []
+    let bytes = 0
+    for await (const chunk of process.stdin) {
+      bytes += chunk.length
+      if (bytes > 65536) throw Error('Invocation exceeds 64 KiB')
+      chunks.push(chunk)
+    }
+    let payload: unknown
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    } catch {
+      throw Error('Invalid invocation JSON')
+    }
+    const field = z.string().min(1)
+    if (cmd === 'operation') {
+      const caps = await bound.request<{
+        connection_id: string
+        connection_revision: string
+        external_identity: string
+        operations: { id: string }[]
+      }>('/v1/capabilities')
+      if (!caps.operations.some((op) => op.id === args[0]))
+        throw Error('Operation is unavailable to this grant')
+      payload = {
+        operation_id: args[0],
+        idempotency_key: args[1],
+        connection_id: caps.connection_id,
+        arguments: payload,
+        expect: {
+          external_identity: caps.external_identity,
+          connection_revision: caps.connection_revision,
+        },
+      }
+    }
+    const parsed = z
+      .object({
+        connection_id: field,
+        operation_id: field,
+        arguments: z.record(z.string(), z.unknown()),
+        idempotency_key: field,
+        expect: z
+          .object({ external_identity: field, connection_revision: field })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .safeParse(payload)
+    if (!parsed.success) throw Error('Invalid invocation fields')
+    const b = parsed.data
+    console.log(
+      JSON.stringify(
+        await bound.invoke(
+          b.connection_id,
+          b.operation_id,
+          b.arguments,
+          b.idempotency_key,
+          b.expect,
+        ),
+      ),
+    )
+    return
+  }
   if (cmd === 'chat') {
     if (args.length !== 3 || process.stdin.isTTY)
       throw Error('Usage: openpassword chat MODEL MAX_TOKENS KEY < prompt.txt')

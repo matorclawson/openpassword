@@ -35,3 +35,64 @@ export async function decryptPrivate(key: CryptoKey, context: string, value: str
   )
   return new TextDecoder().decode(clear)
 }
+
+// The encrypted outer record protects the random item key along with its title.
+export async function sealPrivateItem(
+  vault: CryptoKey,
+  context: string,
+  field: string,
+  title: string,
+  secret: string,
+) {
+  const itemKey = newVaultKey()
+  const protectedValue = await encryptPrivate(await importVaultKey(itemKey), field, secret)
+  return encryptPrivate(vault, context, JSON.stringify({ title, itemKey, protectedValue }))
+}
+export async function openPrivateValue(
+  vault: CryptoKey,
+  field: string,
+  item: { itemKey?: string; protectedValue: string },
+) {
+  return decryptPrivate(
+    item.itemKey === undefined ? vault : await importVaultKey(item.itemKey),
+    field,
+    item.protectedValue,
+  )
+}
+
+export const privateScheme = 'PBKDF2-SHA256-600000-v1'
+async function unlockInputs(
+  secretKey: string,
+  passphrase: string,
+  tenant: string,
+  profile: string,
+) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(secretKey) || !passphrase)
+    throw Error('Both vault unlock factors are required')
+  const password = await crypto.subtle.importKey('raw', bytes.encode(passphrase), 'PBKDF2', false, [
+    'deriveKey',
+    'deriveBits',
+  ])
+  // The generated account secret supplies 256 random bits to the KDF, independent of the password.
+  const salt = bytes.encode(
+    JSON.stringify(['OpenPassword.vault.unlock', privateScheme, tenant, profile, secretKey]),
+  )
+  return { algorithm: { name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt }, password }
+}
+export async function derivePrivateKey(...args: Parameters<typeof unlockInputs>) {
+  const { algorithm, password } = await unlockInputs(...args)
+  return crypto.subtle.deriveKey(algorithm, password, { name: 'AES-GCM', length: 256 }, false, [
+    'encrypt',
+    'decrypt',
+  ])
+}
+// Expose key material only while explicitly provisioning a recovery or device wrapper.
+export async function deriveCustodyMaterial(...args: Parameters<typeof unlockInputs>) {
+  const { algorithm, password } = await unlockInputs(...args)
+  const raw = new Uint8Array(await crypto.subtle.deriveBits(algorithm, password, 256))
+  try {
+    return encode(raw)
+  } finally {
+    raw.fill(0)
+  }
+}

@@ -1,6 +1,7 @@
 'use client'
 import { PrivateVault } from './private-vault'
 import { HostDirectory } from './host-directory'
+import { usePasskey } from './passkeys-client'
 import { Authentication, ConsoleLogin, Profile } from './authentication'
 import { WorkspaceSwitcher } from './workspace-switcher'
 import { ProviderDirectory } from './provider-directory'
@@ -113,14 +114,26 @@ const paths: Record<Tab, string> = {
   Workspace: '/workspace',
 }
 const stamp = (n: number) => new Date(n).toLocaleString()
-async function request(path: string, body?: unknown, method = body ? 'POST' : 'GET') {
-  const r = await fetch('/api/' + path, {
-    method,
-    cache: 'no-store',
-    headers: body ? { 'Content-Type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  const data = await r.json()
+async function request(path: string, body?: unknown, method = body ? 'POST' : 'GET'): Promise<any> {
+  const send = (proof?: string) =>
+    fetch('/api/' + path, {
+      method,
+      cache: 'no-store',
+      headers: {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(proof ? { 'OpenPassword-Approval': proof } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  let r = await send(),
+    data = await r.json()
+  if (r.status === 428 && data.approval) {
+    const { id, options } = data.approval
+    const response = await usePasskey(options)
+    const a = await request('profile/passkeys/approve', { id, response })
+    r = await send(a.proof)
+    data = await r.json()
+  }
   if (!r.ok) throw Object.assign(Error(data.detail || 'Request failed'), { status: r.status })
   return data
 }
@@ -559,6 +572,9 @@ export default function Page() {
         <div className="version">
           OpenPassword <code>v{w.version}</code>
         </div>
+        <a className="sourceLink" href="/v1/openapi.json">
+          HTTP API reference
+        </a>
         <a className="sourceLink" href="/openpassword-source.tar.gz" download>
           Download source
         </a>
@@ -864,7 +880,9 @@ export default function Page() {
                               Allowed operations · {JSON.parse(g.ops).join(', ')}
                               {g.model && ' · Model ' + g.model}
                             </small>
-                            {g.connected_at && <small>CLI connected {stamp(g.connected_at)}</small>}
+                            {g.connected_at && (
+                              <small>Client connected {stamp(g.connected_at)}</small>
+                            )}
                             <small>
                               Grant ID · <code>{g.id}</code>
                             </small>

@@ -134,9 +134,11 @@ To reproduce the gateway load checks, run `node --import tsx scripts/gateway-loa
 
 ## Upgrade a running systemd installation
 
-The Linux gate uses Node v24.19.0, runs the test suite, builds the exact commit with `make package COMMIT=<full-sha>`, then runs `make checksum`. Record the approved **archive digest, commit, version and architecture** independently of the file transfer. Keep the archive in gate custody.
+The release signer supplies the detached CLI signature as described in [SECURITY.md](../SECURITY.md). The Linux gate uses Node v24.19.0, runs the test suite, builds the exact commit with `make package COMMIT=<full-sha>`, then runs `make checksum`. Record the approved **archive digest, commit, version and architecture** independently of the file transfer. Keep the archive in gate custody.
 
 On the server use the trusted `deploy/upgrade.sh` delivered separately with the gate handoff. Linux, GNU tar/coreutils, util-linux flock and systemd are required. Production needs neither npm nor a checkout. For example, with the gate's values in the shell:
+
+**Deployment operator · production server · sudo required**
 
 ```sh
 sudo sh deploy/upgrade.sh --install "$ARCHIVE" "$EXPECTED_SHA256" "$VERSION" "$EXPECTED_COMMIT"
@@ -149,6 +151,8 @@ The installer hashes a private staged copy before extraction, then runs the veri
 The activation lock covers preflight through readiness. A supporting broker gets up to 90 seconds to drain. Older brokers use their existing shutdown behavior. Both services stop, and the updater then takes a copy of the state directory (see below). The candidate is proven before it is public: it replaces the `current` symlink and base units, the broker alone starts on private port 4151 through a runtime drop-in under `/run` (gone after a reboot), against the real store, which it may migrate, while the console stays stopped. Its health and release identity must agree. It then stops, and rollback is disarmed: the journal is marked committed before the normal-port start, because from then on the broker can accept writes. The public start runs both units with local console and broker readiness, service working directories and bundled executables. A failure there is fixed forward; `--recover` repeats the public start. Drop-ins are preserved. On first installation enable both units for boot after successful readiness.
 
 Use the **installed version that contains this updater** as the argument to these maintenance commands, even when the active version is older:
+
+**Deployment operator · production server · sudo required**
 
 ```sh
 sudo sh deploy/upgrade.sh --rollback 0.4.0
@@ -168,6 +172,8 @@ Workspace vault items keep their existing human reveal policy. A grant authorize
 ## Remote operator and CLI enrollment
 
 On a systemd installation, `openpassword setup-code --ssh operator@host` uses the SSH host key already verified by the operator and noninteractive sudo permission to read the service token. An SSH config alias supports custom ports and jump hosts. If sudo needs a password, log in interactively, then run this on the host:
+
+**First administrator · service host · sudo for the read only**
 
 ```sh
 sudo cat /var/lib/openpassword/operator.token | /opt/openpassword/current/node/bin/node /opt/openpassword/current/public/openpassword-cli.cjs setup-code --operator-stdin
@@ -197,6 +203,8 @@ Workspace → CLI hosts issues a ten-minute, single-use enrollment ticket for a 
 
 Install the verified CLI and Node 24 on the agent host. Run the bridge as a dedicated service identity. The sample Linux unit in deploy/host uses a user named openpassword-host and a group named openpassword-agents. Give agent OS accounts membership in that group. Keep the identity directory owned by the service user with mode 0700. Place the verified executable at /usr/local/bin/openpassword. Put OPENPASSWORD_BROKER=https://your-console.example in /etc/openpassword/host.env. As the host administrator:
 
+**Host administrator · agent execution host · sudo required**
+
 ```sh
 sudo install -d -m 0700 -o openpassword-host -g openpassword-agents /var/lib/openpassword-host
 sudo -u openpassword-host env OPENPASSWORD_BROKER=https://your-console.example OPENPASSWORD_HOST_HOME=/var/lib/openpassword-host /usr/local/bin/openpassword host connect
@@ -206,6 +214,8 @@ sudo systemctl enable --now openpassword-host
 ```
 
 Paste the web ticket at the hidden CLI prompt. The service only exposes a Unix signing socket. Its private key stays in the host service account. In each agent's own OS account:
+
+**Agent OS user · agent execution host · no sudo**
 
 ```sh
 export OPENPASSWORD_BROKER=https://your-console.example
@@ -222,7 +232,7 @@ Host proofs bind the broker origin, verb, path and query, authorization header a
 
 ## Personal private vault
 
-Open Private vault, generate a private vault key and confirm the saved copy. This recovery key is independent of social or password sign-in. Each human profile has a separately scoped encrypted directory in each workspace. Item names and values are encrypted in the browser using Web Crypto AES-GCM with independent random 96-bit IVs, and workspace, human profile, field and item identifiers as authenticated context. The service stores ciphertext, opaque IDs, revisions and delegation relationships. The browser unlocks directory entries and decrypts secret fields for reveal, edit or confirmed delegation. The private vault locks on page hide, navigation and after five minutes without keyboard or pointer interaction. There is no persistent device unlock or server recovery for a lost key.
+Open Private vault, generate a private vault key, confirm the saved copy and choose a separate vault passphrase. New vaults require both factors. To upgrade a legacy vault, the owner unlocks it in the browser and selects **Upgrade vault protection**. Save the new key and passphrase separately. After the vault locks, reopen it with both and check an item. Keep the old key for historical backups. A concurrent edit requires a fresh attempt. If the connection drops near commit, reopen the page. A passphrase prompt identifies the upgraded vault. Pending CLI deposit receipts must be reissued after migration. Upgrade every broker before enabling this flow. The updated root installer refuses an older broker without generation checks once a vault has migrated. Run the updated installer for both installation and rollback. A downgrade requires a separately rehearsed restore of compatible state and accounting for writes since backup. This recovery key is independent of social or password sign-in. Each human profile has a separately scoped encrypted directory in each workspace. Item names and values are encrypted in the browser using Web Crypto AES-GCM with independent random 96-bit IVs, and workspace, human profile, field and item identifiers as authenticated context. The service stores ciphertext, opaque IDs, revisions and delegation relationships. The browser unlocks directory entries and decrypts secret fields for reveal, edit or confirmed delegation. The private vault locks on page hide, navigation and after five minutes without keyboard or pointer interaction. There is no persistent device unlock or server recovery for a lost key.
 
 Authorize gateway copy explicitly creates a personal provider connection. The browser decrypts only that item and seals its value to the broker's intake key. A human must separately authorize each agent. Editing the private item does not rotate an existing gateway copy. Revoke the connection in Connections before deleting the private source. Other workspace members, including its administrator, cannot list the private profile's items through the API. Existing shared vault items retain their previous server-side encryption and sharing. A malicious browser extension, modified JavaScript from the web server, or a compromised unlocked endpoint can still capture private data. No production security audit is implied.
 
