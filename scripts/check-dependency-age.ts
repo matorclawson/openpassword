@@ -62,3 +62,25 @@ async function worker() {
 await Promise.all(Array.from({ length: 8 }, worker))
 if (failures.length) throw Error('Dependency age gate refused:\n' + failures.sort().join('\n'))
 console.log('Verified minimum age for ' + packages.size + ' registry packages')
+
+// Third-party Go modules pinned for the engines. The two engines themselves are our own libraries,
+// pinned by exact version in the same file.
+const own = ['github.com/rodriveracom/dostoevsky', 'github.com/rodriveracom/ephemeral']
+const modules = [
+  ...readFileSync('engines/go.mod', 'utf8').matchAll(
+    /^(?:require)?[ \t]+([a-z0-9./_-]+) (v[0-9A-Za-z.+-]+)(?: \/\/ indirect)?$/gm,
+  ),
+].filter(([, name]) => !own.includes(name))
+if (!modules.length) throw Error('Unrecognized Go dependency list')
+for (const [, name, version] of modules) {
+  const response = await fetch(
+    'https://proxy.golang.org/' + name + '/@v/' + encodeURIComponent(version) + '.info',
+    { redirect: 'error', signal: AbortSignal.timeout(20000) },
+  )
+  if (!response.ok) throw Error('Missing publication metadata for ' + name)
+  const metadata = await response.json(),
+    published = Date.parse(metadata.Time)
+  if (metadata.Version !== version || !Number.isFinite(published) || published > cutoff)
+    throw Error('Dependency age gate refused ' + name + '@' + version)
+}
+console.log('Verified minimum age for ' + modules.length + ' pinned third-party Go modules')

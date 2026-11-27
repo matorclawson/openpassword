@@ -4,8 +4,30 @@
 
 ### Before you upgrade from 0.4.1
 
-- **Take an encrypted backup and prove that it restores first** (`backup.sh --encrypt` on the server, then `operator-backup.sh check FILE.age` on the operator's own computer). Once a private vault has been upgraded, a passkey enrolled or a model custodian configured, the updater refuses to move back to a release that cannot handle it.
+- **Take an encrypted backup and prove that it restores first** (on the server, `sudo /opt/openpassword/current/deploy/backup/backup.sh --encrypt > FILE.age`; then, on the operator's own computer, `bash operator-backup.sh check FILE.age`). Once a private vault has been upgraded, a passkey enrolled or a model custodian configured, the updater refuses to move back to a release that cannot handle it.
 - **Check every HubSpot connection that publishes issue bundles:** exactly one of its selected resources may begin with `/`, and it must be a valid absolute folder ending in `/` (up to five segments of letters, digits, `_`, `.` and `-`, each starting with a letter, digit or `_`). That entry is now the upload folder.
+- **Building from source now needs Go:** the two engine binaries are built from pinned Go modules, so a source build needs Go 1.25 or later and access to a Go module proxy.
+
+### Company onboarding
+
+- First administrators choose local or remote setup, confirm installation control with a CLI code, and land in Team overview.
+- Owners can save a shared login, issue a workspace member token, and follow a real teammate reveal to item history. The same screen supports offboarding.
+- Added a repeatable two-browser company demonstration with synthetic credentials and a presenter guide.
+
+### Durable activity and workflows
+
+#### Stream delivery and recoverable operator backups
+
+- Batches up to 64 ordered event references in one journal record. Broker writes wake the publisher and workflow scheduler. Lightweight shell supervisors release engine processes on broker exit.
+- Adds operator-side backup jobs with durable progress, resumable encrypted delivery, checksums, and a restore check using the operator’s key. See [engine operations](docs/engine-operations.md).
+- Adds a 60-agent streaming workload, per-process idle measurements, and backup interruption cases to native acceptance.
+
+#### Initial engine integration
+
+- The console and CLI now read activity carried by a private Dostoevsky gateway. Existing activity cursors survive restarts. Usage and metering transitions have a transactional delivery queue.
+- Ephemeral drives enrollment expiry, approval decisions, revocation and credential-rotation propagation, the backup snapshot step, and offline rotation of the vault wrapping key.
+- The local client can retry a lost device-token response. An expired pairing now reports the reason to the operator.
+- Gate builds include both pinned engine binaries. See [engine operations](docs/engine-operations.md) for retention, rollback, recovery and verification.
 
 ### Human vault security and remote model custody
 
@@ -24,7 +46,7 @@
 
 ### Fixes since the review
 
-- `openpassword version` reports the release that carries it; 0.3.x and 0.4.x printed `0.2.0`.
+- `openpassword version` reports the release that carries it; 0.3.x and 0.4.x, including 0.4.1, printed `0.2.0`.
 - The updater starts again the host units that systemd stops together with the broker and console, such as a reverse proxy that requires the web service. A unit that was already stopped is left alone. If one fails to start, the command fails and `--recover` retries it without stopping healthy services.
 - The CLI and MCP report why the broker refused a request, for example `Broker returned 400: Expired pairing`. Only text the broker marks as public is shown, so both the broker and the client need this version.
 - App sign-in confirmation now reaches the application: the page's content security policy blocked the redirect to the callback in Chrome. Registration refuses a callback whose host is not a domain name or IPv4 address; applications registered earlier are not re-checked.
