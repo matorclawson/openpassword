@@ -4,9 +4,10 @@
 
 ### Before you upgrade from 0.4.1
 
-- **Take an encrypted backup and prove that it restores first** (on the server, `sudo /opt/openpassword/current/deploy/backup/backup.sh --encrypt > FILE.age`; then, on the operator's own computer, `bash operator-backup.sh check FILE.age`). Once a private vault has been upgraded, a passkey enrolled or a model custodian configured, the updater refuses to move back to a release that cannot handle it.
-- **Check every HubSpot connection that publishes issue bundles:** exactly one of its selected resources may begin with `/`, and it must be a valid absolute folder ending in `/` (up to five segments of letters, digits, `_`, `.` and `-`, each starting with a letter, digit or `_`). That entry is now the upload folder.
-- **Building from source now needs Go:** the two engine binaries are built from pinned Go modules, so a source build needs Go 1.25 or later and access to a Go module proxy.
+- **Take an encrypted backup and prove that it restores first** (on the server, `sudo /opt/openpassword/current/deploy/backup/backup.sh --encrypt > FILE.age`; then, on the operator's own computer, `bash operator-backup.sh check FILE.age`).
+- **There is no direct way back once 0.5.0 is public:** starting 0.5.0 adds workflow state to the vault database, and the updater then refuses to activate a release without workflow support, `--rollback` to 0.4.1 included. If activation fails before 0.5.0 goes public, the updater restores 0.4.1 and the matching vault copy itself. After that, returning means restoring the pre-upgrade copy or backup by hand, which discards everything written since, revocations included (see [engine operations](docs/engine-operations.md)). An upgraded private vault, an enrolled passkey or a configured model custodian also blocks releases that cannot handle them.
+- **Check every HubSpot connection that publishes issue bundles:** exactly one of its selected resources may begin with `/`, and it must be a valid absolute folder ending in `/` (up to five segments of letters, digits, `_`, `.` and `-`, each starting with a letter, digit or `_` and at most 80 characters long). That entry is now the upload folder.
+- **Building from source now needs Go:** the two engine binaries are built from pinned Go modules, so a source build needs Go 1.25 or later and access to a Go module proxy, or a module cache that already holds the pinned modules. The release gate uses Node 24.19.0 and Go 1.26.2.
 
 ### Company onboarding
 
@@ -18,7 +19,7 @@
 
 #### Stream delivery and recoverable operator backups
 
-- Batches up to 64 ordered event references in one journal record. Broker writes wake the publisher and workflow scheduler. Lightweight shell supervisors release engine processes on broker exit.
+- Batches up to 64 ordered event references in one journal record. Broker writes wake the publisher and workflow scheduler. Lightweight shell supervisors release engine processes on broker exit, except that a stuck workflow engine can survive a forced broker kill outside systemd (see [engine operations](docs/engine-operations.md)).
 - Adds operator-side backup jobs with durable progress, resumable encrypted delivery, checksums, and a restore check using the operator’s key. See [engine operations](docs/engine-operations.md).
 - Adds a 60-agent streaming workload, per-process idle measurements, and backup interruption cases to native acceptance.
 
