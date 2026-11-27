@@ -17,6 +17,15 @@
 - The release gate validates dependency publication age and the signed standalone client. Workstation updates require independently provisioned trust. Root recovery checks its installed runtime and suppresses child stderr.
 - Added cross-site mutation rejection and reauthorization of buffered model responses and streaming chunks. See SECURITY.md for trust boundaries, remaining gaps and staging tests.
 
+### Fixes since the review (unreleased)
+
+- The updater starts again the host units that systemd stops together with the broker and console, such as a reverse proxy that requires the web service. A unit that was already stopped is left alone. If one fails to start, the command fails and `--recover` retries it without stopping healthy services.
+- The CLI and MCP report why the broker refused a request, for example `Broker returned 400: Expired pairing`. Only text the broker marks as public is shown, so both the broker and the client need this version.
+- App sign-in confirmation now reaches the application: the page's content security policy blocked the redirect to the callback in Chrome. Registration refuses a callback whose host is not a domain name or IPv4 address; applications registered earlier are not re-checked.
+- Removing a passkey and discarding its pending approvals happen in one transaction.
+- **Check before upgrading:** a HubSpot issue bundle's upload folder is no longer fixed in the code. It is the connection's one selected resource that starts and ends with `/`. A connection with no such entry, or more than one, cannot publish issue bundles.
+- The README and operations guide say who runs each command, where, and whether it needs sudo.
+
 ### HTTP API
 
 - Published the core agent API contract at `GET /v1/openapi.json`. Added a direct HTTP walkthrough, a dependency-free Node fetch example for host-bound grants, and a TCP integration test covering approval, invocation, replay, rotation and revocation.
