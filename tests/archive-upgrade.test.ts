@@ -4,12 +4,12 @@ import * as fs from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, refuseHostProofDowngrade, enforcesHostProof } from '../deploy/upgrade.ts'
+import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, refuseHostProofDowngrade, enforcesHostProof, dependentsOf } from '../deploy/upgrade.ts'
 
 type Snap = { version: string | null; units: (string | null)[] }
 const old: Snap = { version: '0.3.1', units: ['old-broker', 'old-web'] }
 const next: Snap = { version: '0.4.0', units: ['new-broker', 'new-web'] }
-type Rec = Snap & { store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
+type Rec = Snap & { dependents?: string[]; store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
 
 // A model of the host: the journal, the vault copy, the store schema and what is running. Every operation can
 // be interrupted before it runs (`crashAt`), and the candidate can fail at any of its boundaries.
@@ -25,6 +25,7 @@ function newHost() {
     running: 'old' as 'old' | 'private' | 'public' | 'none',
     oldServing: false, // the old release is up and may have acknowledged writes
     previous: null as string | null | undefined, // what previous.json names; undefined until written
+    ingress: true, // a host unit that requires the console: systemd stops it with ours
     calls: 0,
     log: [] as string[],
   }
@@ -39,6 +40,12 @@ function host(
     if (++h.calls === opts.crashAt) throw new Crash(name)
   }
   const ops = {
+    dependents: () => (h.ingress ? ['edge.service'] : []),
+    revive: (names: string[]) => {
+      tick('revive')
+      assert.equal(h.running, 'public', 'dependents start only after the services are public')
+      if (names.includes('edge.service')) h.ingress = true
+    },
     save: (s: Rec) => {
       tick('save')
       if (s.store) {
@@ -51,6 +58,7 @@ function host(
     stop: () => {
       tick('stop')
       h.running = 'none'
+      h.ingress = false
     },
     fence: () => {
       tick('fence')
@@ -76,6 +84,7 @@ function host(
     },
     publish: async (t: Snap) => {
       tick('publish ' + t.version)
+      h.ingress = false // publish stops our services before starting them
       assert.equal(h.running === 'private' ? 'x' : 'ok', 'ok', 'publish stops the private candidate first')
       h.release = t.version
       if (t.version === old.version) {
@@ -118,6 +127,7 @@ function consistent(h: Host) {
   assert.ok(oldSide || newSide, 'release ' + h.release + ' with schema ' + h.schema + ' after ' + h.log.join(','))
   assert.equal(h.pending, null, 'the journal is cleared')
   assert.equal(h.running, 'public')
+  assert.ok(h.ingress, 'the dependent unit is running again after ' + h.log.join(','))
   if (h.release === next.version) assert.equal(h.previous, 'snap', 'previous.json exists and names the copy')
 }
 
@@ -143,6 +153,7 @@ for (const candidate of ['ok', 'fail-after-migration', 'fail-public'] as const)
       assert.equal(h.release, next.version)
       assert.equal(h.schema, 2, 'no restore after the point of no return')
       assert.ok(!h.log.includes('restore'))
+      assert.deepEqual(h.pending?.dependents, ['edge.service'], 'recovery still knows what to start')
     }
   })
 
@@ -152,6 +163,7 @@ test('a grant created during the drain refuses the move with the old release kep
   assert.ok(!h.log.includes('backup') && !h.log.includes('prove'), 'neither the copy nor the candidate ran')
   assert.equal(h.release, old.version)
   assert.equal(h.running, 'public')
+  assert.ok(h.ingress)
   assert.equal(h.schema, 1)
   assert.equal(h.pending, null)
 })
@@ -185,7 +197,9 @@ for (const candidate of ['ok', 'fail-after-migration', 'fail-public', 'grant-sli
       if (!crashed) continue
       interrupted++
       // Power returns: nothing is running; the journal and the vault copy remain. Recovery runs without faults.
+      // The ingress is down too once anything was stopped, so only the journal can say to start it.
       h.running = 'none'
+      if (h.log.includes('stop')) h.ingress = false
       const journal = h.pending
       if (!journal) {
         assert.equal(h.schema, 1, 'interrupted before the first journal write: nothing was touched')
@@ -213,7 +227,8 @@ test('interrupting the recovery itself never replays a restore over writes the o
     h.snapshotSchema.set('snap', 1)
     h.schema = 2
     h.running = 'none'
-    h.pending = { ...old, store: 'snap', data: '/state/openpassword' }
+    h.ingress = false
+    h.pending = { ...old, dependents: ['edge.service'], store: 'snap', data: '/state/openpassword' }
     let n = 0
     const crashy = Object.fromEntries(
       Object.entries(ops).map(([k, f]) => [
@@ -238,7 +253,24 @@ test('interrupting the recovery itself never replays a restore over writes the o
     assert.equal(h.pending, null)
     assert.equal(h.schema, 1)
     assert.equal(h.release, old.version)
+    assert.ok(h.ingress)
   }
+})
+
+test('running units that systemd stops with ours are found, through chains, and stopped ones are left alone', () => {
+  const graph: Record<string, string> = {
+    'broker.service': 'ActiveState=active\nRequiredBy=web.service backup.service\nBoundBy=\nConsistsOf=',
+    'web.service': 'ActiveState=active\nRequiredBy=edge.service\nBoundBy=\nConsistsOf=sidecar.service',
+    'edge.service': 'ActiveState=active\nRequiredBy=\nBoundBy=metrics.service',
+    'sidecar.service': 'ActiveState=activating\nRequiredBy=web.service',
+    'metrics.service': 'ActiveState=active',
+    'backup.service': 'ActiveState=inactive\nRequiredBy=',
+  }
+  assert.deepEqual(
+    dependentsOf(['broker.service', 'web.service'], (unit) => graph[unit]),
+    ['edge.service', 'sidecar.service', 'metrics.service'],
+  )
+  assert.deepEqual(dependentsOf(['broker.service'], () => 'ActiveState=inactive\nRequiredBy='), [])
 })
 
 // Store helpers against real SQLite files.
