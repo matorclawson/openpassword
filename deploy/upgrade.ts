@@ -15,9 +15,21 @@ const units = ['openpassword-broker.service', 'openpassword-web.service']
 const unitDir = '/etc/systemd/system'
 const dataLink = '/var/lib/openpassword'
 const semver = /^\d+\.\d+\.\d+$/
-type Snapshot = { version: string | null; units: (string | null)[] }
+// `dependents`: other units that were running and that systemd stops along with ours. The journal acts on it;
+// previous.json carries it too, where nothing reads it.
+// `provisional`: read before the drain, to be read again before the first stop. A list without the mark is final.
+type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[]; provisional?: true }
 // Pending record: the old configuration plus the vault copy taken before the candidate first started.
-type Pending = Snapshot & { store?: string | null; data?: string; phase?: 'forward'; target?: Snapshot }
+// `published`: the release answered its readiness checks; only the host's own units may still be down.
+// `discard`: a vault copy already restored from, to delete before the journal is cleared.
+type Pending = Snapshot & {
+  store?: string | null
+  data?: string
+  phase?: 'forward'
+  target?: Snapshot
+  published?: true
+  discard?: string
+}
 type Loc = { store: string; data: string }
 function ensure(ok: unknown, message: string): asserts ok {
   if (!ok) throw Error(message)
@@ -392,6 +404,36 @@ function stop() {
     if (loaded !== 'not-found') run('systemctl', ['stop', unit])
   }
 }
+// A unit the host adds on top of ours (an HTTPS ingress with Requires=openpassword-web.service, say) is stopped by
+// systemd when ours stops, and starting ours does not start it again. These are the relations that carry a stop.
+const stopCarriers = ['RequiredBy', 'RequisiteOf', 'BoundBy', 'ConsistsOf', 'PropagatesStopTo']
+export function dependentsOf(roots: string[], show: (unit: string) => string) {
+  const seen = new Set(roots),
+    queue = [...roots],
+    running: string[] = []
+  for (let unit = queue.shift(); unit; unit = queue.shift()) {
+    const properties = new Map(
+      show(unit)
+        .split('\n')
+        .map((line): [string, string] => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+    )
+    // Only what was running is started again: a unit the operator had stopped stays stopped.
+    if (!roots.includes(unit) && ['active', 'activating', 'reloading'].includes(properties.get('ActiveState') || ''))
+      running.push(unit)
+    for (const property of stopCarriers)
+      for (const next of (properties.get(property) || '').split(/\s+/).filter(Boolean))
+        if (!seen.has(next)) {
+          seen.add(next)
+          queue.push(next)
+        }
+  }
+  return running
+}
+const showDependencies = (unit: string) =>
+  run('systemctl', ['show', ...['ActiveState', ...stopCarriers].flatMap((p) => ['-p', p]), '--', unit])
+function revive(dependents: string[]) {
+  if (dependents.length) run('systemctl', ['start', '--', ...dependents])
+}
 // While a candidate is proven against the real store it listens on a private port and the console is stopped,
 // so no public request can reach it. The runtime drop-in lives in /run and cannot survive a reboot.
 const probePort = 4151
@@ -458,6 +500,8 @@ async function publish(target: Snapshot) {
   }
 }
 type Ops = {
+  dependents: () => string[]
+  revive: (units: string[]) => void
   save: (s: Pending) => void
   drain: () => Promise<void>
   stop: () => void
@@ -465,42 +509,81 @@ type Ops = {
   backup: () => Loc
   prove: (s: Snapshot) => Promise<void>
   publish: (s: Snapshot) => Promise<void>
+  healthy: (s: Snapshot) => Promise<boolean>
   restore: (loc: Loc) => void
   discard: (store: string) => void
   finish: (s: Snapshot, store: string | null) => void
   clear: () => void
 }
-const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units })
+const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units, dependents: s.dependents })
+// Read as late as possible, just before the first stop, and journaled before it. A final list is kept: after a stop
+// the running set no longer says what has to come back. An activation requires the reading; a rollback or recovery
+// must get the services back even if it keeps failing, so it falls back to the list taken before the drain.
+function noteDependents(record: Pending, ops: Ops, required = false): Pending {
+  if (record.dependents && !record.provisional) return record
+  let dependents = record.dependents ?? []
+  try {
+    dependents = ops.dependents()
+  } catch (error) {
+    if (required) throw error
+    console.error('Could not list the units that depend on the services; check them afterwards: ' + (error as Error).message)
+  }
+  const noted: Pending = { ...record, dependents }
+  delete noted.provisional
+  ops.save(noted)
+  return noted
+}
+// The services first, then a checkpoint, then the host's own units. A retry after one of those failed to start must
+// not stop services that are already healthy, which would take the others down again.
+async function bringUp(record: Pending, release: Snapshot, ops: Ops) {
+  if (!(record.published && (await ops.healthy(release)))) {
+    await ops.publish(release)
+    ops.save({ ...record, published: true })
+  }
+  ops.revive(record.dependents ?? [])
+  // While the journal still names it, so that an interruption here leaves the next run able to delete it.
+  if (record.discard) ops.discard(record.discard)
+  ops.clear()
+}
 // Put the old release back. Order matters across a crash: the journal says "restored" before the old service can
-// accept a write, and the vault copy is deleted only after the journal no longer names it.
-export async function restoreOld(old: Snapshot, loc: Loc | null, ops: Ops) {
+// accept a write, and the vault copy is deleted only after the journal no longer names it as the copy to restore from.
+export async function restoreOld(old: Pending, loc: Loc | null, ops: Ops) {
+  let record = noteDependents(old, ops)
   ops.stop()
   if (loc) {
     ops.restore(loc)
-    ops.save({ ...plain(old), store: null })
+    // The journal stops naming the copy as a store, and keeps its path so that whichever run finishes deletes it.
+    record = { ...plain(record), store: null, discard: loc.store }
+    ops.save(record)
   }
-  await ops.publish(plain(old))
-  ops.clear()
-  if (loc) ops.discard(loc.store)
+  await bringUp(record, plain(record), ops)
 }
 // The journal after an interruption. A committed activation is finished forward (and its metadata rewritten, which
 // is idempotent); anything else is rolled back, to the state directory path the journal recorded.
 export async function recoverPending(p: Pending, ops: Ops) {
   if (p.phase === 'forward' && p.target) {
-    ops.finish(plain(p), p.store ?? null)
-    await ops.publish(p.target)
-    ops.clear()
+    const record = noteDependents(p, ops)
+    ops.finish(plain(record), p.store ?? null)
+    await bringUp(record, p.target, ops)
     return 'forward'
+  }
+  // The old release was already back and ready: nothing is restored again.
+  if (p.published) {
+    await bringUp(p, plain(p), ops)
+    return 'rollback'
   }
   ensure(!p.store || p.data, 'The journal names a vault copy without its state directory')
   await restoreOld(p, p.store ? { store: p.store, data: p.data! } : null, ops)
   return 'rollback'
 }
-export async function activate(old: Snapshot, target: Snapshot, ops: Ops) {
+export async function activate(current: Snapshot, target: Snapshot, ops: Ops) {
+  // A first reading while nothing has changed yet: if it fails here, the activation stops with nothing to undo.
+  let old: Pending = { ...current, dependents: ops.dependents(), provisional: true }
   ops.save(old)
   let loc: Loc | null = null
   try {
     if (old.version) await ops.drain()
+    old = noteDependents(old, ops, true)
     ops.stop()
     ops.fence() // the decisive downgrade check, with the writer stopped
     if (old.version) {
@@ -509,16 +592,18 @@ export async function activate(old: Snapshot, target: Snapshot, ops: Ops) {
     }
     await ops.prove(target)
   } catch (error) {
+    // Said first: if the rollback fails too, its error is the one that reaches the caller.
+    console.error('Activation failed, restoring the previous release: ' + (error as Error).message)
     await restoreOld(old, loc, ops)
     throw error
   }
   // Proven against the real store on a private port. Rollback is disarmed before any public traffic: from here a
   // failure is fixed forward. The record keeps the old configuration and the copy so that recovery can rewrite
   // previous.json; it is never restored from in this phase.
-  ops.save({ ...old, store: loc?.store ?? null, data: loc?.data, phase: 'forward', target })
+  const record: Pending = { ...old, store: loc?.store ?? null, data: loc?.data, phase: 'forward', target }
+  ops.save(record)
   ops.finish(old, loc?.store ?? null)
-  await ops.publish(target)
-  ops.clear()
+  await bringUp(record, target, ops)
 }
 async function main() {
   ensure(process.getuid?.() === 0, 'Requires root and the upgrade.sh lock')
@@ -527,6 +612,8 @@ async function main() {
   const [action, tree, digest, version, commit, arch] = process.argv.slice(2)
   let decisive = () => {}
   const ops: Ops = {
+    dependents: () => dependentsOf(units, showDependencies),
+    revive,
     save: (s) => atomic(pending, JSON.stringify(s)),
     drain: async () => {
       if (action !== '--rollback') return drain()
@@ -546,6 +633,13 @@ async function main() {
     },
     prove,
     publish,
+    healthy: async (s) => {
+      if (!s.version || active() !== s.version) return false
+      return ready(s.version).then(
+        () => true,
+        () => false,
+      )
+    },
     restore: (loc) => restoreStore(loc.data, loc.store),
     discard: (store) => fs.rmSync(store, { recursive: true, force: true }),
     // previous.json names the vault copy for the operator. --rollback never restores it: the newer release has written since.
