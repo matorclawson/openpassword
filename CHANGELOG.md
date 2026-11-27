@@ -9,7 +9,7 @@
 
 ### Human vault security and remote model custody
 
-- Added passkey sign-in and single-use approval bound to sensitive console requests for enrolled profiles. Changing an existing sign-in password also requires the current password.
+- Added passkey sign-in and single-use passkey approval for enrolled profiles. Approval is required by default for every console change under `/admin/` and `/profile/`; the exceptions are session handling, the approval ceremony itself, routine writes of client-encrypted private-vault data and the sealing ticket that precedes an approved connection change. Confirming an app sign-in asks for approval too. Removing a passkey discards that profile's pending approvals in all of its sessions. Changing an existing sign-in password also requires the current password.
 - Owners can share a readable item revision with a named recipient or a group using independently verified recipient cards. Group publication is atomic and roster changes withdraw prior group shares. Editing, deletion, expiry or owner revocation ends further delivery.
 - Added offline recovery kits, optional named recovery custodians, and browser unlock with a compatible user-verifying, device-bound PRF authenticator. Device enrollment expires after thirty days and can be revoked online.
 - Model connections can use a separately administered OpenPassword gateway. A scoped downstream access token replaces the provider key on the routing host. Both services enforce their own model lease. Generic operation invocation now rejects leased chat calls that must go through metering.
@@ -29,7 +29,7 @@
 - The CLI and MCP report why the broker refused a request, for example `Broker returned 400: Expired pairing`. Only text the broker marks as public is shown, so both the broker and the client need this version.
 - App sign-in confirmation now reaches the application: the page's content security policy blocked the redirect to the callback in Chrome. Registration refuses a callback whose host is not a domain name or IPv4 address; applications registered earlier are not re-checked.
 - Removing a passkey and discarding its pending approvals happen in one transaction.
-- **Check before upgrading:** a HubSpot issue bundle's upload folder is no longer fixed in the code. It is the connection's one selected resource that starts and ends with `/`. A connection with no such entry, or more than one, cannot publish issue bundles.
+- **Check before upgrading:** a HubSpot issue bundle's upload folder is no longer fixed in the code. Exactly one of the connection's selected resources may begin with `/`, and it must be a valid absolute folder ending in `/` (see [issue bundles](docs/operations.md#issue-bundles-and-dispatch-controls)). A connection with no such entry, a second entry beginning with `/`, or an invalid one cannot publish issue bundles.
 - The README and operations guide say who runs each command, where, and whether it needs sudo.
 
 ### HTTP API
