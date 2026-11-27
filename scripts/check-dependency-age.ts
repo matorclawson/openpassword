@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 // Gate operator on the build host; no sudo. Check the locked transitive graph before installing it.
 import { readFileSync } from 'node:fs'
 const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'))
@@ -64,18 +63,15 @@ await Promise.all(Array.from({ length: 8 }, worker))
 if (failures.length) throw Error('Dependency age gate refused:\n' + failures.sort().join('\n'))
 console.log('Verified minimum age for ' + packages.size + ' registry packages')
 
-// Source pins carry Ephemeral's complete third-party vendor tree on the offline gate.
-const vendored = execFileSync(
-  'tar',
-  ['-xOzf', 'vendor/dogfood/ephemeral.tar.gz', 'vendor/modules.txt'],
-  { encoding: 'utf8' },
-)
-const modules = [...vendored.matchAll(/^# ([a-z0-9./_-]+) (v[0-9A-Za-z.+-]+)$/gm)]
-if (
-  !modules.length ||
-  modules.length !== vendored.split('\n').filter((line) => line.startsWith('# ')).length
-)
-  throw Error('Unrecognized Go dependency list')
+// Third-party Go modules pinned for the engines. The two engines themselves are our own libraries,
+// pinned by exact version in the same file.
+const own = ['github.com/rodriveracom/dostoevsky', 'github.com/rodriveracom/ephemeral']
+const modules = [
+  ...readFileSync('engines/go.mod', 'utf8').matchAll(
+    /^(?:require)?[ \t]+([a-z0-9./_-]+) (v[0-9A-Za-z.+-]+)(?: \/\/ indirect)?$/gm,
+  ),
+].filter(([, name]) => !own.includes(name))
+if (!modules.length) throw Error('Unrecognized Go dependency list')
 for (const [, name, version] of modules) {
   const response = await fetch(
     'https://proxy.golang.org/' + name + '/@v/' + encodeURIComponent(version) + '.info',
@@ -87,4 +83,4 @@ for (const [, name, version] of modules) {
   if (metadata.Version !== version || !Number.isFinite(published) || published > cutoff)
     throw Error('Dependency age gate refused ' + name + '@' + version)
 }
-console.log('Verified minimum age for ' + modules.length + ' vendored Go modules')
+console.log('Verified minimum age for ' + modules.length + ' pinned third-party Go modules')

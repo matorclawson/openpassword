@@ -1,6 +1,6 @@
 # Engines in the OpenPassword broker
 
-The 0.5.0 candidate builds on the 0.4.1 store. The gate builds both executables and installs them beside Node in the same release tree. Development and gate hosts need Node 24.19.0 and Go 1.26.2. Production uses the bundled binaries. Startup requires both engines. Health reports starting until both are reachable. Only the broker serves clients. Multiple client hosts can use one broker.
+The 0.5.0 candidate builds on the 0.4.1 store. The gate builds both executables and installs them beside Node in the same release tree. Their exact versions and every dependency's checksum are in `engines/go.mod` and `engines/go.sum`; the build downloads them from the Go module proxy (or reads a module cache that already holds them) and stops on any mismatch. Development and gate hosts need Node 24.19.0 and Go 1.26.2. Production uses the bundled binaries. Startup requires both engines. Health reports starting until both are reachable. Only the broker serves clients. Multiple client hosts can use one broker.
 
 | Responsibility | Authoritative data | Recovery |
 | --- | --- | --- |
