@@ -17,7 +17,8 @@ const dataLink = '/var/lib/openpassword'
 const semver = /^\d+\.\d+\.\d+$/
 // `dependents`: other units that were running and that systemd stops along with ours. The journal acts on it;
 // previous.json carries it too, where nothing reads it.
-type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[] }
+// `listed`: the list was settled just before the first stop and is not read again.
+type Snapshot = { version: string | null; units: (string | null)[]; dependents?: string[]; listed?: true }
 // Pending record: the old configuration plus the vault copy taken before the candidate first started.
 // `published`: the release answered its readiness checks; only the host's own units may still be down.
 type Pending = Snapshot & { store?: string | null; data?: string; phase?: 'forward'; target?: Snapshot; published?: true }
@@ -481,12 +482,20 @@ type Ops = {
   finish: (s: Snapshot, store: string | null) => void
   clear: () => void
 }
-const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units, dependents: s.dependents })
-// Read as late as possible, just before the first stop, and journaled before it. A journal that already names them
-// is kept: after a stop the running set no longer says what has to come back.
-function noteDependents(record: Pending, ops: Ops): Pending {
-  if (record.dependents) return record
-  const noted = { ...record, dependents: ops.dependents() }
+const plain = (s: Snapshot): Snapshot => ({ version: s.version, units: s.units, dependents: s.dependents, listed: s.listed })
+// Read as late as possible, just before the first stop, and journaled before it. Once listed it is kept: after a stop
+// the running set no longer says what has to come back. An activation requires the reading; a rollback or recovery
+// must get the services back even if it keeps failing, so it falls back to the list taken before the drain.
+function noteDependents(record: Pending, ops: Ops, required = false): Pending {
+  if (record.listed) return record
+  let dependents = record.dependents ?? []
+  try {
+    dependents = ops.dependents()
+  } catch (error) {
+    if (required) throw error
+    console.error('Could not list the units that depend on the services; check them afterwards: ' + (error as Error).message)
+  }
+  const noted: Pending = { ...record, dependents, listed: true }
   ops.save(noted)
   return noted
 }
@@ -532,12 +541,13 @@ export async function recoverPending(p: Pending, ops: Ops) {
   return 'rollback'
 }
 export async function activate(current: Snapshot, target: Snapshot, ops: Ops) {
-  let old: Pending = current
+  // A first reading while nothing has changed yet: if it fails here, the activation stops with nothing to undo.
+  let old: Pending = { ...current, dependents: ops.dependents() }
   ops.save(old)
   let loc: Loc | null = null
   try {
     if (old.version) await ops.drain()
-    old = noteDependents(old, ops)
+    old = noteDependents(old, ops, true)
     ops.stop()
     ops.fence() // the decisive downgrade check, with the writer stopped
     if (old.version) {

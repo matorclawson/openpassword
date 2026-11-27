@@ -9,7 +9,7 @@ import { activate, recoverPending, snapshotStore, restoreStore, resolveDataDir, 
 type Snap = { version: string | null; units: (string | null)[] }
 const old: Snap = { version: '0.3.1', units: ['old-broker', 'old-web'] }
 const next: Snap = { version: '0.4.0', units: ['new-broker', 'new-web'] }
-type Rec = Snap & { dependents?: string[]; published?: true; store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
+type Rec = Snap & { dependents?: string[]; listed?: true; published?: true; store?: string | null; data?: string; phase?: 'forward'; target?: Snap }
 
 // A model of the host: the journal, the vault copy, the store schema and what is running. Every operation can
 // be interrupted before it runs (`crashAt`), and the candidate can fail at any of its boundaries.
@@ -232,7 +232,7 @@ test('interrupting the recovery itself never replays a restore over writes the o
     h.schema = 2
     h.running = 'none'
     h.ingress = false
-    h.pending = { ...old, dependents: ['edge.service'], store: 'snap', data: '/state/openpassword' }
+    h.pending = { ...old, dependents: ['edge.service'], listed: true, store: 'snap', data: '/state/openpassword' }
     let n = 0
     const crashy = Object.fromEntries(
       Object.entries(ops).map(([k, f]) => [
@@ -294,6 +294,31 @@ test('a drain that fails still journals the dependents before the rollback stops
   }
   await assert.rejects(activate(old, next, { ...ops, drain }), /drain failed/)
   assert.ok(h.ingress)
+  assert.equal(h.pending, null)
+})
+
+test('a dependent lookup that keeps failing after the drain still brings the old release back', async (t) => {
+  t.mock.method(console, 'error', () => undefined)
+  const { h, ops } = host({ candidate: 'ok' })
+  let calls = 0
+  const failing = {
+    ...ops,
+    dependents: () => {
+      if (calls++) throw Error('unit listing failed')
+      return ['edge.service']
+    },
+  }
+  await assert.rejects(activate(old, next, failing), /unit listing failed/)
+  assert.ok(!h.log.includes('backup') && !h.log.includes('prove'), 'the activation did not go on')
+  assert.equal(h.release, old.version)
+  assert.equal(h.running, 'public')
+  assert.ok(h.ingress, 'the list read before the drain is used')
+  assert.equal(h.pending, null)
+  // A recovery of a journal that never got a list completes as well.
+  h.running = 'none'
+  h.pending = { ...old }
+  assert.equal(await recoverPending(h.pending, failing), 'rollback')
+  assert.equal(h.running, 'public')
   assert.equal(h.pending, null)
 })
 
