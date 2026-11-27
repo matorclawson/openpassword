@@ -33,7 +33,7 @@ node --import tsx scripts/engine-cost.ts
 OPENPASSWORD_SKIP_SYSTEMD_PATH=1 make backup-age-test
 ```
 
-The gate verifies the source archive hashes before compiling from the two vendored MIT projects. Dostoevsky is pinned to 93870fe2322df80636f824d0a39fe7872e0b8bf8. Ephemeral is pinned to c2e078a2b30481e3df2300c24891befebf688c4c. The archives include licenses and Ephemeral's vendored dependencies. The TypeScript application uses the upstream JavaScript HTTP client and a serialized JSON-lines adapter for the Ephemeral CLI. A failed request closes that CLI. The next epoch reconstructs outstanding work from committed intents.
+The build compiles the two MIT-licensed engines from the module versions pinned in `engines/go.mod`, after `go mod verify` checks every module against `engines/go.sum`. Dostoevsky is pinned to 93870fe2322df80636f824d0a39fe7872e0b8bf8. Ephemeral is pinned to v0.3.0 (c2e078a2b30481e3df2300c24891befebf688c4c). The TypeScript application uses the upstream JavaScript HTTP client and a serialized JSON-lines adapter for the Ephemeral CLI. A failed request closes that CLI. The next epoch reconstructs outstanding work from committed intents.
 
 ## Recoverable operator backups
 

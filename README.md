@@ -20,7 +20,7 @@ For vault key custody, signed releases, CLI deposits and the findings from the s
 
 ## Start locally
 
-From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, and **Make** installed:
+From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, **Make** and **Go 1.25 or later** installed. `make setup` downloads the two engines' sources from the Go module proxy, so it needs network access (or a module cache that already holds them):
 
 **Run as:** your own account · **Where:** the project root on your computer; leave `make dev` running · **sudo:** no
 

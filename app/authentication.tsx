@@ -105,7 +105,7 @@ export function ConsoleLogin({
                     ? 'On your computer, run this with the OpenPassword CLI. Replace user@host with your trusted SSH account.'
                     : system
                       ? 'On the deployment host, run this as the deployment operator.'
-                      : 'In a terminal on this computer, run this as the user who started OpenPassword.'}{' '}
+                      : 'In a terminal on this computer, in the project folder, run this as the user who started OpenPassword.'}{' '}
                   {system
                     ? 'The service installation requires sudo on the deployment host.'
                     : 'No sudo is needed.'}
@@ -115,7 +115,7 @@ export function ConsoleLogin({
                     ? 'openpassword setup-code --ssh user@host' + (system ? '' : ' --user')
                     : system
                       ? 'sudo cat /var/lib/openpassword/operator.token | /opt/openpassword/current/node/bin/node /opt/openpassword/current/public/openpassword-cli.cjs setup-code --operator-stdin'
-                      : 'openpassword setup-code'}
+                      : 'node public/openpassword-cli.cjs setup-code'}
                 </code>
                 <label>
                   Setup code
