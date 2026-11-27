@@ -1,6 +1,6 @@
 // Captures the README screenshots from a throwaway installation with made-up accounts and agents.
 // No provider is contacted: the broker's outbound transport is replaced below.
-// After `npm run build`: node --import tsx scripts/screenshots.ts OUTPUT_DIR
+// After `make build`: node --import tsx scripts/screenshots.ts OUTPUT_DIR
 import { chromium, type Page } from 'playwright-core'
 import { spawn, execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -175,10 +175,11 @@ try {
         ),
       )
       await page.getByLabel('Setup code', { exact: true }).fill(code)
+      await page.getByRole('button', { name: 'Continue to account' }).click()
       await page.getByLabel('Username').fill('operator')
       await page.getByLabel('Choose a password').fill('screenshot-fixture-only')
       await page.getByRole('button', { name: 'Create administrator' }).click()
-      await page.getByRole('heading', { name: 'Authentication' }).waitFor()
+      await page.getByRole('heading', { name: 'Your team vault' }).waitFor()
       await populate(page)
 
       const screens: [string, string, string][] = [

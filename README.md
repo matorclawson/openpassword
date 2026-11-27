@@ -35,7 +35,7 @@ OpenPassword is a self-hosted credential manager and model router. Your provider
 
 ## Quick start
 
-From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, and **Make** installed:
+From the root of a cloned or extracted copy of this project, with **Node.js 24 LTS**, **npm**, **Make** and **Go 1.25 or later** installed. `make setup` downloads the two engines' sources from the Go module proxy, so it needs network access (or a module cache that already holds them):
 
 **Run as:** your own account · **Where:** the project root on your computer; leave `make dev` running · **sudo:** no
 
@@ -44,11 +44,13 @@ make setup
 make dev
 ```
 
-1. Open **http://localhost:3000**. The first visit shows **Create your administrator account**.
+1. Open **http://localhost:3000**. The first visit shows **Set up your team vault**. Choose **On this computer** and **User installation**.
 2. As the same account, in the project root, run `node public/openpassword-cli.cjs setup-code` in a second terminal (no sudo). The ten-minute code is for creating the first administrator.
-3. Enter the code, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
+3. Enter the code, select **Continue to account**, choose a username and password, and create your account. First-time setup closes as soon as the administrator exists. Google, GitHub, and Apple sign-in are optional.
 
-You can now add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Next: [connect a coding agent](docs/walkthroughs.md#connect-an-agent), which on a new installation starts by enrolling the agent's machine, or [route a model request](docs/walkthroughs.md#route-a-model-request).
+The administrator lands on **Team overview**. Choose **Add shared login** to store a team account, add a teammate and check their access record.
+
+To connect an application or agent, add a **connection**, a named provider account whose credential OpenPassword stores. A **grant** gives one client permission to use that connection for selected operations and a limited time. Next: [connect a coding agent](docs/walkthroughs.md#connect-an-agent), which on a new installation starts by enrolling the agent's machine, or [route a model request](docs/walkthroughs.md#route-a-model-request).
 
 ## What makes it different
 
@@ -64,13 +66,13 @@ You can now add a **connection**, a named provider account whose credential Open
 
 | I want to… | Start here |
 | --- | --- |
+| Show a company how shared logins work | [Three-minute team demo](docs/company-demo.md) |
 | Give Codex or Claude Code an MCP tool | [Connect an agent](docs/walkthroughs.md#connect-an-agent) |
 | Make a model request from my app | [Route a model request](docs/walkthroughs.md#route-a-model-request) |
 | Call it directly from a service or script | [HTTP quickstart and API reference](docs/http-api.md) |
 | Connect a coding assistant, Python framework or Rasa action to a local CLI | [Native harness integrations](examples/harnesses/README.md) |
 | Run the server in the cloud and the agent on my laptop | [Deploy on a server](#deploy-on-a-server) |
 | Set up passkeys, sharing, recovery or a separate model gateway | [Security operations](docs/security-custody.md) |
-
 
 ## Personal vault and approved agent hosts
 

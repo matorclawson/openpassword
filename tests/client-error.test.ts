@@ -21,7 +21,8 @@ test('a refused request reports the broker explanation as one short line', async
     return error.message
   }
 
-  assert.equal(await message(client.redeem('code')), 'Broker returned 400: Expired pairing')
+  // An expired pairing gets its own instruction; other calls keep the broker's words.
+  assert.equal(await message(client.redeem('code')), 'Pairing expired. Start a new pairing request.')
   assert.equal(
     await message(client.artifact('art_123e4567-e89b-12d3-a456-426614174000')),
     'Broker returned 400: Expired pairing',

@@ -1,6 +1,6 @@
 {
   "name": "openpassword",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "",
   "scripts": {
     "dev": "concurrently -k \"node --import tsx server/main.ts\" \"next dev -H 127.0.0.1\"",
@@ -11,6 +11,7 @@
     "verify": "npm run packages && npm run typecheck && npm test && npm run build",
     "packages": "npm run build -w @openpassword/client -w @openpassword/connectors -w @openpassword/schemas -w @openpassword/cli",
     "prebuild": "node --experimental-strip-types scripts/source.ts && node scripts/client.ts",
+    "demo:company": "node --import tsx scripts/browser.ts --company",
     "test:browser": "node --import tsx scripts/browser.ts",
     "predev": "node --experimental-strip-types scripts/source.ts && node scripts/client.ts",
     "test:reference": "node --import tsx scripts/reference-tests.ts"
